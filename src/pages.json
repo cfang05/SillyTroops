@@ -1,0 +1,120 @@
+{
+  "pages": [
+    {
+      "path": "pages/index/index",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712",
+        "enablePullDownRefresh": false
+      }
+    },
+    {
+      "path": "pages/login/login",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/persona/index",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/import/import",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/session/session",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/session/new-conversation",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/collect/collect",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712",
+        "backgroundTextStyle": "light"
+      }
+    },
+    {
+      "path": "pages/settings/settings",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/rules/index",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/chat/chat",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712",
+        "backgroundTextStyle": "light"
+      }
+    },
+    {
+      "path": "pages/characters/index",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/characters/edit",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/presets/index",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/presets/edit",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/import/regex-edit",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    }
+  ],
+  "globalStyle": {
+    "navigationBarBackgroundColor": "#171104",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "无限旅团",
+    "backgroundColor": "#171104",
+    "backgroundTextStyle": "light",
+    "maxWidth": 480
+  }
+}

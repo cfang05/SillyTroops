@@ -1,0 +1,32 @@
+{
+  "name": "sillytroops-uni",
+  "version": "1.0.0",
+  "scripts": {
+    "dev:h5": "uni",
+    "dev:mp-weixin": "uni -p mp-weixin",
+    "build:h5": "uni build",
+    "build:mp-weixin": "uni build -p mp-weixin",
+    "build": "npm run build:h5",
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "dompurify": "^3.1.6",
+    "express": "^4.22.2",
+    "http-proxy-middleware": "^2.0.10",
+    "pinia": "^2.0.32",
+    "vue": "^3.2.47"
+  },
+  "devDependencies": {
+    "@dcloudio/types": "^3.3.3",
+    "@dcloudio/uni-app": "^3.0.0-alpha-3080120221122001",
+    "@dcloudio/uni-app-plus": "^3.0.0-alpha-3080120221122001",
+    "@dcloudio/uni-cli-shared": "^3.0.0-alpha-3080120221122001",
+    "@dcloudio/uni-h5": "^3.0.0-alpha-3080120221122001",
+    "@dcloudio/uni-mp-weixin": "^3.0.0-alpha-3080120221122001",
+    "@dcloudio/vite-plugin-uni": "^3.0.0-alpha-3080120221122001",
+    "@vue/tsconfig": "^0.5.1",
+    "sass": "^1.58.0",
+    "typescript": "^5.4.5",
+    "vite": "^5.0.0"
+  }
+}

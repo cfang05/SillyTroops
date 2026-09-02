@@ -1,0 +1,1224 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>无限旅团 · 核心页面高保真设计</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Serif+SC:wght@600;700;900&display=swap" rel="stylesheet">
+<style>
+/* ============================================================
+   无限旅团 · 核心页面设计系统
+   令牌与 wuxian-lvtuan-h5-redesign.html 完全一致（同一套设计规范）
+   ============================================================ */
+:root {
+  --bg: oklch(17% 0.012 70);
+  --bg-deep: oklch(13.5% 0.011 70);
+  --surface: oklch(22% 0.014 70);
+  --surface-2: oklch(26.5% 0.016 70);
+  --raised: oklch(31% 0.018 70);
+  --fg: oklch(95% 0.008 70);
+  --fg-soft: oklch(88% 0.01 70);
+  --muted: oklch(67% 0.012 70);
+  --faint: oklch(56% 0.012 70);
+  --border: oklch(31% 0.015 70);
+  --border-strong: oklch(42% 0.02 70);
+  --accent: oklch(81% 0.13 84);
+  --accent-strong: oklch(71% 0.15 74);
+  --accent-soft: oklch(81% 0.13 84 / 0.14);
+  --danger: oklch(64% 0.19 26);
+  --success: oklch(74% 0.14 152);
+  --info: oklch(72% 0.11 235);
+  --t-amber: oklch(78% 0.13 80);
+  --t-violet: oklch(72% 0.12 295);
+  --t-gold: oklch(82% 0.13 95);
+  --t-teal: oklch(74% 0.10 195);
+  --t-emerald: oklch(74% 0.13 158);
+  --t-rose: oklch(72% 0.12 15);
+
+  --font-display: 'Cinzel', 'Noto Serif SC', 'Songti SC', serif;
+  --font-serif: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
+  --font-body: 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+html, body { background: var(--bg-deep); color: var(--fg); font-family: var(--font-body); -webkit-font-smoothing: antialiased; overflow-x: clip; }
+button { font: inherit; color: inherit; }
+input, textarea { font: inherit; color: inherit; }
+.mono { font-family: var(--font-mono); letter-spacing: .08em; text-transform: uppercase; }
+::selection { background: var(--accent-soft); color: var(--accent); }
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
+}
+
+/* ---------- 舞台 ---------- */
+.stage { position: relative; min-height: 100vh; overflow-x: clip; }
+.stage::before {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(1100px 480px at 50% -180px, oklch(46% 0.09 80 / 0.24), transparent 65%),
+    radial-gradient(900px 520px at 88% 6%, oklch(30% 0.06 300 / 0.09), transparent 60%),
+    radial-gradient(900px 520px at 10% 10%, oklch(33% 0.07 60 / 0.09), transparent 60%);
+}
+.stage::after {
+  content: ""; position: absolute; inset: 0; pointer-events: none;
+  background-image: radial-gradient(oklch(100% 0 0 / 0.03) 1px, transparent 1.4px);
+  background-size: 26px 26px;
+}
+.stage-inner { position: relative; max-width: 1600px; margin: 0 auto; padding: 40px 28px 60px; }
+
+.stage-head { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; padding: 0 4px 32px; flex-wrap: wrap; }
+.stage-head .mono { font-size: 11px; color: var(--muted); }
+.stage-head .stage-brand { color: var(--accent); }
+.stage-head .stage-brand em { font-style: normal; color: var(--muted); }
+
+.legend-row { display: flex; gap: 10px; flex-wrap: wrap; padding: 0 4px 30px; }
+.legend-chip { display: flex; align-items: center; gap: 7px; padding: 7px 13px; border-radius: 20px; background: var(--surface); border: 1px solid var(--border); font-size: 11px; color: var(--fg-soft); }
+.legend-chip b { color: var(--faint); font-family: var(--font-mono); font-size: 9px; letter-spacing: .1em; }
+
+.phones { display: flex; gap: 40px; justify-content: flex-start; align-items: flex-start; overflow-x: auto; padding: 4px 4px 30px; scroll-snap-type: x proximity; }
+.phones::-webkit-scrollbar { height: 8px; }
+.phones::-webkit-scrollbar-track { background: transparent; }
+.phones::-webkit-scrollbar-thumb { background: color-mix(in oklch, var(--accent) 45%, var(--border-strong)); border-radius: 4px; }
+.phones::-webkit-scrollbar-thumb:hover { background: color-mix(in oklch, var(--accent) 65%, var(--border-strong)); }
+.phones { scrollbar-width: thin; scrollbar-color: color-mix(in oklch, var(--accent) 45%, var(--border-strong)) transparent; }
+
+/* ---------- 屏内滚动条（跟随暗金高级感风格） ---------- */
+.quest-grid, .auth, .chat-scroll, .setn-scroll, .sess-scroll {
+  scrollbar-width: thin;
+  scrollbar-color: color-mix(in oklch, var(--accent) 38%, var(--border-strong) 62%) transparent;
+}
+.quest-grid::-webkit-scrollbar, .auth::-webkit-scrollbar, .chat-scroll::-webkit-scrollbar, .setn-scroll::-webkit-scrollbar, .sess-scroll::-webkit-scrollbar { width: 4px; }
+.quest-grid::-webkit-scrollbar-track, .auth::-webkit-scrollbar-track, .chat-scroll::-webkit-scrollbar-track, .setn-scroll::-webkit-scrollbar-track, .sess-scroll::-webkit-scrollbar-track { background: transparent; }
+.quest-grid::-webkit-scrollbar-thumb, .auth::-webkit-scrollbar-thumb, .chat-scroll::-webkit-scrollbar-thumb, .setn-scroll::-webkit-scrollbar-thumb, .sess-scroll::-webkit-scrollbar-thumb {
+  background: color-mix(in oklch, var(--accent) 38%, var(--border-strong) 62%); border-radius: 3px;
+}
+.quest-grid::-webkit-scrollbar-thumb:hover, .auth::-webkit-scrollbar-thumb:hover, .chat-scroll::-webkit-scrollbar-thumb:hover, .setn-scroll::-webkit-scrollbar-thumb:hover, .sess-scroll::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in oklch, var(--accent) 60%, var(--border-strong) 40%);
+}
+.phone-col { flex: none; scroll-snap-align: start; display: flex; flex-direction: column; align-items: center; gap: 14px; }
+.phone-label { font-family: var(--font-mono); font-size: 10px; color: var(--muted); letter-spacing: .14em; text-align: center; }
+.phone-label b { color: var(--accent); }
+
+/* ---------- 手机壳 ---------- */
+.phone {
+  width: 360px; height: 780px; border-radius: 46px; background: #060606; padding: 12px;
+  box-shadow:
+    0 46px 90px -32px oklch(8% 0.02 70 / 0.95),
+    0 0 0 1px oklch(100% 0 0 / 0.06),
+    0 0 110px -30px oklch(70% 0.12 80 / 0.24);
+}
+.phone-screen { position: relative; width: 100%; height: 100%; border-radius: 36px; overflow: hidden; background: var(--bg); display: flex; flex-direction: column; }
+.phone-screen::after { content: ""; position: absolute; inset: 0; border-radius: 36px; box-shadow: inset 0 0 0 1px oklch(60% 0.10 76 / 0.85); pointer-events: none; z-index: 999; }
+.statusbar { height: 34px; flex: none; display: flex; align-items: center; justify-content: space-between; padding: 0 22px; font-family: var(--font-mono); font-size: 12px; font-weight: 500; color: var(--fg); position: relative; z-index: 41; }
+.statusbar .icons { display: flex; gap: 6px; align-items: center; }
+.statusbar .icons svg { width: 14px; height: 14px; display: block; }
+
+/* ---------- 移动浏览器地址栏（H5 场景） ---------- */
+.browserbar { flex: none; display: flex; align-items: center; gap: 8px; height: 44px; padding: 0 12px 6px; position: relative; z-index: 41; }
+.browserbar .addr { flex: 1; min-width: 0; display: flex; align-items: center; gap: 6px; height: 32px; padding: 0 12px; border-radius: 16px; background: var(--surface); border: 1px solid var(--border); color: var(--muted); }
+.browserbar .addr svg { width: 12px; height: 12px; flex: none; color: var(--faint); }
+.browserbar .addr span { font-family: var(--font-mono); font-size: 11px; letter-spacing: .01em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--fg-soft); }
+.browserbar .refresh { width: 32px; height: 32px; flex: none; border-radius: 12px; display: flex; align-items: center; justify-content: center; color: var(--faint); background: var(--surface); border: 1px solid var(--border); }
+.browserbar .refresh svg { width: 14px; height: 14px; }
+.browserbar .tabs { width: 32px; height: 32px; flex: none; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--faint); background: var(--surface); border: 1px solid var(--border); font-family: var(--font-mono); font-size: 10px; font-weight: 700; }
+
+/* ---------- 底部 Tab 栏 ---------- */
+.tabbar {
+  margin-top: auto; height: 55px; flex: none; display: flex; align-items: flex-start; justify-content: space-around;
+  padding: 13px 8px 0; background: oklch(15% 0.012 70 / 0.85); -webkit-backdrop-filter: blur(18px); backdrop-filter: blur(18px);
+  border-top: 1px solid var(--border); position: relative; z-index: 30;
+}
+.tab { display: flex; flex-direction: column; align-items: center; gap: 3px; width: 52px; padding-top: 1px; color: var(--faint); cursor: pointer; border-radius: 9px; transition: color 150ms ease; background: none; border: 0; }
+.tab svg { width: 17px; height: 17px; }
+.tab span { font-size: 9.5px; font-family: var(--font-body); font-weight: 500; letter-spacing: .01em; }
+.tab:hover { color: var(--fg-soft); }
+.tab.active { color: var(--accent); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.tab-center .fab {
+  width: 36px; height: 36px; border-radius: 12px; margin-top: -20px;
+  background: linear-gradient(160deg, var(--accent), var(--accent-strong));
+  color: #171104; display: flex; align-items: center; justify-content: center;
+  box-shadow: 0 10px 22px -7px oklch(75% 0.14 80 / 0.75), inset 0 1px 0 oklch(100% 0 0 / 0.45);
+  transition: transform 160ms ease, filter 160ms ease;
+}
+.tab-center .fab:hover { transform: translateY(-1px); filter: brightness(1.08); }
+.tab-center .fab:active { transform: translateY(0) scale(.96); }
+
+/* ---------- 通用按钮 ---------- */
+.btn-primary {
+  height: 44px; border-radius: 22px; border: none; cursor: pointer;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #171104;
+  font-size: 13.5px; font-weight: 700; letter-spacing: .02em;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  box-shadow: 0 12px 26px -10px oklch(75% 0.14 80 / 0.6), inset 0 1px 0 oklch(100% 0 0 / 0.4);
+  transition: transform 160ms ease, filter 160ms ease;
+}
+.btn-primary:hover { transform: translateY(-1px); filter: brightness(1.06); }
+.btn-primary:active { transform: translateY(0) scale(.98); }
+.btn-primary:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+.btn-primary:disabled, .btn-primary.disabled { opacity: .45; cursor: not-allowed; transform: none; filter: none; box-shadow: none; }
+.btn-primary .spinner { width: 15px; height: 15px; border-radius: 50%; border: 2px solid oklch(20% 0.02 70 / 0.35); border-top-color: #171104; animation: spin 700ms linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.btn-ghost {
+  height: 42px; border-radius: 21px; border: 1px solid var(--border); background: var(--surface); color: var(--fg-soft);
+  font-size: 12.5px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 6px;
+  transition: border-color 160ms ease, color 160ms ease, background 160ms ease;
+}
+.btn-ghost:hover { border-color: var(--border-strong); color: var(--fg); background: var(--surface-2); }
+.btn-ghost:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.btn-ghost:active { transform: scale(.98); }
+
+.field { margin-bottom: 14px; }
+.field label { display: block; font-size: 11.5px; color: var(--fg-soft); margin-bottom: 7px; letter-spacing: .01em; }
+.field label .req { color: var(--danger); margin-left: 3px; }
+.field .input-wrap { position: relative; }
+.field input, .field textarea {
+  width: 100%; background: var(--surface); border: 1px solid var(--border); border-radius: 12px;
+  padding: 11px 13px; font-size: 13px; color: var(--fg); transition: border-color 160ms ease, background 160ms ease;
+}
+.field input::placeholder, .field textarea::placeholder { color: var(--faint); }
+.field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); background: var(--surface-2); }
+.field textarea { resize: none; line-height: 1.55; min-height: 62px; }
+.field .eye-btn { position: absolute; right: 10px; top: 50%; transform: translateY(-50%); width: 30px; height: 30px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--faint); cursor: pointer; background: none; border: none; }
+.field .eye-btn:hover { color: var(--fg-soft); }
+.field .eye-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.field .eye-btn svg { width: 17px; height: 17px; }
+.field-error { border-color: var(--danger) !important; }
+.field-msg { font-size: 11px; margin-top: 7px; display: flex; align-items: center; gap: 5px; }
+.field-msg.error { color: var(--danger); }
+.field-msg svg { width: 12px; height: 12px; flex: none; }
+
+/* ---------- Phone 1 · 首页 index（今日冒险结构） ---------- */
+.home { flex: 1; display: flex; flex-direction: column; padding-top: 14px; gap: 13px; min-height: 0; }
+.greet-row { display: flex; align-items: center; justify-content: space-between; flex: none; padding: 0 16px; }
+.greet { display: flex; align-items: center; gap: 9px; }
+.home-crest { width: 32px; height: 32px; border-radius: 10px; background: linear-gradient(160deg, oklch(29% 0.05 80), oklch(20% 0.03 80)); border: 1px solid oklch(80% 0.13 84 / 0.45); display: flex; align-items: center; justify-content: center; flex: none; overflow: hidden; box-shadow: 0 0 14px -3px oklch(75% 0.13 80 / 0.5); }
+.home-crest img { width: 100%; height: 100%; object-fit: cover; }
+.greet h2 { font-size: 17px; font-weight: 700; letter-spacing: .01em; line-height: 1.15; }
+.greet .mono { font-size: 8.5px; color: var(--faint); margin-top: 3px; letter-spacing: .12em; display: block; }
+.bell-btn { width: 34px; height: 34px; flex: none; border-radius: 11px; background: var(--surface); border: 1px solid var(--border); display: flex; align-items: center; justify-content: center; color: var(--muted); position: relative; cursor: pointer; transition: border-color 160ms ease, color 160ms ease; }
+.bell-btn:hover { border-color: var(--border-strong); color: var(--fg-soft); }
+.bell-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.bell-btn svg { width: 16px; height: 16px; }
+.bell-btn .dot { position: absolute; top: 6px; right: 7px; width: 6px; height: 6px; border-radius: 50%; background: var(--danger); box-shadow: 0 0 0 2px var(--bg); }
+
+.ribbon {
+  display: flex; align-items: center; gap: 12px; padding: 11px 13px; border-radius: 16px; flex: none; margin: 0 16px;
+  background: oklch(24% 0.02 70 / 0.68); -webkit-backdrop-filter: blur(16px); backdrop-filter: blur(16px);
+  border: 1px solid oklch(80% 0.13 84 / 0.30); box-shadow: inset 0 1px 0 oklch(100% 0 0 / 0.06);
+}
+.ribbon-lv { width: 46px; height: 46px; flex: none; border-radius: 13px; background: linear-gradient(160deg, oklch(32% 0.06 80), oklch(24% 0.04 80)); border: 1px solid oklch(80% 0.13 84 / 0.4); display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.ribbon-lv b { font-family: var(--font-mono); font-size: 14px; color: var(--accent); line-height: 1; font-weight: 700; }
+.ribbon-lv span { font-size: 7px; color: var(--muted); letter-spacing: .14em; margin-top: 2px; }
+.ribbon-mid { flex: 1; min-width: 0; }
+.ribbon-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.ribbon-title span { font-size: 12px; font-weight: 700; }
+.ribbon-title .mono { font-size: 8px; color: var(--accent); letter-spacing: .07em; }
+.progress { height: 6px; border-radius: 3px; background: oklch(100% 0 0 / 0.09); overflow: hidden; }
+.progress i { display: block; height: 100%; width: 66%; border-radius: 3px; background: linear-gradient(90deg, var(--accent), oklch(70% 0.14 60)); box-shadow: 0 0 10px oklch(78% 0.13 82 / 0.55); }
+.ribbon-xp { font-family: var(--font-mono); font-size: 8px; color: var(--muted); letter-spacing: .07em; margin-top: 6px; }
+
+.sub-line { font-family: var(--font-mono); font-size: 9.5px; color: var(--muted); letter-spacing: .09em; display: flex; justify-content: space-between; align-items: baseline; flex: none; padding: 0 16px; }
+.sub-line b { color: var(--accent); font-weight: 700; }
+
+.quest-grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; overflow-y: auto; padding: 4px 16px 6px; flex: 1; min-height: 0; align-content: start; }
+.quest-tile {
+  position: relative; border-radius: 14px; padding: 9px; aspect-ratio: 1 / 1.2;
+  background: var(--surface); border: 1px solid var(--border); overflow: hidden; cursor: pointer;
+  display: flex; flex-direction: column;
+  transition: transform 170ms ease, border-color 170ms ease, box-shadow 170ms ease;
+}
+.quest-tile::before { content: ""; position: absolute; inset: 0; opacity: .17; background: radial-gradient(110px 70px at 50% -10px, var(--tint), transparent 72%); pointer-events: none; }
+.quest-tile:hover { transform: translateY(-1px); border-color: color-mix(in oklch, var(--tint) 55%, var(--border)); box-shadow: 0 8px 18px -12px oklch(10% 0.02 70 / 0.9); }
+.quest-tile:active { transform: translateY(0) scale(.97); }
+.quest-tile:focus-visible { outline: 2px solid var(--tint); outline-offset: 2px; }
+.quest-tile .glyph { width: 24px; height: 24px; border-radius: 8px; display: flex; align-items: center; justify-content: center; background: color-mix(in oklch, var(--tint) 16%, transparent); color: var(--tint); margin-bottom: 7px; flex: none; }
+.quest-tile .glyph svg { width: 13px; height: 13px; }
+.quest-tile h3 { font-size: 12px; font-weight: 700; color: var(--fg); margin-bottom: 3px; letter-spacing: .005em; line-height: 1.2; }
+.quest-tile .meta { font-size: 9.5px; color: var(--faint); line-height: 1.3; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; flex: 1; min-height: 0; }
+.quest-tile .xp { position: relative; margin-top: 6px; align-self: flex-start; font-family: var(--font-mono); font-size: 8px; font-weight: 700; color: var(--tint); background: color-mix(in oklch, var(--tint) 15%, transparent); padding: 2px 6px; border-radius: 6px; letter-spacing: .02em; flex: none; }
+
+/* ---------- Phone 2 · 登录 / 注册 login ---------- */
+.auth { flex: 1; display: flex; flex-direction: column; padding: 22px 24px 22px; overflow-y: auto; }
+.auth-head { display: flex; flex-direction: column; align-items: center; text-align: center; margin-bottom: 20px; flex: none; }
+.auth-crest { width: 46px; height: 46px; border-radius: 15px; margin-bottom: 12px; background: linear-gradient(160deg, oklch(29% 0.05 80), oklch(20% 0.03 80)); border: 1px solid oklch(80% 0.13 84 / 0.45); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 24px -7px oklch(75% 0.13 80 / 0.5); overflow: hidden; }
+.auth-crest img { width: 100%; height: 100%; object-fit: cover; }
+.auth-head h1 { font-family: var(--font-serif); font-size: 18px; font-weight: 900; margin-bottom: 4px; letter-spacing: .01em; }
+.auth-head p { font-size: 11px; color: var(--muted); }
+
+.auth-tabs { display: flex; gap: 5px; padding: 3px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); margin-bottom: 18px; flex: none; }
+.auth-tab { flex: 1; height: 32px; border-radius: 9px; border: none; background: none; cursor: pointer; font-size: 11.5px; font-weight: 600; color: var(--faint); transition: color 150ms ease, background 150ms ease; }
+.auth-tab:hover { color: var(--fg-soft); }
+.auth-tab:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.auth-tab.active { background: var(--raised); color: var(--fg); box-shadow: inset 0 0 0 1px var(--border-strong); }
+
+.auth-form { flex: 1; }
+.auth-hint { margin-top: 4px; padding: 11px 12px; border-radius: 12px; background: color-mix(in oklch, var(--t-gold) 10%, transparent); border: 1px solid color-mix(in oklch, var(--t-gold) 30%, transparent); display: flex; gap: 8px; align-items: flex-start; }
+.auth-hint svg { width: 13px; height: 13px; color: var(--t-gold); flex: none; margin-top: 1px; }
+.auth-hint p { font-size: 10px; line-height: 1.55; color: color-mix(in oklch, var(--t-gold) 78%, var(--fg-soft)); }
+.auth-hint b { font-weight: 700; }
+
+.auth-foot { text-align: center; margin-top: 14px; flex: none; }
+.auth-foot button { background: none; border: none; cursor: pointer; font-size: 11.5px; color: var(--accent); font-weight: 600; padding: 6px; border-radius: 8px; }
+.auth-foot button:hover { text-decoration: underline; }
+.auth-foot button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+/* ---------- Phone 3 · 当前冒险 chat ---------- */
+.chat-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.chat-nav { flex: none; display: flex; align-items: center; gap: 10px; height: 50px; padding: 0 14px; background: oklch(18% 0.013 70 / 0.9); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); border-bottom: 1px solid var(--border); position: relative; z-index: 20; }
+.chat-nav .nav-btn { width: 30px; height: 30px; border-radius: 9px; display: flex; align-items: center; justify-content: center; color: var(--fg-soft); cursor: pointer; background: none; border: none; flex: none; }
+.chat-nav .nav-btn:hover { background: var(--surface); }
+.chat-nav .nav-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chat-nav .nav-btn svg { width: 18px; height: 18px; }
+.chat-nav .nav-title { flex: 1; text-align: center; min-width: 0; }
+.chat-nav .nav-title h2 { font-size: 14px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.chat-nav .nav-title .mono { font-size: 8px; color: var(--faint); letter-spacing: .1em; margin-top: 1px; display: block; }
+
+.chat-scroll { flex: 1; overflow-y: auto; padding: 14px 14px 10px; display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+.msg-system { text-align: center; }
+.msg-system span { display: inline-block; font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); letter-spacing: .06em; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; line-height: 1.5; max-width: 260px; }
+
+.msg-row { display: flex; gap: 9px; align-items: flex-start; }
+.msg-row.user { flex-direction: row-reverse; justify-content: flex-start; }
+.msg-avatar { width: 32px; height: 32px; border-radius: 10px; flex: none; display: flex; align-items: center; justify-content: center; font-family: var(--font-serif); font-size: 12px; font-weight: 900; }
+.msg-avatar.ai { background: linear-gradient(160deg, oklch(68% 0.16 40), oklch(46% 0.12 20)); color: #1b0b05; border: 1px solid oklch(80% 0.1 45 / 0.5); }
+.msg-avatar.user { background: var(--raised); color: var(--fg-soft); border: 1px solid var(--border-strong); }
+.msg-col { display: flex; flex-direction: column; gap: 6px; max-width: 240px; }
+.msg-row.user .msg-col { align-items: flex-end; }
+.bubble { border-radius: 15px; padding: 11px 13px; font-size: 13px; line-height: 1.65; }
+.bubble.ai { background: var(--surface); border: 1px solid var(--border); color: var(--fg-soft); border-top-left-radius: 5px; }
+.bubble.user { background: linear-gradient(135deg, oklch(78% 0.12 84 / 0.9), oklch(66% 0.14 74 / 0.9)); color: #1c1204; border-top-right-radius: 5px; font-weight: 500; }
+.bubble .cursor { display: inline-block; width: 2px; height: 12px; background: var(--accent); margin-left: 2px; animation: blink 900ms step-end infinite; vertical-align: middle; }
+@keyframes blink { 50% { opacity: 0; } }
+.swipe-row { display: flex; align-items: center; gap: 8px; padding-left: 4px; }
+.swipe-row button { width: 20px; height: 20px; border-radius: 6px; border: none; background: var(--surface); color: var(--faint); cursor: pointer; display: flex; align-items: center; justify-content: center; }
+.swipe-row button:not(:disabled):hover { color: var(--fg-soft); background: var(--surface-2); }
+.swipe-row button:disabled { opacity: .35; cursor: not-allowed; }
+.swipe-row button:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.swipe-row button svg { width: 11px; height: 11px; }
+.swipe-row span { font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); letter-spacing: .04em; }
+
+.loading-row { display: flex; gap: 9px; align-items: center; }
+.loading-dots { display: flex; gap: 4px; padding: 11px 14px; background: var(--surface); border: 1px solid var(--border); border-radius: 15px; border-top-left-radius: 5px; }
+.loading-dots i { width: 6px; height: 6px; border-radius: 50%; background: var(--faint); animation: dotpulse 1.1s ease-in-out infinite; }
+.loading-dots i:nth-child(2) { animation-delay: .15s; }
+.loading-dots i:nth-child(3) { animation-delay: .3s; }
+@keyframes dotpulse { 0%, 80%, 100% { opacity: .3; transform: scale(.8); } 40% { opacity: 1; transform: scale(1); } }
+
+.chat-inputbar { flex: none; display: flex; align-items: center; gap: 8px; padding: 10px 12px; border-top: 1px solid var(--border); background: oklch(18% 0.013 70 / 0.92); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.hud-strip { flex: none; display: flex; gap: 8px; padding: 9px 12px; border-bottom: 1px solid var(--border); background: oklch(16% 0.012 70 / 0.6); }
+.hud-chip { flex: 1; display: flex; align-items: center; gap: 6px; height: 30px; padding: 0 10px; border-radius: 10px; background: var(--surface); border: 1px solid var(--border); color: var(--fg-soft); cursor: pointer; transition: border-color 150ms ease, background 150ms ease; min-width: 0; }
+.hud-chip:hover { border-color: var(--border-strong); background: var(--surface-2); }
+.hud-chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.hud-chip svg { width: 13px; height: 13px; flex: none; color: var(--faint); }
+.hud-label { font-size: 10px; font-weight: 600; flex: none; }
+.hud-bar { flex: 1; height: 4px; border-radius: 2px; background: oklch(100% 0 0 / 0.08); overflow: hidden; min-width: 20px; }
+.hud-bar i { display: block; height: 100%; border-radius: 2px; }
+.hud-count { flex: 1; text-align: right; font-size: 9.5px; color: var(--faint); }
+.hud-dice { flex: none; width: 46px; justify-content: center; }
+.hud-dice .hud-label { color: var(--t-gold); }
+.hud-dice svg { color: var(--t-gold); }
+.chat-inputfield { flex: 1; display: flex; align-items: center; gap: 8px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 0 5px 0 15px; height: 40px; transition: border-color 150ms ease; }
+.chat-inputfield:focus-within { border-color: var(--accent); }
+.chat-inputfield input { flex: 1; background: none; border: none; color: var(--fg); font-size: 13px; height: 100%; }
+.chat-inputfield input::placeholder { color: var(--faint); }
+.send-btn { width: 32px; height: 32px; border-radius: 50%; border: none; cursor: pointer; display: flex; align-items: center; justify-content: center; background: linear-gradient(135deg, var(--accent), var(--accent-strong)); color: #171104; flex: none; transition: filter 150ms ease, transform 150ms ease; }
+.send-btn:hover { filter: brightness(1.08); }
+.send-btn:active { transform: scale(.92); }
+.send-btn:focus-visible { outline: 2px solid var(--fg); outline-offset: 2px; }
+.send-btn svg { width: 15px; height: 15px; }
+.send-btn.disabled { background: var(--raised); color: var(--faint); cursor: not-allowed; }
+.send-btn.stop { background: var(--danger); color: oklch(97% 0.01 26); }
+
+/* ---------- Phone 4 · 模型设置 settings ---------- */
+.setn { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.setn-head { flex: none; display: flex; align-items: center; gap: 10px; height: 54px; padding: 0 16px; }
+.setn-head .setn-title-col { flex: 1; min-width: 0; text-align: center; }
+.setn-head .spacer { width: 34px; flex: none; }
+.setn-head h1 { font-size: 16px; font-weight: 900; font-family: var(--font-serif); margin-bottom: 2px; }
+.setn-head p { font-size: 10px; color: var(--muted); }
+.setn-scroll { flex: 1; overflow-y: auto; padding: 0 14px 8px; display: flex; flex-direction: column; gap: 14px; }
+.setn-section { display: flex; flex-direction: column; gap: 7px; }
+.setn-section > .stitle { font-size: 11.5px; font-weight: 700; color: var(--fg-soft); }
+.setn-section > .ssub { font-size: 9.5px; color: var(--faint); line-height: 1.45; margin-top: -4px; }
+
+.info-card { display: flex; gap: 8px; padding: 10px 11px; border-radius: 12px; background: color-mix(in oklch, var(--info) 9%, transparent); border: 1px solid color-mix(in oklch, var(--info) 26%, transparent); }
+.info-card svg { width: 13px; height: 13px; color: var(--info); flex: none; margin-top: 1px; }
+.info-card p { font-size: 9.5px; line-height: 1.5; color: color-mix(in oklch, var(--info) 70%, var(--fg-soft)); }
+.info-card b { display: block; font-size: 10.5px; color: var(--fg-soft); margin-bottom: 2px; font-weight: 700; }
+
+.model-list { display: flex; flex-direction: column; gap: 6px; }
+.model-row { display: flex; align-items: center; gap: 10px; padding: 9px 11px; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); cursor: pointer; transition: border-color 150ms ease, background 150ms ease; }
+.model-row:hover { border-color: var(--border-strong); }
+.model-row:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.model-row.active { border-color: oklch(80% 0.13 84 / 0.5); background: linear-gradient(160deg, oklch(25% 0.025 80), var(--surface)); }
+.model-row .mc { flex: 1; min-width: 0; }
+.model-row .mc h4 { font-size: 11.5px; font-weight: 700; margin-bottom: 1px; }
+.model-row .mc p { font-size: 9px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.model-row .check { width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid var(--border-strong); flex: none; display: flex; align-items: center; justify-content: center; color: transparent; }
+.model-row.active .check { border-color: var(--accent); background: var(--accent); color: #171104; }
+.model-row .check svg { width: 10px; height: 10px; }
+
+.switch-group { display: flex; flex-direction: column; border-radius: 12px; background: var(--surface); border: 1px solid var(--border); overflow: hidden; }
+.switch-row { display: flex; align-items: center; justify-content: space-between; padding: 9px 11px; }
+.switch-row + .switch-row { border-top: 1px solid var(--border); }
+.switch-row span { font-size: 11px; color: var(--fg-soft); font-weight: 500; }
+.sw { position: relative; width: 36px; height: 21px; border-radius: 11px; background: var(--raised); border: 1px solid var(--border-strong); cursor: pointer; flex: none; transition: background 160ms ease, border-color 160ms ease; }
+.sw::after { content: ""; position: absolute; top: 1.5px; left: 1.5px; width: 16px; height: 16px; border-radius: 50%; background: var(--fg-soft); transition: transform 160ms ease, background 160ms ease; }
+.sw.on { background: linear-gradient(135deg, var(--accent), var(--accent-strong)); border-color: transparent; }
+.sw.on::after { transform: translateX(15px); background: #171104; }
+.sw:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
+.chip-row { display: flex; gap: 6px; flex-wrap: wrap; }
+.chip { padding: 6px 11px; border-radius: 9px; background: var(--surface); border: 1px solid var(--border); font-size: 9.5px; color: var(--fg-soft); cursor: pointer; transition: border-color 150ms ease, color 150ms ease, background 150ms ease; }
+.chip:hover { border-color: var(--border-strong); }
+.chip:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+
+.quick-row { display: flex; gap: 7px; }
+.quick-row button { flex: 1; }
+
+.setn-footer { flex: none; display: flex; gap: 9px; padding: 11px 14px 16px; border-top: 1px solid var(--border); background: oklch(18% 0.013 70 / 0.9); }
+
+/* ---------- Phone 5 · 开始冒险 session（概览 + 历史列表） ---------- */
+.sess { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.sess-nav { display: flex; align-items: center; height: 54px; gap: 10px; flex: none; padding: 0 16px; }
+.sess-nav h2 { flex: 1; text-align: center; font-size: 15px; font-weight: 700; letter-spacing: .03em; }
+.sess-nav .spacer { width: 34px; flex: none; }
+.back-btn { width: 34px; height: 34px; flex: none; border-radius: 10px; display: flex; align-items: center; justify-content: center; color: var(--fg-soft); background: var(--surface); border: 1px solid var(--border); cursor: pointer; transition: border-color 160ms ease, color 160ms ease, background 160ms ease; }
+.back-btn:hover { background: var(--surface-2); border-color: var(--border-strong); color: var(--fg); }
+.back-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.back-btn svg { width: 17px; height: 17px; }
+
+.sess-cta-wrap { flex: none; margin: 4px 16px 12px; }
+.cta {
+  display: flex; align-items: center; justify-content: center; gap: 9px; width: 100%; height: 48px; border-radius: 22px;
+  background: linear-gradient(160deg, var(--accent), var(--accent-strong)); color: #171104; font-size: 14px; font-weight: 900;
+  font-family: var(--font-body); border: none; cursor: pointer;
+  box-shadow: 0 14px 30px -12px oklch(75% 0.14 80 / 0.7), inset 0 1px 0 oklch(100% 0 0 / 0.4);
+  transition: transform 160ms ease, filter 160ms ease;
+}
+.cta svg { width: 15px; height: 15px; }
+.cta .mono { font-size: 9.5px; font-weight: 700; letter-spacing: .03em; color: color-mix(in oklch, var(--accent-strong) 60%, #171104); }
+.cta:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.cta:active { transform: translateY(0) scale(.985); }
+.cta:focus-visible { outline: 2px solid var(--fg); outline-offset: 3px; }
+
+.sess-stats { display: flex; gap: 8px; margin: 0 16px 14px; flex: none; }
+.sess-stat { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; padding: 10px 6px; border-radius: 13px; background: var(--surface); border: 1px solid var(--border); }
+.sess-stat b { font-family: var(--font-mono); font-size: 15px; color: var(--accent); font-weight: 700; }
+.sess-stat span { font-size: 9px; color: var(--faint); letter-spacing: .02em; }
+
+.sess-list-title { display: flex; justify-content: space-between; align-items: baseline; margin: 0 16px 9px; flex: none; }
+.sess-list-title span:first-child { font-size: 13px; font-weight: 700; }
+.sess-list-title .mono { font-size: 8.5px; color: var(--faint); letter-spacing: .1em; }
+
+.sess-list { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px 8px; }
+.conv-item { display: flex; align-items: center; gap: 10px; padding: 10px 11px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); margin-bottom: 8px; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease, background 160ms ease; }
+.conv-item:hover { border-color: var(--border-strong); background: var(--surface-2); transform: translateX(2px); }
+.conv-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.conv-avatar { width: 40px; height: 40px; flex: none; border-radius: 12px; background: linear-gradient(160deg, oklch(68% 0.16 40), oklch(46% 0.12 20)); display: flex; align-items: center; justify-content: center; border: 1px solid oklch(80% 0.1 45 / 0.5); }
+.conv-avatar span { font-family: var(--font-serif); font-size: 15px; font-weight: 900; color: #1b0b05; }
+.conv-body { flex: 1; min-width: 0; }
+.conv-body h4 { font-size: 12.5px; font-weight: 700; margin-bottom: 2px; }
+.conv-body p { font-size: 10px; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.conv-meta { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+.conv-meta time { font-size: 8.5px; color: var(--faint); font-family: var(--font-mono); }
+.conv-meta .count { font-size: 8.5px; color: var(--muted); font-family: var(--font-mono); }
+.conv-del { flex: none; width: 26px; height: 26px; border-radius: 8px; display: flex; align-items: center; justify-content: center; color: var(--faint); background: none; border: none; cursor: pointer; transition: color 150ms ease, background 150ms ease; }
+.conv-del:hover { color: var(--danger); background: color-mix(in oklch, var(--danger) 14%, transparent); }
+.conv-del:focus-visible { outline: 2px solid var(--danger); outline-offset: 1px; }
+.conv-del svg { width: 13px; height: 13px; }
+
+/* ---------- Phone 6 · 新建对话 new-conversation（完全套用上一版 session 详情页结构） ---------- */
+.sess { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.sess-nav { display: flex; align-items: center; height: 54px; gap: 10px; flex: none; padding: 0 16px; }
+.sess-nav h2 { flex: 1; text-align: center; font-size: 15px; font-weight: 700; letter-spacing: .03em; }
+.sess-nav .spacer { width: 34px; flex: none; }
+
+.sess-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px 8px; }
+
+.sess-hero { position: relative; border-radius: 18px; padding: 14px 15px 13px; margin-bottom: 12px; overflow: hidden; background: linear-gradient(165deg, oklch(30% 0.07 80), oklch(20% 0.045 80) 58%, oklch(16% 0.03 70)); border: 1px solid oklch(80% 0.13 84 / 0.38); }
+.sess-hero::before { content: ""; position: absolute; inset: 0; background: radial-gradient(220px 150px at 88% -22px, oklch(75% 0.14 82 / 0.3), transparent 70%); pointer-events: none; }
+.sess-hero-top { display: flex; gap: 11px; align-items: center; position: relative; margin-bottom: 9px; }
+.sess-icon { width: 42px; height: 42px; flex: none; border-radius: 13px; background: linear-gradient(160deg, oklch(78% 0.13 82), oklch(64% 0.13 70)); display: flex; align-items: center; justify-content: center; border: 1px solid oklch(85% 0.1 84 / 0.5); box-shadow: 0 0 20px -6px oklch(75% 0.14 80 / 0.6); }
+.sess-icon svg { width: 20px; height: 20px; color: #1b1204; }
+.sess-hero h1 { font-family: var(--font-serif); font-size: 18px; font-weight: 900; color: var(--fg); line-height: 1.2; margin-bottom: 3px; }
+.sess-hero .sub { font-size: 10px; color: oklch(88% 0.04 80 / 0.85); line-height: 1.5; }
+.sess-hero p.desc { font-size: 10.5px; color: oklch(90% 0.02 80 / 0.9); line-height: 1.55; position: relative; }
+
+.equip-row { display: flex; gap: 8px; margin-bottom: 14px; flex: none; }
+.equip-chip { flex: 1; min-width: 0; display: flex; flex-direction: column; align-items: center; gap: 6px; padding: 10px 6px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); text-align: center; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease; }
+.equip-chip:hover { border-color: color-mix(in oklch, var(--tc) 50%, var(--border)); transform: translateY(-1px); }
+.equip-chip:focus-visible { outline: 2px solid var(--tc); outline-offset: 2px; }
+.equip-chip .g { width: 26px; height: 26px; border-radius: 9px; display: flex; align-items: center; justify-content: center; background: color-mix(in oklch, var(--tc) 16%, transparent); color: var(--tc); flex: none; }
+.equip-chip .g svg { width: 14px; height: 14px; }
+.equip-chip b { display: block; font-size: 10.5px; color: var(--fg); font-weight: 700; }
+.equip-chip span { display: block; font-size: 8px; color: var(--faint); font-family: var(--font-mono); margin-top: 1px; letter-spacing: .01em; }
+
+.steps-title { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 9px; flex: none; }
+.steps-title span:first-child { font-size: 13px; font-weight: 700; }
+.steps-title .mono { font-size: 8.5px; color: var(--faint); letter-spacing: .1em; }
+.step { display: flex; align-items: center; gap: 11px; padding: 10px 12px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); margin-bottom: 8px; cursor: pointer; transition: border-color 160ms ease, transform 160ms ease; }
+.step:not(.locked):hover { border-color: var(--border-strong); transform: translateX(2px); }
+.step:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.step .idx { width: 25px; height: 25px; flex: none; border-radius: 9px; display: flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 11px; font-weight: 700; }
+.step .idx svg { width: 13px; height: 13px; }
+.step .idx .chk { display: none; }
+.step .txt { flex: 1; min-width: 0; }
+.step .txt b { display: block; font-size: 12px; font-weight: 700; color: var(--fg); }
+.step .txt span { display: block; font-size: 9px; color: var(--faint); margin-top: 1.5px; }
+.step.done { border-color: oklch(74% 0.14 152 / 0.38); }
+.step.done .idx { background: color-mix(in oklch, var(--success) 17%, transparent); color: var(--success); }
+.step.done .idx .n { display: none; }
+.step.done .idx .chk { display: block; }
+.step.done .txt span { color: color-mix(in oklch, var(--success) 82%, var(--muted)); }
+.step.pending .idx { background: var(--surface-2); color: var(--accent); border: 1px dashed oklch(80% 0.13 84 / 0.5); }
+
+.sess-cta-wrap { flex: none; margin: 4px 0 12px; }
+
+/* ---------- Phone 6 附加：新建对话页面标识（保留自旧版结构） ---------- */
+.newconv { flex: 1; display: flex; flex-direction: column; min-height: 0; }
+.newconv-head { flex: none; padding: 16px 16px 12px; }
+.newconv-head h1 { font-family: var(--font-serif); font-size: 18px; font-weight: 900; margin-bottom: 4px; }
+.newconv-head p { font-size: 10.5px; color: var(--faint); }
+.newconv-step-tag { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 8.5px; color: var(--accent); letter-spacing: .12em; margin-bottom: 8px; }
+.newconv-scroll { flex: 1; min-height: 0; overflow-y: auto; padding: 0 16px 8px; }
+.card-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.card-item { border-radius: 15px; padding: 12px 10px; background: var(--surface); border: 1.5px solid var(--border); display: flex; flex-direction: column; align-items: center; text-align: center; cursor: pointer; transition: border-color 160ms ease, background 160ms ease, transform 160ms ease; }
+.card-item:hover { transform: translateY(-1px); border-color: var(--border-strong); }
+.card-item:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.card-item.selected { border-color: var(--accent); background: linear-gradient(160deg, oklch(25% 0.025 80), var(--surface)); }
+.card-item .avatar { width: 44px; height: 44px; border-radius: 13px; background: linear-gradient(160deg, oklch(68% 0.16 40), oklch(46% 0.12 20)); display: flex; align-items: center; justify-content: center; margin-bottom: 8px; border: 1px solid oklch(80% 0.1 45 / 0.5); }
+.card-item .avatar span { font-family: var(--font-serif); font-size: 17px; font-weight: 900; color: #1b0b05; }
+.card-item .cname { font-size: 12px; font-weight: 700; color: var(--fg); margin-bottom: 3px; }
+.card-item .cdesc { font-size: 9px; color: var(--faint); line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.card-item .check { position: absolute; }
+.card-item.selected .cname { color: var(--accent); }
+
+.select-block { margin-bottom: 16px; }
+.select-label { display: block; font-size: 11px; font-weight: 700; color: var(--fg-soft); margin-bottom: 8px; }
+.select-value { display: flex; align-items: center; justify-content: space-between; padding: 12px 14px; border-radius: 13px; background: var(--surface); border: 1px solid var(--border); font-size: 12px; color: var(--accent); font-weight: 600; cursor: pointer; transition: border-color 160ms ease; }
+.select-value:hover { border-color: var(--border-strong); }
+.select-value:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.select-value svg { width: 14px; height: 14px; color: var(--faint); flex: none; }
+.newconv-summary { display: flex; align-items: center; gap: 10px; padding: 11px; border-radius: 14px; background: var(--surface); border: 1px solid var(--border); margin-bottom: 18px; }
+.newconv-summary .avatar { width: 38px; height: 38px; border-radius: 11px; flex: none; background: linear-gradient(160deg, oklch(68% 0.16 40), oklch(46% 0.12 20)); display: flex; align-items: center; justify-content: center; border: 1px solid oklch(80% 0.1 45 / 0.5); }
+.newconv-summary .avatar span { font-family: var(--font-serif); font-size: 14px; font-weight: 900; color: #1b0b05; }
+.newconv-summary .info h4 { font-size: 12px; font-weight: 700; margin-bottom: 2px; }
+.newconv-summary .info p { font-size: 9.5px; color: var(--faint); }
+
+.newconv-footer { flex: none; display: flex; gap: 9px; padding: 11px 16px 16px; border-top: 1px solid var(--border); background: oklch(18% 0.013 70 / 0.9); }
+.newconv-footer .btn-ghost { flex: 1; }
+.newconv-footer .cta { flex: 1.6; margin: 0; }
+
+/* ---------- Phone 7 · 品牌封面 ---------- */
+.cover { position: relative; flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-start; text-align: center; padding: 38px 26px 26px; }
+.cover::before { content: ""; position: absolute; inset: 0; background: radial-gradient(380px 320px at 50% -40px, oklch(70% 0.13 80 / 0.17), transparent 70%); pointer-events: none; }
+.cover-eyebrow { font-family: var(--font-mono); font-size: 9.5px; color: var(--accent); letter-spacing: .26em; margin-bottom: 20px; }
+.cover-crest { width: 74px; height: 74px; margin-bottom: 24px; border-radius: 21px; overflow: hidden; background: linear-gradient(160deg, oklch(29% 0.05 80), oklch(20% 0.03 80)); border: 1px solid oklch(80% 0.13 84 / 0.45); display: flex; align-items: center; justify-content: center; box-shadow: 0 0 36px -6px oklch(75% 0.13 80 / 0.5), inset 0 0 20px oklch(75% 0.12 80 / 0.16); }
+.cover-crest img { width: 100%; height: 100%; object-fit: cover; }
+.cover h1 { font-family: var(--font-serif); font-size: 32px; font-weight: 900; line-height: 1.32; letter-spacing: .015em; margin-bottom: 14px; text-wrap: balance; }
+.cover h1 em { font-style: normal; color: var(--accent); text-shadow: 0 0 28px oklch(78% 0.13 82 / 0.45); }
+.cover-body { font-family: var(--font-serif); font-size: 13.5px; line-height: 1.9; color: var(--muted); max-width: 285px; margin-bottom: 22px; }
+.cover-tip { font-family: var(--font-mono); font-size: 9px; color: var(--faint); line-height: 1.8; letter-spacing: .08em; }
+.cover-tip b { color: var(--accent); font-weight: 500; }
+
+.teaser { position: absolute; left: 14px; right: 14px; bottom: 22px; z-index: 6; }
+.teaser-head { display: flex; justify-content: space-between; align-items: center; margin-bottom: 9px; }
+.teaser-head .mono { font-size: 9px; color: var(--muted); letter-spacing: .16em; }
+.teaser-head .more { display: flex; align-items: center; gap: 3px; font-size: 9px; color: var(--accent); letter-spacing: .1em; }
+.teaser-head .more svg { width: 11px; height: 11px; }
+.teaser-viewport { overflow: hidden; border: 1px solid var(--border); border-radius: 16px; background: oklch(22% 0.016 70 / 0.72); -webkit-backdrop-filter: blur(14px); backdrop-filter: blur(14px); }
+.teaser-track { display: flex; width: max-content; padding: 12px 0; animation: teaser-scroll 3.4s linear infinite; animation-iteration-count: 4; }
+.teaser-track:hover { animation-play-state: paused; }
+.teaser-chip { flex: none; display: flex; align-items: center; gap: 7px; padding: 8px 13px; margin-right: 8px; border-radius: 10px; background: var(--surface-2); border: 1px solid var(--border); font-size: 11px; color: var(--fg-soft); white-space: nowrap; }
+.teaser-chip b { color: var(--accent); font-weight: 700; font-family: var(--font-mono); font-size: 10px; letter-spacing: .02em; }
+@keyframes teaser-scroll { to { transform: translateX(-50%); } }
+.setn-footer .btn-ghost { flex: 1; }
+.setn-footer .btn-primary { flex: 1.4; }
+</style>
+</head>
+<body>
+<div class="stage">
+  <div class="stage-inner">
+    <div class="stage-head">
+      <span class="mono stage-brand">无限旅团 <em>· 核心页面高保真设计</em></span>
+      <span class="mono">HI-FI PROTOTYPE · MOBILE-FIRST H5</span>
+    </div>
+    <div class="legend-row">
+      <span class="legend-chip"><b>01</b>首页 index</span>
+      <span class="legend-chip"><b>02</b>登录/注册 login</span>
+      <span class="legend-chip"><b>03</b>当前冒险 chat</span>
+      <span class="legend-chip"><b>04</b>模型设置 settings</span>
+      <span class="legend-chip"><b>05</b>开始冒险 session</span>
+      <span class="legend-chip"><b>06</b>新建对话 new-conversation</span>
+      <span class="legend-chip"><b>07</b>品牌封面 早期探索</span>
+    </div>
+    <div class="phones">
+      <!-- PHONE_01 -->
+      <div class="phone-col">
+        <span class="phone-label">01 <b>首页</b> · pages/index/index.vue</span>
+        <div class="phone" data-od-id="phone-home">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="home-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app/index</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="home" data-od-id="home-scroll">
+              <div class="greet-row" data-od-id="home-greeting">
+                <div class="greet">
+                  <div class="home-crest"><img src="assets/dragon-logo.png" alt="无限旅团"></div>
+                  <div>
+                    <h2>早上好，旅团长</h2>
+                    <span class="mono">无限旅团 · 你的专属奇幻世界</span>
+                  </div>
+                </div>
+                <button class="bell-btn" data-od-id="home-notify-btn" aria-label="通知" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M5 8a5 5 0 1 1 10 0c0 4.2 1.6 5 1.6 5H3.4S5 12.2 5 8z"/><path d="M8.6 15.8a1.6 1.6 0 0 0 2.4 0"/></svg>
+                  <span class="dot"></span>
+                </button>
+              </div>
+
+              <div class="ribbon" data-od-id="home-level-ribbon">
+                <div class="ribbon-lv" aria-hidden="true"><b>14</b><span>LV</span></div>
+                <div class="ribbon-mid">
+                  <div class="ribbon-title">
+                    <span>第 14 级 · 旅团长</span>
+                    <span class="mono">LV 14</span>
+                  </div>
+                  <div class="progress" role="progressbar" aria-valuenow="1648" aria-valuemin="0" aria-valuemax="2480" aria-label="经验进度"><i></i></div>
+                  <div class="ribbon-xp">1648 / 2480 XP</div>
+                </div>
+              </div>
+
+              <p class="sub-line" data-od-id="home-subline"><span><b>7</b> 项功能</span><span>继续冒险赚 <b>+120 XP</b></span></p>
+
+              <div class="quest-grid" data-od-id="home-quest-grid">
+                <div class="quest-tile" data-od-id="menu-session" style="--tint:var(--t-amber)" tabindex="0" role="button">
+                  <span class="glyph"><svg viewBox="0 0 20 20" fill="none"><path d="M3 4h14v9H8l-3 3v-3H3V4z" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/></svg></span>
+                  <h3>开始对话</h3>
+                  <p class="meta">继续历史对话或选卡新建</p>
+                  <span class="xp">+120 XP</span>
+                </div>
+                <div class="quest-tile" data-od-id="menu-characters" style="--tint:var(--t-violet)" tabindex="0" role="button">
+                  <span class="glyph"><svg viewBox="0 0 20 20" fill="none"><rect x="3" y="4" width="14" height="12" rx="2" stroke="currentColor" stroke-width="1.6"/><path d="M3 8h14" stroke="currentColor" stroke-width="1.6"/></svg></span>
+                  <h3>角色卡库</h3>
+                  <p class="meta">AI 扮演角色管理</p>
+                  <span class="xp">+40 XP</span>
+                </div>
+                <div class="quest-tile" data-od-id="menu-collect" style="--tint:var(--t-gold)" tabindex="0" role="button">
+                  <span class="glyph"><svg viewBox="0 0 20 20" fill="none"><path d="M10 3l2.2 4.4 4.8.7-3.5 3.4.8 4.8L10 14l-4.3 2.3.8-4.8L3 8.1l4.8-.7L10 3z" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"/></svg></span>
+                  <h3>传奇收藏</h3>
+                  <p class="meta">查看收集的特性物品</p>
+                  <span class="xp">+30 XP</span>
+                </div>
+                <div class="quest-tile" data-od-id="menu-import" style="--tint:var(--t-teal)" tabindex="0" role="button">
+                  <span class="glyph"><svg viewBox="0 0 20 20" fill="none"><path d="M10 3v9m0 0l-3.5-3.5M10 12l3.5-3.5M4 15h12" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                  <h3>酒馆导入</h3>
+                  <p class="meta">角色卡 / 正侧 / 预设</p>
+                  <span class="xp">+25 XP</span>
+                </div>
+                <div class="quest-tile" data-od-id="menu-persona" style="--tint:var(--t-emerald)" tabindex="0" role="button">
+                  <span class="glyph"><svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="7" r="3" stroke="currentColor" stroke-width="1.6"/><path d="M4 17c0-3 2.7-5 6-5s6 2 6 5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg></span>
+                  <h3>我的角色</h3>
+                  <p class="meta">管理 Persona 身份</p>
+                  <span class="xp">+15 XP</span>
+                </div>
+                <div class="quest-tile" data-od-id="menu-settings" style="--tint:var(--muted)" tabindex="0" role="button">
+                  <span class="glyph"><svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="2.6" stroke="currentColor" stroke-width="1.6"/><path d="M10 3v2.2M10 14.8V17M3 10h2.2M14.8 10H17M5 5l1.6 1.6M13.4 13.4L15 15M15 5l-1.6 1.6M6.6 13.4L5 15" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg></span>
+                  <h3>设置</h3>
+                  <p class="meta">账号 / 模型参数</p>
+                  <span class="xp">+5 XP</span>
+                </div>
+              </div>
+            </div>
+
+            <nav class="tabbar" data-od-id="home-tabbar" aria-label="主导航">
+              <button class="tab active" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.3v1.7M10 16v1.7M2.3 10h1.7M16 10h1.7M4.6 4.6l1.2 1.2M14.2 14.2l1.2 1.2M15.4 4.6l-1.2 1.2M5.8 14.2l-1.2 1.2"/></svg>
+                <span>今日</span>
+              </button>
+              <button class="tab" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="11" height="10" rx="2"/><path d="M6.5 3.3h9a1.7 1.7 0 0 1 1.7 1.7v7.5"/></svg>
+                <span>角色</span>
+              </button>
+              <button class="tab tab-center" type="button" aria-label="新建冒险">
+                <span class="fab"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg></span>
+              </button>
+              <button class="tab" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M7 3h6l3 4-6 9-6-9 3-4z"/><path d="M3 7h14"/></svg>
+                <span>收藏</span>
+              </button>
+              <button class="tab" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="7" r="3.4"/><path d="M4 17c0-3.2 2.7-5 6-5s6 1.8 6 5"/></svg>
+                <span>我的</span>
+              </button>
+            </nav>
+          </div>
+        </div>
+      </div>
+      <!-- PHONE_02 -->
+      <div class="phone-col">
+        <span class="phone-label">02 <b>登录 / 注册</b> · pages/login/login.vue</span>
+        <div class="phone" data-od-id="phone-login">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="login-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app/login</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="auth" data-od-id="auth-screen">
+              <div class="auth-head">
+                <div class="auth-crest"><img src="assets/dragon-logo.png" alt="无限旅团"></div>
+                <h1>无限旅团</h1>
+                <p data-od-id="auth-subtitle">登录你的账号</p>
+              </div>
+
+              <div class="auth-tabs" data-od-id="auth-mode-tabs" role="tablist">
+                <button class="auth-tab active" role="tab" aria-selected="true" data-od-id="auth-tab-login">登录</button>
+                <button class="auth-tab" role="tab" aria-selected="false" data-od-id="auth-tab-register">注册</button>
+              </div>
+
+              <div class="auth-form" data-od-id="auth-form">
+                <div class="field">
+                  <label>用户名</label>
+                  <div class="input-wrap">
+                    <input type="text" placeholder="请输入用户名" value="admin">
+                  </div>
+                </div>
+                <div class="field">
+                  <label>密码</label>
+                  <div class="input-wrap">
+                    <input type="password" placeholder="请输入密码" value="••••">
+                    <button class="eye-btn" aria-label="显示密码" data-od-id="password-visibility-toggle">
+                      <svg viewBox="0 0 20 20" fill="none"><path d="M2 10s3-5.5 8-5.5S18 10 18 10s-3 5.5-8 5.5S2 10 2 10z" stroke="currentColor" stroke-width="1.4"/><circle cx="10" cy="10" r="2.3" stroke="currentColor" stroke-width="1.4"/></svg>
+                    </button>
+                  </div>
+                </div>
+
+                <button class="btn-primary" style="width:100%;margin-top:6px" data-od-id="auth-submit-cta">登录</button>
+
+                <div class="auth-hint" data-od-id="auth-test-account-hint" style="margin-top:16px">
+                  <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-width="1.3"/><path d="M8 7.2v3.4M8 5.4h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <p><b>测试账号：</b>admin / 123；注册的新账号同为测试账号，均可使用内置测试 API。</p>
+                </div>
+              </div>
+
+              <div class="auth-foot">
+                <button data-od-id="auth-mode-switch">没有账号？去注册</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- PHONE_03 -->
+      <div class="phone-col">
+        <span class="phone-label">03 <b>当前冒险</b> · pages/chat/chat.vue</span>
+        <div class="phone" data-od-id="phone-chat">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="chat-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app/chat</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="chat-screen" data-od-id="chat-screen">
+              <div class="chat-nav" data-od-id="chat-navbar">
+                <button class="nav-btn" data-od-id="chat-back-btn" aria-label="返回">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 4.5L7 10l5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="nav-title">
+                  <h2>炎法师 · 阿尔忒莉亚</h2>
+                  <span class="mono">CHAPTER 3 · 黑曜石塔</span>
+                </div>
+                <button class="nav-btn" data-od-id="chat-settings-btn" aria-label="对话设置">
+                  <svg viewBox="0 0 20 20" fill="none"><circle cx="10" cy="10" r="2.6" stroke="currentColor" stroke-width="1.5"/><path d="M10 3v2.2M10 14.8V17M3 10h2.2M14.8 10H17M5 5l1.6 1.6M13.4 13.4L15 15M15 5l-1.6 1.6M6.6 13.4L5 15" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+                </button>
+              </div>
+
+              <div class="hud-strip" data-od-id="chat-hud-strip">
+                <button class="hud-chip" data-od-id="open-status-btn">
+                  <svg viewBox="0 0 16 16" fill="none"><path d="M8 2l1.6 3.3 3.6.5-2.6 2.6.6 3.6L8 10.3l-3.2 1.7.6-3.6L2.8 5.8l3.6-.5L8 2z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></svg>
+                  <span class="hud-label">状态</span>
+                  <span class="hud-bar"><i style="width:72%;background:var(--danger)"></i></span>
+                </button>
+                <button class="hud-chip" data-od-id="open-inventory-btn">
+                  <svg viewBox="0 0 16 16" fill="none"><rect x="2" y="6" width="12" height="8" rx="1.5" stroke="currentColor" stroke-width="1.4"/><path d="M5 6V4.5A1.5 1.5 0 016.5 3h3A1.5 1.5 0 0111 4.5V6" stroke="currentColor" stroke-width="1.4"/></svg>
+                  <span class="hud-label">背包</span>
+                  <span class="hud-count mono">5</span>
+                </button>
+                <button class="hud-chip hud-dice" data-od-id="open-dice-btn">
+                  <svg viewBox="0 0 16 16" fill="none"><path d="M8 1.5l6 3.2v6.6L8 14.5l-6-3.2V4.7L8 1.5z" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/><circle cx="8" cy="8" r="1.1" fill="currentColor"/></svg>
+                  <span class="hud-label">D20</span>
+                </button>
+              </div>
+
+              <div class="chat-scroll" data-od-id="chat-message-list">
+                <div class="msg-system"><span>你踏入黑曜石塔的第三层，空气中弥漫着焦土的气味。</span></div>
+
+                <div class="msg-row" data-od-id="msg-ai-1">
+                  <div class="msg-avatar ai">炎</div>
+                  <div class="msg-col">
+                    <div class="bubble ai">火把的光在墙壁上摇晃，你注意到一道刻痕——那是通往地下密室的记号。要现在过去查看吗？</div>
+                  </div>
+                </div>
+
+                <div class="msg-row user" data-od-id="msg-user-1">
+                  <div class="msg-avatar user">我</div>
+                  <div class="msg-col">
+                    <div class="bubble user">我靠近刻痕，用手指描摹它的纹路，试着辨认这是哪个流派的符文。</div>
+                  </div>
+                </div>
+
+                <div class="msg-row" data-od-id="msg-ai-2">
+                  <div class="msg-avatar ai">炎</div>
+                  <div class="msg-col">
+                    <div class="bubble ai">符文泛起微弱的琥珀色光晕——这是「守夜者」流派的封印术，已经沉寂了至少三百年。你的指尖传来一阵刺痛感。<span class="cursor"></span></div>
+                    <div class="swipe-row" data-od-id="msg-ai-2-swipe">
+                      <button aria-label="上一条"><svg viewBox="0 0 12 12" fill="none"><path d="M7.5 2.5L4 6l3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                      <span>2/3</span>
+                      <button aria-label="下一条"><svg viewBox="0 0 12 12" fill="none"><path d="M4.5 2.5L8 6l-3.5 3.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></button>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="loading-row" data-od-id="chat-loading-state">
+                  <div class="msg-avatar ai">炎</div>
+                  <div class="loading-dots"><i></i><i></i><i></i></div>
+                </div>
+              </div>
+
+              <div class="chat-inputbar" data-od-id="chat-input-bar">
+                <div class="chat-inputfield">
+                  <input type="text" placeholder="输入消息...">
+                  <button class="send-btn" data-od-id="chat-send-btn" aria-label="发送">
+                    <svg viewBox="0 0 20 20" fill="none"><path d="M3 10l14-7-5 14-2.5-6L3 10z" fill="currentColor"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- PHONE_04 -->
+      <div class="phone-col">
+        <span class="phone-label">04 <b>模型设置</b> · pages/settings/settings.vue</span>
+        <div class="phone" data-od-id="phone-settings">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="settings-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app/settings</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="setn" data-od-id="settings-screen">
+              <div class="setn-head" data-od-id="settings-header">
+                <button class="back-btn" data-od-id="settings-back-btn" aria-label="返回">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 4.5L7 10l5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <div class="setn-title-col">
+                  <h1>模型设置</h1>
+                  <p>配置 AI 模型参数</p>
+                </div>
+                <span class="spacer"></span>
+              </div>
+
+              <div class="setn-scroll" data-od-id="settings-scroll">
+                <div class="info-card" data-od-id="settings-usage-hint">
+                  <svg viewBox="0 0 16 16" fill="none"><circle cx="8" cy="8" r="6.3" stroke="currentColor" stroke-width="1.3"/><path d="M8 7.2v3.4M8 5.4h.01" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>
+                  <p><b>使用说明</b>测试账号（含 admin）可直接使用内置测试 API；其他账号请填写 API Key（支持 DeepSeek 等 OpenAI 兼容接口）再开始对话。</p>
+                </div>
+
+                <div class="setn-section" data-od-id="settings-model-section">
+                  <span class="stitle">选择模型</span>
+                  <div class="model-list">
+                    <div class="model-row active" data-od-id="model-option-test" tabindex="0">
+                      <div class="mc"><h4>测试 API（内置）</h4><p>使用内置 DeepSeek 测试接口，无需配置 Key</p></div>
+                      <span class="check"><svg viewBox="0 0 12 12" fill="none"><path d="M2 6l2.6 2.6L10 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg></span>
+                    </div>
+                    <div class="model-row" data-od-id="model-option-hunyuan" tabindex="0">
+                      <div class="mc"><h4>腾讯混元</h4><p>腾讯自研的大语言模型（需要 API Key）</p></div>
+                      <span class="check"></span>
+                    </div>
+                    <div class="model-row" data-od-id="model-option-openai" tabindex="0">
+                      <div class="mc"><h4>OpenAI GPT</h4><p>GPT 系列模型（需要 API Key）</p></div>
+                      <span class="check"></span>
+                    </div>
+                    <div class="model-row" data-od-id="model-option-custom" tabindex="0">
+                      <div class="mc"><h4>自定义 API</h4><p>使用自己的 API 接口</p></div>
+                      <span class="check"></span>
+                    </div>
+                  </div>
+                  <span class="ssub" data-od-id="settings-test-model-note">已使用内置 DeepSeek 测试接口，无需额外配置即可直接对话</span>
+                </div>
+
+                <div class="setn-section" data-od-id="settings-renderer-section">
+                  <span class="stitle">渲染开关</span>
+                  <span class="ssub">控制 AI 回复中特殊标签是否渲染为交互组件</span>
+                  <div class="switch-group">
+                    <div class="switch-row"><span>Markdown 渲染</span><div class="sw on" role="switch" aria-checked="true" tabindex="0"></div></div>
+                    <div class="switch-row"><span>骰子标签渲染</span><div class="sw on" role="switch" aria-checked="true" tabindex="0"></div></div>
+                    <div class="switch-row"><span>HTML 组件渲染</span><div class="sw" role="switch" aria-checked="false" tabindex="0"></div></div>
+                  </div>
+                </div>
+
+                <div class="setn-section" data-od-id="settings-modules-section">
+                  <span class="stitle">功能模块</span>
+                  <span class="ssub">开启后在对话页显示对应的 TRPG 游戏机制面板</span>
+                  <div class="switch-group">
+                    <div class="switch-row"><span>角色状态面板</span><div class="sw on" role="switch" aria-checked="true" tabindex="0"></div></div>
+                    <div class="switch-row"><span>背包物品面板</span><div class="sw on" role="switch" aria-checked="true" tabindex="0"></div></div>
+                    <div class="switch-row"><span>骰子检定面板</span><div class="sw" role="switch" aria-checked="false" tabindex="0"></div></div>
+                  </div>
+                  <div class="quick-row" data-od-id="settings-module-presets">
+                    <button class="btn-ghost">自由聊天模式</button>
+                    <button class="btn-ghost">TRPG 模式</button>
+                  </div>
+                </div>
+
+                <div class="setn-section" data-od-id="settings-authornote-section">
+                  <span class="stitle">作者注</span>
+                  <span class="ssub">定时注入的全局提示，用于强调设定 / 风格 / 状态</span>
+                  <div class="field" style="margin-bottom:0">
+                    <label>作者注内容</label>
+                    <textarea placeholder="例如：角色正保持谨慎，注意周围环境…"></textarea>
+                  </div>
+                  <div class="field" style="margin-bottom:0">
+                    <label>注入位置</label>
+                    <div class="chip-row">
+                      <span class="chip active">聊天中</span>
+                      <span class="chip">聊天前</span>
+                      <span class="chip">聊天后</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="setn-footer" data-od-id="settings-footer-actions">
+                <button class="btn-ghost" data-od-id="settings-reset-btn">重置默认</button>
+                <button class="btn-primary" data-od-id="settings-save-btn">保存设置</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- PHONE_05 -->
+      <div class="phone-col">
+        <span class="phone-label">05 <b>开始冒险</b> · pages/session/session.vue</span>
+        <div class="phone" data-od-id="phone-session">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="session-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app/session</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="sess" data-od-id="session-screen">
+              <div class="sess-nav" data-od-id="session-navbar">
+                <button class="back-btn" data-od-id="session-back-btn" aria-label="返回">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 4.5L7 10l5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <h2>开始冒险</h2>
+                <span class="spacer"></span>
+              </div>
+
+              <div class="sess-cta-wrap" data-od-id="session-new-conversation-cta-wrap">
+                <button class="cta" data-od-id="session-new-conversation-cta" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg>
+                  <span class="cta-label">新建对话</span>
+                </button>
+              </div>
+
+              <div class="sess-stats" data-od-id="session-overview-stats">
+                <div class="sess-stat"><b>24</b><span>角色卡</span></div>
+                <div class="sess-stat"><b>3</b><span>预设</span></div>
+                <div class="sess-stat"><b>2</b><span>正侧</span></div>
+                <div class="sess-stat"><b>2</b><span>Persona</span></div>
+              </div>
+
+              <div class="sess-list-title" data-od-id="session-history-title">
+                <span>历史对话</span>
+                <span class="mono">3 条记录</span>
+              </div>
+
+              <div class="sess-list" data-od-id="session-history-list">
+                <div class="conv-item" data-od-id="conv-item-1" tabindex="0">
+                  <div class="conv-avatar"><span>瑟</span></div>
+                  <div class="conv-body">
+                    <h4>瑟拉芬·灰烬</h4>
+                    <p>王都北境的古堡燃起黑焰，传闻是失落的炎魔之核…</p>
+                  </div>
+                  <div class="conv-meta">
+                    <time>12 分钟前</time>
+                    <span class="count">86 条</span>
+                  </div>
+                  <button class="conv-del" data-od-id="conv-item-1-delete" aria-label="删除">
+                    <svg viewBox="0 0 16 16" fill="none"><path d="M3.5 4.5h9M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8a1.5 1.5 0 0 0 1.5 1.4h2.8a1.5 1.5 0 0 0 1.5-1.4l.6-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                </div>
+                <div class="conv-item" data-od-id="conv-item-2" tabindex="0">
+                  <div class="conv-avatar"><span>凛</span></div>
+                  <div class="conv-body">
+                    <h4>凛雪·夜巡者</h4>
+                    <p>你确定要走这条路吗？雾里的东西可不讲道理。</p>
+                  </div>
+                  <div class="conv-meta">
+                    <time>昨天</time>
+                    <span class="count">142 条</span>
+                  </div>
+                  <button class="conv-del" data-od-id="conv-item-2-delete" aria-label="删除">
+                    <svg viewBox="0 0 16 16" fill="none"><path d="M3.5 4.5h9M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8a1.5 1.5 0 0 0 1.5 1.4h2.8a1.5 1.5 0 0 0 1.5-1.4l.6-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                </div>
+                <div class="conv-item" data-od-id="conv-item-3" tabindex="0">
+                  <div class="conv-avatar"><span>阿</span></div>
+                  <div class="conv-body">
+                    <h4>阿尔忒莉亚</h4>
+                    <p>黑曜石塔第 3 章 · 符文泛起微弱的琥珀色光晕…</p>
+                  </div>
+                  <div class="conv-meta">
+                    <time>3 天前</time>
+                    <span class="count">57 条</span>
+                  </div>
+                  <button class="conv-del" data-od-id="conv-item-3-delete" aria-label="删除">
+                    <svg viewBox="0 0 16 16" fill="none"><path d="M3.5 4.5h9M6.5 4.5V3a1 1 0 0 1 1-1h1a1 1 0 0 1 1 1v1.5M4.5 4.5l.6 8a1.5 1.5 0 0 0 1.5 1.4h2.8a1.5 1.5 0 0 0 1.5-1.4l.6-8" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <nav class="tabbar" data-od-id="session-tabbar" aria-label="主导航">
+              <button class="tab" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.3v1.7M10 16v1.7M2.3 10h1.7M16 10h1.7M4.6 4.6l1.2 1.2M14.2 14.2l1.2 1.2M15.4 4.6l-1.2 1.2M5.8 14.2l-1.2 1.2"/></svg>
+                <span>今日</span>
+              </button>
+              <button class="tab active" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="11" height="10" rx="2"/><path d="M6.5 3.3h9a1.7 1.7 0 0 1 1.7 1.7v7.5"/></svg>
+                <span>角色</span>
+              </button>
+              <button class="tab tab-center" type="button" aria-label="新建冒险">
+                <span class="fab"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg></span>
+              </button>
+              <button class="tab" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M7 3h6l3 4-6 9-6-9 3-4z"/><path d="M3 7h14"/></svg>
+                <span>收藏</span>
+              </button>
+              <button class="tab" type="button">
+                <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="7" r="3.4"/><path d="M4 17c0-3.2 2.7-5 6-5s6 1.8 6 5"/></svg>
+                <span>我的</span>
+              </button>
+            </nav>
+          </div>
+        </div>
+      </div>
+      <!-- PHONE_06 -->
+      <div class="phone-col">
+        <span class="phone-label">06 <b>新建对话</b> · pages/session/new-conversation.vue</span>
+        <div class="phone" data-od-id="phone-new-conversation">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="newconv-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app/session/new</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="sess" data-od-id="session-screen">
+              <div class="sess-nav" data-od-id="session-navbar">
+                <button class="back-btn" data-od-id="session-back-btn" aria-label="返回">
+                  <svg viewBox="0 0 20 20" fill="none"><path d="M12.5 4.5L7 10l5.5 5.5" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+                </button>
+                <h2>开始冒险</h2>
+                <span class="spacer"></span>
+              </div>
+
+              <div class="sess-scroll" data-od-id="session-scroll">
+                <div class="sess-hero" data-od-id="session-hero">
+                  <div class="sess-hero-top">
+                    <div class="sess-icon"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6"/><path d="M13.5 3.5l4 4-2 2-4-4 2-2z"/><path d="M15.5 5.5l2.5-2.5"/><path d="M8.5 11.5l3 3-4.5 1.5 1.5-4.5z"/></svg></div>
+                    <div>
+                      <h1>瑟拉芬的冒险</h1>
+                      <p class="sub">继续对话 · 上次更新 12 分钟前</p>
+                    </div>
+                  </div>
+                  <p class="desc">王都北境的古堡燃起黑焰，传闻是失落的炎魔之核再度苏醒。带上你的旅团伙伴与行囊，这将是一场考验智慧与勇气的冒险。</p>
+                </div>
+
+                <div class="equip-row" data-od-id="session-equip-row">
+                  <div class="equip-chip" data-od-id="equip-persona" style="--tc: var(--t-emerald)" tabindex="0" role="button">
+                    <span class="g"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="7" r="3"/><path d="M4 17c0-3 2.7-5 6-5s6 2 6 5"/></svg></span>
+                    <b>出场角色</b>
+                    <span>Sam · Persona</span>
+                  </div>
+                  <div class="equip-chip" data-od-id="equip-inventory" style="--tc: var(--t-gold)" tabindex="0" role="button">
+                    <span class="g"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M5 9h10l-1 8H6L5 9z"/><path d="M8 9V7a2 2 0 0 1 4 0v2"/></svg></span>
+                    <b>携带物品</b>
+                    <span>6 件</span>
+                  </div>
+                  <div class="equip-chip" data-od-id="equip-traits" style="--tc: var(--t-violet)" tabindex="0" role="button">
+                    <span class="g"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 2.5l2 4 4.4.6-3.2 3.1.8 4.3L10 12.4l-4 2.1.8-4.3-3.2-3.1 4.4-.6 2-4z"/></svg></span>
+                    <b>人物特性</b>
+                    <span>3 项加成</span>
+                  </div>
+                </div>
+
+                <div class="steps-title" data-od-id="session-checklist-title">
+                  <span>出发清单</span>
+                  <span class="mono">1 / 4 完成</span>
+                </div>
+                <div data-od-id="session-checklist">
+                  <div class="step done" data-od-id="checklist-card" tabindex="0" role="checkbox" aria-checked="true">
+                    <span class="idx"><span class="n">1</span><span class="chk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg></span></span>
+                    <span class="txt"><b>绑定角色卡</b><span>瑟拉芬·灰烬 · 炎法师 Lv 12</span></span>
+                  </div>
+                  <div class="step pending" data-od-id="checklist-api" tabindex="0" role="checkbox" aria-checked="false">
+                    <span class="idx"><span class="n">2</span><span class="chk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg></span></span>
+                    <span class="txt"><b>API 检查</b><span>模型连接与密钥状态正常</span></span>
+                  </div>
+                  <div class="step pending" data-od-id="checklist-preset" tabindex="0" role="checkbox" aria-checked="false">
+                    <span class="idx"><span class="n">3</span><span class="chk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg></span></span>
+                    <span class="txt"><b>预设检查</b><span>默认预设 · 生成参数已加载</span></span>
+                  </div>
+                  <div class="step pending" data-od-id="checklist-regex" tabindex="0" role="checkbox" aria-checked="false">
+                    <span class="idx"><span class="n">4</span><span class="chk"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 12.5l5 5 10-11"/></svg></span></span>
+                    <span class="txt"><b>正侧配置</b><span>2 条正则替换规则已启用</span></span>
+                  </div>
+                </div>
+
+                <div class="sess-cta-wrap" data-od-id="session-start-cta-wrap">
+                  <button class="cta" data-od-id="session-start-cta" type="button">
+                    <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round"><path d="M3 17l6-6"/><path d="M13.5 3.5l4 4-2 2-4-4 2-2z"/><path d="M15.5 5.5l2.5-2.5"/><path d="M8.5 11.5l3 3-4.5 1.5 1.5-4.5z"/></svg>
+                    <span class="cta-label">开始冒险</span>
+                  </button>
+                </div>
+              </div>
+
+              <nav class="tabbar" data-od-id="newconv-tabbar" aria-label="主导航">
+                <button class="tab" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.3v1.7M10 16v1.7M2.3 10h1.7M16 10h1.7M4.6 4.6l1.2 1.2M14.2 14.2l1.2 1.2M15.4 4.6l-1.2 1.2M5.8 14.2l-1.2 1.2"/></svg>
+                  <span>今日</span>
+                </button>
+                <button class="tab active" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><rect x="2.5" y="5" width="11" height="10" rx="2"/><path d="M6.5 3.3h9a1.7 1.7 0 0 1 1.7 1.7v7.5"/></svg>
+                  <span>角色</span>
+                </button>
+                <button class="tab tab-center" type="button" aria-label="新建冒险">
+                  <span class="fab"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 4v12M4 10h12"/></svg></span>
+                </button>
+                <button class="tab" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M7 3h6l3 4-6 9-6-9 3-4z"/><path d="M3 7h14"/></svg>
+                  <span>收藏</span>
+                </button>
+                <button class="tab" type="button">
+                  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><circle cx="10" cy="7" r="3.4"/><path d="M4 17c0-3.2 2.7-5 6-5s6 1.8 6 5"/></svg>
+                  <span>我的</span>
+                </button>
+              </nav>
+            </div>
+          </div>
+        </div>
+      </div>
+      <!-- PHONE_07 -->
+      <div class="phone-col">
+        <span class="phone-label">07 <b>品牌封面</b> · 早期方向探索</span>
+        <div class="phone" data-od-id="phone-cover">
+          <div class="phone-screen">
+            <div class="statusbar">
+              <span>9:41</span>
+              <span class="icons">
+                <svg viewBox="0 0 20 12" fill="none"><path d="M1 8h2v3H1zM5 5h2v6H5zM9 2h2v9H9zM13 0h2v11h-2z" fill="currentColor"/></svg>
+                <svg viewBox="0 0 24 12" fill="none"><rect x="1" y="1.5" width="19" height="9" rx="2.5" stroke="currentColor" stroke-width="1.3"/><rect x="21.5" y="4" width="1.6" height="4" rx="0.6" fill="currentColor"/><rect x="2.5" y="3" width="15" height="6" rx="1.3" fill="currentColor"/></svg>
+              </span>
+            </div>
+            <div class="browserbar" data-od-id="cover-browserbar">
+              <div class="addr"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect x="5" y="9" width="10" height="8" rx="2"/><path d="M7 9V6.5a3 3 0 0 1 6 0V9"/></svg><span>wuxianlvtuan.app</span></div>
+              <button class="refresh" aria-label="刷新"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 10a6 6 0 0 1 10.2-4.2M16 10a6 6 0 0 1-10.2 4.2"/><path d="M14 3v3.5h-3.5M6 17v-3.5h3.5"/></svg></button>
+              <span class="tabs" aria-hidden="true">1</span>
+            </div>
+
+            <div class="cover" data-od-id="cover-screen">
+              <div class="cover-eyebrow">INFINITE TROUPE · 无限旅团</div>
+              <div class="cover-crest"><img src="assets/dragon-logo.png" alt="无限旅团"></div>
+              <h1 data-od-id="cover-headline">与传奇角色，开启<em>无限</em>冒险</h1>
+              <p class="cover-body" data-od-id="cover-body">AI 跑团搭档：导入酒馆角色卡，掷骰判定命运，收集传奇物品——在属于你的奇幻世界里，每一段对话都是一场冒险。</p>
+              <p class="cover-tip" data-od-id="cover-tip">TAP QUEST TO BEGIN · <b>点击任务卡</b>进入详情<br>工具栏可切换主题与布局</p>
+            </div>
+
+            <div class="teaser" data-od-id="cover-teaser">
+              <div class="teaser-head">
+                <span class="mono">今日冒险 · 预览</span>
+                <span class="more mono">查看全部
+                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M9 5l7 7-7 7"/></svg>
+                </span>
+              </div>
+              <div class="teaser-viewport">
+                <div class="teaser-track">
+                  <span class="teaser-chip">开始冒险 <b>+120 XP</b></span>
+                  <span class="teaser-chip">角色卡库 <b>+40 XP</b></span>
+                  <span class="teaser-chip">传奇收藏 <b>+30 XP</b></span>
+                  <span class="teaser-chip">酒馆导入 <b>+25 XP</b></span>
+                  <span class="teaser-chip" aria-hidden="true">开始冒险 <b>+120 XP</b></span>
+                  <span class="teaser-chip" aria-hidden="true">角色卡库 <b>+40 XP</b></span>
+                  <span class="teaser-chip" aria-hidden="true">传奇收藏 <b>+30 XP</b></span>
+                  <span class="teaser-chip" aria-hidden="true">酒馆导入 <b>+25 XP</b></span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

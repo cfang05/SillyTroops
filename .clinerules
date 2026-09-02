@@ -1,0 +1,31 @@
+# 项目背景与硬性约束 (Project Context & Hard Constraints)
+
+## 1. 技术栈与环境
+- 框架：uni-app (Vue 3 版本，选项式 API)
+- 目标平台：H5 (浏览器) 与 微信小程序 (MP-WEIXIN) 必须双端兼容。
+- 编译工具：HBuilderX  Vue CLI（基于 uni-app 官方编译工具）。
+
+## 2. 核心编码红线 (Critical Rules)
+### A. 模板结构 (Template)
+- 绝对禁止在 `template` 下出现多个并列根节点。
+- 即使是弹窗、遮罩层，也必须用一个唯一的 `view` 或 `div` 包裹所有内容。
+- 原因：虽然 Vue 3 支持 Fragment，但 uni-app 的跨端编译器强制要求单根节点，否则页面将无法挂载（白屏）。
+
+### B. 全局对象与 API (Global App & Storage)
+- 严禁依赖 `getApp()` 上的普通实例方法（如 `app.saveGameState()`）。
+- 只能安全使用 `getApp().globalData.xxx`。
+- 存储方案：禁止使用 `localStorage`、`sessionStorage` 或 `wx.setStorage`。必须统一使用 `uni.setStorageSync`  `uni.getStorageSync` 等 `uni.` 前缀的跨端 API。
+- 原因：H5 环境下 `getApp()` 不会挂载 `methods` 里的方法，调用会直接报错 `is not a function`。
+
+### C. 第三方库与平台特性
+- 除非使用 `#ifdef H5` 或 `#ifdef MP-WEIXIN` 条件编译包裹，否则禁止引入 Web 专属库（如 `axios`、`js-cookie`）或小程序专属库。
+- 网络请求必须使用 `uni.request`。
+
+## 3. 代码风格与迁移策略
+- 当前项目处于从旧版迁移重构状态，可能存在大量遗留的 Vue 2 或单一平台写法。
+- 当你发现潜在兼容性隐患时，请主动指出并提供带有 `#ifdef` 条件编译的双端兼容方案。
+- 修复 Bug 时，优先提供直接操作原生 API（如 uni.xxx） 的平替方案，尽量不要为了兼容而强行修改 `App.vue` 的全局结构。
+
+## 4. 调试与验证建议
+- 当提供解决方案时，请默认假设用户在 H5 端调试，但必须确保代码在小程序端编译不报错。
+- 在给出代码后，如果涉及生命周期或全局变量，请提醒用户“需要在微信开发者工具中额外验证”的地方。

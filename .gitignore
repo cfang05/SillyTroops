@@ -1,0 +1,5 @@
+node_modules
+.uniapp
+*.local
+.DS_Store
+*.log

@@ -1,0 +1,27 @@
+{
+  "name": "sillytroops-uni",
+  "appid": "__UNI__XXXXXXX",
+  "description": "迁移自微信小程序",
+  "versionName": "1.0.0",
+  "versionCode": "100",
+  "transformPx": false,
+  "app-plus": {
+    "usingComponents": true,
+    "nvueStyleCompiler": "uni-app",
+    "compilerVersion": 3
+  },
+  "quickapp": {},
+  "mp-weixin": {
+    "appid": "wx3a1552fe7d07e8ea",
+    "setting": {
+      "urlCheck": false,
+      "es6": true,
+      "postcss": true,
+      "minified": true
+    },
+    "usingComponents": true
+  },
+  "h5": {
+    "titleNView": false
+  }
+}
