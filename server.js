@@ -12,8 +12,14 @@ const path = require('path');
 const app = express();
 const PORT = process.env.PORT || 3000;
 
-// 解析 JSON 请求体（用于非代理路由）
-app.use(express.json());
+// 解析 JSON 请求体（仅用于非代理路由）。
+// ⚠️ 关键：/api/* 走代理，绝不能在这里用 express.json() 解析——它会消费并结束请求流，
+// 导致 http-proxy 转发给上游 LLM 的 body 为空、且上游请求流永不收尾；上游会一直等 body
+// 直到超时后重置连接（日志表现为 [HPM] ECONNRESET，前端表现为 loading 卡住）。
+app.use((req, res, next) => {
+  if (req.path.startsWith('/api')) return next();
+  express.json()(req, res, next);
+});
 
 // ========== 动态代理中间件：/api/* 请求转发到真实 API ==========
 app.use('/api', (req, res, next) => {
