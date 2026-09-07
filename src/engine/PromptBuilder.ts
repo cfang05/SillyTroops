@@ -103,7 +103,13 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   const buckets = scanResult.buckets
 
   // 世界书内容统一走 WORLD_INFO 正则（内部 placement=2，对齐酒馆 regex_placement.WORLD_INFO）
-  const wiRegex = (t: string) => applyRegexScripts(t, preset.regexScripts || [], 2)
+  // 修复：传入 vars（供 substituteRegex/trimStrings/replaceString 宏替换）
+  const wiRegex = (t: string, depth?: number) => applyRegexScripts(
+    t,
+    preset.regexScripts || [],
+    2,
+    { vars, isPrompt: true, depth }
+  )
 
   // ══════════ marker 内容映射 ══════════
   const emTop = buckets.emTop.map(t => wiRegex(t.trim())).filter(Boolean)
@@ -162,6 +168,23 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     systemBlock.push({ role: 'system', content: substituteVariables(markerContents.trpgStatus, vars) })
   }
 
+  // ══════════ 兜底注入缺失的 marker 提示词（对齐酒馆行为）══════════
+  // 即使用户删除了预设中的 marker 提示词，角色描述/世界书等内容仍能正常注入。
+  // 参考：referencecode/openai.js preparePromptsForChatCompletion 的 systemPrompts 合并逻辑。
+  const processedIdentifiers = new Set(orderedItems.map(i => i.identifier))
+  Object.entries(markerContents).forEach(([identifier, content]) => {
+    if (!content || !content.trim()) return
+    if (processedIdentifiers.has(identifier)) return  // 已在 promptOrder 中处理，跳过
+    
+    // 用户预设中没有这个 marker，使用默认配置注入到系统块末尾
+    const resolved = substituteVariables(content, vars)
+    systemBlock.push({ role: 'system', content: resolved })
+    
+    if (DEBUG_ENABLED) {
+      console.warn(`[PromptBuilder] 兜底注入缺失的 marker: ${identifier}`)
+    }
+  })
+
   // depth_prompt（角色注，extensions.depth_prompt）按 depth+role 注入历史深处
   const depthPrompt = character?.data?.extensions?.depth_prompt
   if (depthPrompt && typeof depthPrompt.prompt === 'string' && depthPrompt.prompt.trim()) {
@@ -192,7 +215,11 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   let history = _applyNamesBehavior(chatHistory, character, preset)
   history = _insertAbsoluteItems(history, absoluteItems, vars)
   // atDepth 世界书条目内容同样走 WORLD_INFO 正则后，按 depth+role 注入历史深处
-  history = _insertAtDepthEntries(history, buckets.atDepth.map(e => ({ ...e, content: wiRegex(e.content) })))
+  // 修复：传入每个条目自己的 depth（供 minDepth/maxDepth 过滤）
+  history = _insertAtDepthEntries(
+    history,
+    buckets.atDepth.map(e => ({ ...e, content: wiRegex(e.content, e.depth) }))
+  )
   // IN_CHAT 作者注：按 depth+role 注入历史深处
   if (noteInChat && noteText && ctx.authorsNote) {
     history = _insertNoteInChat(history, noteText, ctx.authorsNote.depth, ctx.authorsNote.role)

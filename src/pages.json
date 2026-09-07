@@ -1,6 +1,14 @@
 {
   "pages": [
     {
+      "path": "pages/brand/brand",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712",
+        "enablePullDownRefresh": false
+      }
+    },
+    {
       "path": "pages/index/index",
       "style": {
         "navigationStyle": "custom",
@@ -103,6 +111,13 @@
     },
     {
       "path": "pages/import/regex-edit",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712"
+      }
+    },
+    {
+      "path": "pages/monitor/monitor",
       "style": {
         "navigationStyle": "custom",
         "backgroundColor": "#1c1712"

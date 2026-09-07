@@ -37,6 +37,8 @@ export interface SendOptions {
   detectIntent?: (input: string) => any
   /** 意图识别结果回调（供调用方触发战斗等） */
   onIntent?: (intent: any) => void
+  /** Continue续写：将此前缀追加到原AI消息后继续生成（对齐酒馆 type='continue'） */
+  continuePrefix?: string
   /** 每次模拟输出新增字符时回调，用于 UI 实时更新 */
   onChunk?: (partialText: string) => void
   /** 全部完成时回调，传入最终文本、解析后的 segments、以及扫描后需要持久化的世界书状态 */
@@ -55,7 +57,7 @@ export class MessageProcessor {
    */
   async send(options: SendOptions): Promise<void> {
     this.aborted = false
-    const { character, preset, chatHistory, userMessage, variables, onChunk, onComplete, onError } = options
+    const { character, preset, chatHistory, userMessage, variables, onChunk, onComplete, onError, continuePrefix } = options
 
     try {
       // 1. 输入侧正则脚本（placement=1；vars 供 substituteRegex 宏替换使用）
@@ -126,18 +128,21 @@ export class MessageProcessor {
       // 4. 输出侧正则脚本（placement=0；vars 供 substituteRegex 宏替换使用）
       const processedReply = applyRegexScripts(rawReply, preset.regexScripts, 0, { vars: variables })
 
+      // Continue模式：将原AI消息作为前缀拼接在新生成内容前面
+      const finalReply = continuePrefix ? (continuePrefix + processedReply) : processedReply
+
       if (streamEnabled) {
         // 流式路径已在上面实时回调 onChunk，无需再打字机模拟
-        const segments = parseBlocks(processedReply)
-        if (onComplete) onComplete(processedReply, segments, worldInfoState)
+        const segments = parseBlocks(finalReply)
+        if (onComplete) onComplete(finalReply, segments, worldInfoState)
       } else {
         // 5. 打字机模拟输出
-        await this._simulateStream(processedReply, onChunk)
+        await this._simulateStream(finalReply, onChunk)
         if (this.aborted) return
 
         // 6. 生成渲染节点
-        const segments = parseBlocks(processedReply)
-        if (onComplete) onComplete(processedReply, segments, worldInfoState)
+        const segments = parseBlocks(finalReply)
+        if (onComplete) onComplete(finalReply, segments, worldInfoState)
       }
     } catch (e) {
       if (!this.aborted && onError) onError(e as Error)

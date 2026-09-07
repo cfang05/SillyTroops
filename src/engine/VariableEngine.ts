@@ -230,6 +230,34 @@ function registerBuiltins(): void {
     const trust = trpgContext.trust || {}
     return args[0] ? String(trust[args[0]] ?? '') : ''
   })
+
+  // ── 对话历史宏（P1需求，从runtimeStore读取最近消息）──
+  registerMacro('lastMessage', () => {
+    const store = useRuntimeStore()
+    if (!store.messages || !store.messages.length) return ''
+    return store.messages[store.messages.length - 1].content || ''
+  })
+  registerMacro('lastUserMessage', () => {
+    const store = useRuntimeStore()
+    if (!store.messages) return ''
+    for (let i = store.messages.length - 1; i >= 0; i--) {
+      if (store.messages[i].role === 'user') return store.messages[i].content || ''
+    }
+    return ''
+  })
+  registerMacro('lastCharMessage', () => {
+    const store = useRuntimeStore()
+    if (!store.messages) return ''
+    for (let i = store.messages.length - 1; i >= 0; i--) {
+      if (store.messages[i].role === 'assistant') return store.messages[i].content || ''
+    }
+    return ''
+  })
+  registerMacro('firstMessage', () => {
+    const store = useRuntimeStore()
+    if (!store.messages || !store.messages.length) return ''
+    return store.messages[0].content || ''
+  })
 }
 
 function _fmtNum(v: any): string {

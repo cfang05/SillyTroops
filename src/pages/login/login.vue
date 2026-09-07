@@ -29,7 +29,7 @@
       <button class="btn-primary" @tap="onSubmit">{{ isRegisterMode ? '注册并登录' : '登录' }}</button>
 
       <view class="hint-box" v-if="!isRegisterMode">
-        <text class="hint-text"><text class="hint-b">测试账号：</text>admin / 123；注册的新账号同为测试账号，均可使用内置测试 API</text>
+        <text class="hint-text"><text class="hint-b">测试账号：</text>test01~test05（密码详见开发文档）；注册的新账号同为测试账号，均可使用内置测试 API</text>
       </view>
 
       <view class="switch-mode" @tap="toggleMode">

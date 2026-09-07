@@ -18,6 +18,40 @@ export default {
 
   onShow() {
     this.checkLoginStatus()
+    // 重新开始会话计时（从后台返回）
+    const userId = userManager.getCurrentUserId()
+    if (userId) {
+      try {
+        uni.setStorageSync('sillytroops_session_start', Date.now())
+      } catch (e) { /* ignore */ }
+    }
+  },
+
+  onHide() {
+    // 切到后台时更新使用时长
+    const userId = userManager.getCurrentUserId()
+    if (userId) {
+      this._updateSessionTime(userId)
+    }
+  },
+
+  _updateSessionTime(userId) {
+    try {
+      const sessionStart = uni.getStorageSync('sillytroops_session_start')
+      if (!sessionStart) return
+      
+      const sessionDuration = Date.now() - sessionStart
+      const users = uni.getStorageSync('sillytroops_users') || []
+      const user = users.find(u => u.id === userId)
+      if (user) {
+        user.totalUsageTime = (user.totalUsageTime || 0) + sessionDuration
+        uni.setStorageSync('sillytroops_users', users)
+      }
+      // 重置会话开始时间
+      uni.setStorageSync('sillytroops_session_start', Date.now())
+    } catch (e) {
+      console.warn('更新使用时长失败:', e)
+    }
   },
 
   // 检查本地账号系统的登录态；未登录则跳转登录页（首次启动/退出登录后）
@@ -183,6 +217,20 @@ page {
 html, body {
   background: oklch(9% 0.006 70);
   overflow-x: hidden;
+  scrollbar-width: none;      /* Firefox：隐藏滚动条，避免其占用右侧宽度 */
+  -ms-overflow-style: none;   /* 旧版 Edge / IE */
+}
+
+/* 隐藏页面滚动条（Chromium：Chrome / Edge / Safari）。
+   背景：画布 <uni-app> 按 body 内容宽水平居中（max-width:480px + margin:0 auto），
+   而 #app::before 暗金描边按整个视口居中（position:fixed; left:50%; translateX(-50%)）。
+   桌面端页面级滚动条会占用右侧约 15px 宽度，使 body 内容宽缩水，导致画布整体相对
+   描边左移约 滚动条宽/2 —— 表现为「左侧头像贴边过近、右侧头像离描边过远」，左右
+   不再镜像。隐藏滚动条后 body 内容宽 = 视口宽，画布与描边完全重合，消息左右头像
+   严格对称。滚动功能本身不受影响（仍可用滚轮/触摸）。 */
+::-webkit-scrollbar {
+  width: 0;
+  height: 0;
 }
 
 uni-app {
@@ -226,7 +274,8 @@ uni-app {
 .fate-panel,
 .dice-animation,
 .edit-mask,
-.modal {
+.modal,
+.teaser {
   max-width: 480px;
   margin: 0 auto;
 }

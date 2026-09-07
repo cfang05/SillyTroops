@@ -167,14 +167,19 @@
             <view class="prompt-item-header" @tap="toggleExpandById(item.identifier)">
               <switch :checked="item.enabled" @change="(e: any) => onToggleEnabledById(item.identifier, e.detail.value)" @tap.stop="() => {}" color="#cfa54d" style="transform: scale(0.75)" />
               <text class="prompt-name">{{ item.name || '(未命名)' }}</text>
+              <text v-if="isMarkerPrompt(item.identifier)" class="system-badge">系统</text>
               <text class="prompt-role-badge" :class="'role-' + item.role">{{ roleLabel(item.role) }}</text>
               <view class="order-btns">
                 <text class="order-btn" @tap.stop="onMoveUpById(item.identifier)">↑</text>
                 <text class="order-btn" @tap.stop="onMoveDownById(item.identifier)">↓</text>
-                <text class="order-btn delete-btn" @tap.stop="onDeletePromptById(item.identifier)">✕</text>
+                <text class="order-btn delete-btn" :class="{ 'delete-disabled': isMarkerPrompt(item.identifier) }" @tap.stop="onDeletePromptById(item.identifier)">✕</text>
               </view>
             </view>
             <view v-if="expandedId === item.identifier" class="prompt-item-body" @tap.stop="() => {}">
+              <!-- marker 提示词说明 -->
+              <view v-if="isMarkerPrompt(item.identifier)" class="marker-hint">
+                <text class="marker-hint-text">⚠️ 系统必需 Prompt：内容由角色卡/世界书/对话历史等运行时自动填充，无法编辑。可调整注入位置和顺序。</text>
+              </view>
               <view class="mini-field">
                 <text class="mini-label">名称</text>
                 <input class="mini-input" :value="item.name" @input="(e: any) => onNameFieldInputById(item.identifier, e.detail.value)" />
@@ -187,9 +192,11 @@
               </view>
               <textarea
                 class="prompt-content"
+                :class="{ 'content-disabled': isMarkerPrompt(item.identifier) }"
                 :value="item.content"
                 @input="(e: any) => onContentInputById(item.identifier, e.detail.value)"
-                placeholder="Prompt 内容，支持 {{变量}} 模板，如 {{char}} {{description}} {{personality}} {{scenario}}"
+                :disabled="isMarkerPrompt(item.identifier)"
+                :placeholder="isMarkerPrompt(item.identifier) ? '此 Prompt 内容由系统运行时自动填充' : 'Prompt 内容，支持 {{变量}} 模板，如 {{char}} {{description}} {{personality}} {{scenario}}'"
               />
               <view class="prompt-meta-row">
                 <text class="meta-label">注入模式</text>
@@ -479,6 +486,16 @@ function onAddPrompt() {
 }
 
 function onDeletePromptById(identifier: string) {
+  // 保护机制：禁止删除 marker 提示词（对齐酒馆的 system_prompt 保护）
+  if (isMarkerPrompt(identifier)) {
+    uni.showModal({
+      title: '无法删除',
+      content: '这是系统必需的 Prompt（角色描述/世界书/对话历史等运行时填充），无法删除。如需临时禁用，请关闭启用开关。',
+      showCancel: false
+    })
+    return
+  }
+  
   uni.showModal({
     title: '删除 Prompt',
     content: '确定要删除这条 Prompt 吗？',
@@ -514,6 +531,22 @@ function _resyncOrderFromPrompts() {
     identifier: p.identifier,
     enabled: p.enabled
   }))
+}
+
+// 判断是否为 marker 提示词（对齐 PromptBuilder.ts 的 MARKER_IDS）
+function isMarkerPrompt(identifier: string): boolean {
+  const markerIds = [
+    'charDescription',
+    'charPersonality',
+    'scenario',
+    'dialogueExamples',
+    'personaDescription',
+    'worldInfoBefore',
+    'worldInfoAfter',
+    'trpgStatus',
+    'chatHistory'
+  ]
+  return markerIds.includes(identifier)
 }
 
 function onTempChange(e: any) {
@@ -615,6 +648,7 @@ function onSave() {
 .prompt-item { background: var(--surface-2); border: 1rpx solid var(--border); border-radius: 16rpx; margin-bottom: 12rpx; padding: 16rpx 20rpx; }
 .prompt-item-header { display: flex; align-items: center; gap: 10rpx; }
 .prompt-name { flex: 1; min-width: 0; font-size: 23rpx; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.system-badge { font-size: 16rpx; padding: 3rpx 8rpx; border-radius: 8rpx; flex-shrink: 0; font-weight: 600; background: color-mix(in oklch, var(--accent) 14%, transparent); color: var(--accent); border: 1rpx solid color-mix(in oklch, var(--accent) 30%, transparent); }
 .prompt-role-badge { font-size: 17rpx; padding: 3rpx 9rpx; border-radius: 8rpx; flex-shrink: 0; font-weight: 600; }
 .role-system { background: var(--accent-soft); color: var(--accent); }
 .role-user { background: color-mix(in oklch, var(--success) 18%, transparent); color: var(--success); }
@@ -622,12 +656,16 @@ function onSave() {
 .order-btns { display: flex; gap: 10rpx; flex-shrink: 0; }
 .order-btn { font-size: 22rpx; color: var(--faint); padding: 0 6rpx; }
 .delete-btn { color: var(--danger); }
+.delete-disabled { color: var(--faint); opacity: 0.4; }
 .prompt-item-body { margin-top: 16rpx; }
+.marker-hint { padding: 12rpx 16rpx; background: color-mix(in oklch, var(--accent) 8%, transparent); border: 1rpx solid color-mix(in oklch, var(--accent) 20%, transparent); border-radius: 12rpx; margin-bottom: 16rpx; }
+.marker-hint-text { font-size: 20rpx; color: var(--accent); line-height: 1.55; }
 .mini-field { display: flex; align-items: center; gap: 12rpx; margin-bottom: 12rpx; }
 .mini-label { font-size: 20rpx; color: var(--faint); width: 140rpx; flex-shrink: 0; }
 .mini-input { flex: 1; height: 56rpx; background: var(--surface); border: 1rpx solid var(--border); border-radius: 10rpx; padding: 0 14rpx; font-size: 22rpx; color: var(--fg); box-sizing: border-box; }
 .mini-picker-value { flex: 1; height: 56rpx; line-height: 56rpx; background: var(--surface); border: 1rpx solid var(--border); border-radius: 10rpx; padding: 0 14rpx; font-size: 22rpx; color: var(--accent); }
 .prompt-content { width: 100%; min-height: 160rpx; background: var(--surface); border: 1rpx solid var(--border); border-radius: 14rpx; padding: 16rpx; font-size: 22rpx; color: var(--fg); box-sizing: border-box; margin-bottom: 12rpx; line-height: 1.5; }
+.content-disabled { background: var(--raised); color: var(--faint); opacity: 0.6; }
 .prompt-meta-row { display: flex; justify-content: space-between; align-items: center; margin-top: 12rpx; }
 .meta-label { font-size: 20rpx; color: var(--faint); }
 .meta-value { font-size: 22rpx; color: var(--accent); font-weight: 600; }

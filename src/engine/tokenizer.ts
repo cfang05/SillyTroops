@@ -36,3 +36,32 @@ export function countTokens(text: string): number {
     return estimateTokenCount(text)
   }
 }
+
+// ══════════════════════════════════════════════════════════════
+// H5 端自动接入真实 tokenizer（js-tiktoken cl100k_base）
+// ══════════════════════════════════════════════════════════════
+// #ifdef H5
+;(async () => {
+  try {
+    const { Tiktoken } = await import('js-tiktoken/lite')
+    const cl100k_base = await import('js-tiktoken/ranks/cl100k_base')
+    const encoder = new Tiktoken(cl100k_base.default as any)
+    
+    setTokenCounter((text: string): number => {
+      if (!text) return 0
+      try {
+        const tokens = encoder.encode(text)
+        return tokens.length
+      } catch (e) {
+        console.warn('[tokenizer] tiktoken 编码失败，回退到启发式估算:', e)
+        return estimateTokenCount(text)
+      }
+    })
+    
+    console.log('[tokenizer] H5 端已接入真实 tiktoken (cl100k_base)')
+  } catch (e) {
+    console.warn('[tokenizer] H5 端 tiktoken 加载失败，保留启发式估算:', e)
+  }
+})()
+// #endif
+

@@ -49,12 +49,12 @@
 
           <!-- 用户消息 -->
           <view class="message-user" v-else-if="item.role === 'user'">
+            <view class="bubble" @longpress="onMessageLongPress(index)">
+              <text class="message-text">{{ item.content }}</text>
+            </view>
             <view class="avatar">
               <image v-if="personaAvatar" class="avatar-img" :src="personaAvatar" mode="aspectFill" />
               <text v-else class="avatar-text">{{ personaFirstName || '我' }}</text>
-            </view>
-            <view class="bubble" @longpress="onMessageLongPress(index)">
-              <text class="message-text">{{ item.content }}</text>
             </view>
           </view>
         </view>
@@ -487,6 +487,68 @@ function handleStop() {
   runtimeStore.setLoading(false)
 }
 
+/** Continue续写：将最后一条AI消息作为前缀继续生成（对齐酒馆 type='continue'） */
+async function handleContinue() {
+  const msgs = runtimeStore.messages
+  if (!msgs.length || msgs[msgs.length - 1].role !== 'assistant') {
+    return uni.showToast({ title: '最后一条不是AI消息', icon: 'none' })
+  }
+  if (runtimeStore.isLoading) {
+    return uni.showToast({ title: '正在生成中...', icon: 'none' })
+  }
+
+  // 发送瞬间若视口不在底部（用户正在翻看历史），则本轮流式输出不强制跳转，保持用户当前位置
+  autoFollow.value = isAtBottom.value
+
+  const lastAiMsg = msgs[msgs.length - 1]
+  const aiMsg: ChatMessage = { role: 'assistant', content: lastAiMsg.content || '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 }
+  const aiIndex = msgs.length - 1
+  
+  // 替换（而非新增）最后一条AI消息
+  const newMsgs = [...msgs]
+  newMsgs[aiIndex] = aiMsg
+  runtimeStore.setMessages(newMsgs)
+  
+  if (autoFollow.value) scrollToBottom()
+  runtimeStore.setLoading(true)
+
+  const activePresetResolved = _resolvePreset()
+  
+  await processor.send({
+    character: _characterForProcessor(),
+    preset: activePresetResolved,
+    chatHistory: toChatHistory(runtimeStore.messages.slice(0, aiIndex)),
+    userMessage: '', // Continue不传新用户消息
+    variables: _buildBaseVars(),
+    personaDescription: activePersona.value?.description || '',
+    lorebookEntries: _collectLorebookEntries(),
+    worldInfoSessionState: worldInfoState.value,
+    authorsNote: noteStore.active,
+    trpgState: trpgState.value,
+    detectIntent: activeModules.value.intentDetection ? _handleIntent : undefined,
+    continuePrefix: lastAiMsg.content || '', // Continue特有：原AI消息作为前缀
+    onChunk: (chunk: string) => {
+      const m = runtimeStore.messages[aiIndex]
+      if (!m || m.role !== 'assistant') return
+      m.content = (m.content || '') + chunk
+      m.swipes[m.swipe_id || 0] = m.content
+      if (autoFollow.value) scrollToBottom()
+      _persistConversation()
+    }
+  })
+
+  const m = runtimeStore.messages[aiIndex]
+  if (m && m.role === 'assistant') {
+    m.isStreaming = false
+    m.segments = parseBlock(m.content)
+    runtimeStore.forceUpdate()
+  }
+
+  runtimeStore.setLoading(false)
+  _persistConversation()
+  if (autoFollow.value) scrollToBottom()
+}
+
 async function handleSend() {
   if (!canSend.value) return
   const text = inputValue.value.trim()
@@ -664,14 +726,19 @@ function onMessageLongPress(idx: number) {
   const msg = runtimeStore.messages[idx]
   if (!msg) return
   const isAI = msg.role === 'assistant'
+  // 续写：仅当长按的最后一条消息是 AI 消息时才提供（与原先独立“续写”按钮条件一致），
+  // 表示从这条消息继续生成；其它 AI 消息仍保留“从此处重新生成”。
+  const isLastAI = isAI && idx === runtimeStore.messages.length - 1
   const items = ['编辑', '删除']
+  if (isLastAI) items.push('续写')
   if (isAI) items.push('从此处重新生成')
   uni.showActionSheet({
     itemList: items,
     success(res: any) {
       if (res.tapIndex === 0) editMessage(idx)
       else if (res.tapIndex === 1) deleteMessage(idx)
-      else if (res.tapIndex === 2 && isAI) regenerateSwipe(idx)
+      else if (isLastAI && res.tapIndex === 2) handleContinue()
+      else if (isAI && res.tapIndex === (isLastAI ? 3 : 2)) regenerateSwipe(idx)
     }
   })
 }
@@ -770,16 +837,26 @@ function _emptyPreset(): Preset {
 }
 .avatar-img { width: 100%; height: 100%; }
 .avatar-text { font-family: var(--font-serif); font-size: 12px; font-weight: 900; color: #1b0b05; }
-.ai-bubble-col { display: flex; flex-direction: column; gap: 6px; max-width: 240px; }
-.bubble { background: var(--surface); border: 1px solid var(--border); border-radius: 15px; border-top-left-radius: 5px; padding: 11px 13px; }
+/* AI 消息：头像左置；ai-bubble-col 占满剩余宽度，泡泡本身按内容宽度收缩 */
+.ai-bubble-col { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
+/* 泡泡宽度跟随文字内容（不再占满整行）；远端留白交给下方两侧各自的上限控制 */
+.bubble { width: fit-content; background: var(--surface); border: 1px solid var(--border); border-radius: 15px; border-top-left-radius: 5px; padding: 11px 13px; }
+/* 两端镜像、远端各留16px：
+   - AI 泡泡在 ai-bubble-col 内，列右缘即消息行右缘，上限 calc(100% - 16px)
+     → 最宽时右端距行右缘正好 16px（= 消息宽 - 头像32 - 间距9 - 16）
+   - 用户泡泡所在行右端含头像32px+间距9px，上限 calc(100% - 57px)（57=16+9+32）
+     → 最宽时左端距行左缘也正好 16px；两侧最大像素宽度相同（消息宽-57px），完全镜像 */
+.message-ai .bubble { max-width: calc(100% - 16px); }
+.message-user .bubble { max-width: calc(100% - 57px); }
 .swipe-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; }
 .swipe-arrow { font-family: var(--font-mono); font-size: 15px; color: var(--accent); font-weight: 700; padding: 0 4px; }
 .swipe-arrow-disabled { color: var(--faint); opacity: .4; }
 .swipe-count { font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); letter-spacing: .04em; }
 
-.message-user { display: flex; align-items: flex-start; justify-content: flex-start; flex-direction: row-reverse; gap: 9px; }
+/* 用户消息：普通 row + justify-content:flex-end，avatar 作为行内最后一个子元素，
+   右边缘始终贴行右缘（= 屏幕右缘 14px），与左侧 AI 头像（14px）镜像对称 */
+.message-user { display: flex; align-items: flex-start; justify-content: flex-end; flex-direction: row; gap: 9px; }
 .message-user .bubble {
-  max-width: 240px;
   background: linear-gradient(135deg, oklch(78% 0.12 84 / 0.9), oklch(66% 0.14 74 / 0.9));
   color: #1c1204; font-weight: 500;
   border-radius: 15px; border-top-right-radius: 5px; border: none;

@@ -24,6 +24,8 @@ export interface RegexPreset {
 
 function STORAGE_KEY() { return scopedKey('regex_presets') }
 
+let _builtinRegexLoadPromise: Promise<void> | null = null
+
 export const useRegexPresetStore = defineStore('regexPreset', {
   state: () => ({
     presets: [] as RegexPreset[]
@@ -42,6 +44,9 @@ export const useRegexPresetStore = defineStore('regexPreset', {
       } catch (e) {
         this.presets = []
       }
+      
+      // 自动加载内置正侧（如果尚未导入），全局单例保证不会并发重复导入
+      this._loadBuiltinRegex()
     },
 
     get(id: string): RegexPreset | null {
@@ -82,6 +87,48 @@ export const useRegexPresetStore = defineStore('regexPreset', {
       } catch (e) {
         console.warn('[regexPresetStore] 持久化失败:', e)
       }
+    },
+
+    /** 自动加载内置正侧（仅H5端；用全局单例 Promise 确保多页面并发调用时只真正执行一次） */
+    _loadBuiltinRegex(): Promise<void> {
+      if (_builtinRegexLoadPromise) return _builtinRegexLoadPromise
+
+      _builtinRegexLoadPromise = (async () => {
+        const hasBuiltin = this.presets.some(p => p.id && p.id.startsWith('builtin_regex_'))
+        if (hasBuiltin) return
+
+        // #ifdef H5
+        try {
+          const { loadBuiltinRegexPresets } = await import('../services/builtinAssets')
+          const results = await loadBuiltinRegexPresets()
+
+          for (const item of results) {
+            if (!item.scripts || item.error) {
+              console.warn(`[regexPresetStore] 内置正侧 ${item.name} 加载失败:`, item.error)
+              continue
+            }
+            const preset: RegexPreset = {
+              id: 'builtin_regex_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+              name: '[内置] ' + item.name,
+              scripts: item.scripts,
+              createdAt: Date.now(),
+              updatedAt: Date.now(),
+              enabledGlobal: false
+            }
+            this.presets.push(preset)
+          }
+
+          if (results.some(r => !r.error)) {
+            this._persist()
+            console.log('[regexPresetStore] 内置正侧已自动加载')
+          }
+        } catch (e) {
+          console.warn('[regexPresetStore] 内置正侧加载失败:', e)
+        }
+        // #endif
+      })()
+
+      return _builtinRegexLoadPromise
     }
   }
 })
