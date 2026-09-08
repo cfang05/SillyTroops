@@ -348,56 +348,153 @@ class LLMClient {
     if (endpoint) headers['X-API-Base'] = endpoint;
     if (apiKey) headers['X-API-Key'] = apiKey;
 
-    const resp = await fetch(url, {
-      method: 'POST',
-      headers: headers,
-      body: JSON.stringify(requestBody),
-      signal: controller.signal
-    });
+    console.log('[API Request] URL:', url);
+    console.log('[API Request] Headers:', headers);
+    console.log('[API Request] Body size:', JSON.stringify(requestBody).length);
+    console.log('[API Request] UA:', typeof navigator !== 'undefined' ? navigator.userAgent : '(无 navigator)');
+
+    let resp;
+    try {
+      resp = await fetch(url, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+    } catch (error) {
+      // fetch() 本身抛出异常：说明请求根本没有拿到 HTTP 响应（网络中断/域名解析失败/
+      // 证书问题/被浏览器安全策略拦截等），而不是服务端返回了错误状态码。
+      this._abortController = null;
+      console.error('[API Error] fetch() 抛出异常（未收到任何 HTTP 响应）');
+      console.error('[API Error] Name:', error.name);
+      console.error('[API Error] Message:', error.message);
+      console.error('[API Error] Stack:', error.stack);
+      throw error;
+    }
+
+    console.log('[API Response] Status:', resp.status);
+    console.log('[API Response] StatusText:', resp.statusText);
+    try {
+      console.log('[API Response] Headers:', Object.fromEntries(resp.headers.entries()));
+    } catch (e) {
+      console.log('[API Response] Headers: (当前环境的 Headers 不支持 entries()，跳过打印)');
+    }
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
+      console.error('[API Response] 非 200 响应，Body preview:', errText.slice(0, 500));
       this._abortController = null;
       throw new Error(`HTTP ${resp.status}: ${errText || '请求失败'}`);
     }
-    if (!resp.body || !resp.body.getReader) {
-      // 无流式 body（某些代理），退回一次性读取
-      const data = await resp.json();
+
+    const supportsStreamReader = !!(resp.body && typeof resp.body.getReader === 'function');
+    console.log('[API Response] 当前环境是否支持 ReadableStream.getReader:', supportsStreamReader);
+
+    if (!supportsStreamReader) {
+      // ⚠️ 部分手机浏览器内核（某些内置 WebView / 第三方 App 内嵌浏览器）的 fetch()
+      // 不支持流式 body（resp.body.getReader 不存在）。但此时响应体仍然是完整的
+      // text/event-stream 文本（因为请求里 stream:true，服务端/DeepSeek 真实返回的就是 SSE），
+      // 绝不是 JSON！旧代码在这里直接 `await resp.json()` 会因为 SSE 文本不是合法 JSON
+      // 而抛出 SyntaxError，冒泡到 onError 后前端显示"抱歉，发生了错误，请重试。"——
+      // 这正是"后端日志 200 成功、前端却报错"最常见的原因，这里改为按 SSE 格式手动解析全文。
+      const rawText = await resp.text();
+      console.log('[API Response] Body preview (无流式能力，一次性读取):', rawText.slice(0, 500));
       this._abortController = null;
-      const content = data?.choices?.[0]?.message?.content || '';
-      if (onChunk) onChunk(content);
-      return content;
+      const sseText = this._parseSSEText(rawText, onChunk);
+      if (sseText) return sseText;
+      // 极少数代理/网关会直接把 stream 请求降级为一次性标准 JSON 响应，这里再兜底解析一次
+      try {
+        const data = JSON.parse(rawText);
+        const content = data?.choices?.[0]?.message?.content || '';
+        if (onChunk) onChunk(content);
+        return content;
+      } catch (e) {
+        console.error('[API Error] 响应既无法按 SSE 解析出内容，也不是合法 JSON');
+        console.error('[API Error] JSON.parse 失败原因:', e.message);
+        throw new Error('响应格式无法解析（既非可用的 SSE，也非合法 JSON），详见控制台 Body preview 日志');
+      }
     }
 
     const reader = resp.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
     let fullText = '';
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop() || '';
-      for (const line of lines) {
-        const trimmed = line.trim();
-        if (!trimmed.startsWith('data:')) continue;
-        const data = trimmed.slice(5).trim();
-        if (data === '[DONE]') {
-          this._abortController = null;
-          return fullText;
+    let chunkCount = 0;
+    try {
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) {
+          console.log('[API Response] 流读取结束(done=true)，累计 chunk 数:', chunkCount, '累计字符数:', fullText.length);
+          break;
         }
-        try {
-          const json = JSON.parse(data);
-          const delta = json?.choices?.[0]?.delta?.content;
-          if (delta) {
-            fullText += delta;
-            if (onChunk) onChunk(fullText);
+        chunkCount++;
+        const decoded = decoder.decode(value, { stream: true });
+        if (chunkCount <= 2) {
+          console.log(`[API Response] 第 ${chunkCount} 个 chunk 原始预览:`, decoded.slice(0, 500));
+        }
+        buffer += decoded;
+        const lines = buffer.split('\n');
+        buffer = lines.pop() || '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed.startsWith('data:')) continue;
+          const data = trimmed.slice(5).trim();
+          if (data === '[DONE]') {
+            this._abortController = null;
+            return fullText;
           }
-        } catch (e) { /* 忽略无法解析的分帧 */ }
+          try {
+            const json = JSON.parse(data);
+            const delta = json?.choices?.[0]?.delta?.content;
+            if (delta) {
+              fullText += delta;
+              if (onChunk) onChunk(fullText);
+            }
+          } catch (e) { /* 忽略无法解析的分帧 */ }
+        }
       }
+    } catch (error) {
+      // reader.read() 抛出异常：常见于手机浏览器内核对 ReadableStream 支持不完整
+      // （号称支持 getReader，但读到一半时抛错），或连接被中途重置。
+      console.error('[API Error] 读取流式响应时抛出异常（reader.read() 失败）');
+      console.error('[API Error] Name:', error.name);
+      console.error('[API Error] Message:', error.message);
+      console.error('[API Error] Stack:', error.stack);
+      console.error('[API Error] 中断前已累计文本长度:', fullText.length);
+      this._abortController = null;
+      // 已经拿到部分内容时，优先把已生成内容返回，避免用户什么都看不到
+      if (fullText) {
+        if (onChunk) onChunk(fullText);
+        return fullText;
+      }
+      throw error;
     }
     this._abortController = null;
+    return fullText;
+  }
+
+  /**
+   * 手动解析一段完整的 SSE 文本（用于 fetch 不支持 ReadableStream.getReader 的手机浏览器兜底）
+   * @private
+   */
+  _parseSSEText(rawText, onChunk) {
+    if (!rawText || rawText.indexOf('data:') === -1) return '';
+    let fullText = '';
+    const lines = rawText.split('\n');
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data:')) continue;
+      const data = trimmed.slice(5).trim();
+      if (data === '[DONE]') break;
+      try {
+        const json = JSON.parse(data);
+        const delta = json?.choices?.[0]?.delta?.content;
+        if (delta) {
+          fullText += delta;
+          if (onChunk) onChunk(fullText);
+        }
+      } catch (e) { /* 忽略无法解析的分帧 */ }
+    }
     return fullText;
   }
   // #endif
@@ -532,6 +629,10 @@ class LLMClient {
     };
     // #endif
 
+    console.log('[API Request] URL:', url);
+    console.log('[API Request] Headers:', headers);
+    console.log('[API Request] Body size:', JSON.stringify(requestBody).length);
+
     return new Promise((resolve, reject) => {
       uni.request({
         url: url,
@@ -539,18 +640,47 @@ class LLMClient {
         header: headers,
         data: requestBody,
         success: (res) => {
+          console.log('[API Response] Status:', res.statusCode);
+          console.log('[API Response] Headers:', res.header);
+
+          // uni.request 在 H5 端通常会按 Content-Type 自动把 JSON 响应解析成对象，
+          // 但如果代理/网关返回的 Content-Type 不是 application/json（例如意外落到了
+          // text/event-stream、text/plain，或者是一段 HTML 错误页），res.data 会是原始
+          // 字符串。旧代码这里直接 `res.data?.choices?.[0]?.message?.content` 在字符串上
+          // 取属性永远是 undefined，于是统一抛"API 返回格式异常"，把真实原因盖住了。
+          let data = res.data;
+          const isRawString = typeof data === 'string';
+          const preview = isRawString ? data.slice(0, 500) : JSON.stringify(data).slice(0, 500);
+          console.log('[API Response] Body preview:', preview);
+
+          if (isRawString) {
+            try {
+              data = JSON.parse(data);
+            } catch (e) {
+              console.error('[API Error] res.data 是字符串且无法 JSON.parse，可能是 SSE/HTML/纯文本响应');
+              console.error('[API Error] JSON.parse 失败原因:', e.message);
+            }
+          }
+
           if (res.statusCode === 200) {
-            const content = res.data?.choices?.[0]?.message?.content;
+            const content = data?.choices?.[0]?.message?.content;
             if (content) {
               resolve(content);
             } else {
-              reject(new Error('API 返回格式异常'));
+              console.error('[API Error] HTTP 200 但未能取出 choices[0].message.content，完整响应见上方 Body preview');
+              reject(new Error('API 返回格式异常（HTTP 200 但响应体不含预期字段，详见控制台 Body preview 日志）'));
             }
           } else {
-            reject(new Error(`HTTP ${res.statusCode}: ${res.data?.error?.message || '请求失败'}`));
+            const errMsg = (typeof data === 'object' ? data?.error?.message : null) || preview || '请求失败';
+            reject(new Error(`HTTP ${res.statusCode}: ${errMsg}`));
           }
         },
         fail: (error) => {
+          // fail 回调触发意味着请求根本没拿到 HTTP 响应（DNS 失败、TLS 握手失败、
+          // 手机端网络切换/断网、被系统安全策略拦截等），而不是服务端返回了错误状态码。
+          console.error('[API Error] uni.request fail（未收到任何 HTTP 响应）');
+          console.error('[API Error] errMsg:', error.errMsg);
+          console.error('[API Error] 完整 error 对象:', JSON.stringify(error));
           reject(new Error(`网络请求失败: ${error.errMsg}`));
         }
       });
