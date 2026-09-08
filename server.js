@@ -65,8 +65,17 @@ app.use('/api', (req, res, next) => {
         authorization: proxyReq.getHeader('authorization') ? '***已设置***' : '未设置',
         contentType: proxyReq.getHeader('content-type')
       });
+
+      // 记录请求体大小（调试用）。
+      // 注意：/api/* 已跳过 express.json()，req.body 不存在，这里改用
+      // 原始请求的 Content-Length 头来判断请求体是否被正确转发（非 0/未定义即正常）。
+      console.log('[Proxy Request] Content-Length:', req.headers['content-length'] ?? '未设置');
     },
     onProxyRes: (proxyRes, req, res) => {
+      console.log(`[Proxy Response] Status: ${proxyRes.statusCode} for ${req.url}`);
+      // 记录响应头（可选，调试用）
+      // console.log('[Proxy Response] Headers:', proxyRes.headers);
+
       // 支持流式传输（SSE）
       if (proxyRes.headers['content-type']?.includes('text/event-stream')) {
         console.log('[Proxy] 检测到 SSE 流式响应');
@@ -76,11 +85,13 @@ app.use('/api', (req, res, next) => {
       }
     },
     onError: (err, req, res) => {
-      console.error('[Proxy] 代理错误:', err.message);
+      console.error(`[Proxy Error] ${err.message} for ${req.url}`);
+      console.error('[Proxy Error] Stack:', err.stack);
+      // 返回给前端一个明确的错误信息
       res.status(500).json({
         error: '代理请求失败',
         message: err.message,
-        details: '请检查 API 地址和 Key 是否正确'
+        details: err.message
       });
     },
     // 支持 WebSocket（如果未来需要）
