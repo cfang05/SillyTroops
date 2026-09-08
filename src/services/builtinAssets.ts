@@ -13,8 +13,7 @@ import type { RegexScript } from '../types/script'
 
 const BUILTIN_CHARACTERS = [
   { name: 'beth', file: '/assets/characters/beth.png' },
-  { name: 'DM_v2', file: '/assets/characters/DM_v2.png' },
-  { name: 'xia', file: '/assets/characters/xia.png' }
+  { name: 'DM_v2', file: '/assets/characters/DM_v2.png' }
 ]
 
 const BUILTIN_PRESETS = [

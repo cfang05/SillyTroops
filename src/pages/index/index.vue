@@ -9,12 +9,17 @@
           <text class="greet-mono">无限旅团 · 你的专属奇幻世界</text>
         </view>
       </view>
-      <view class="bell-btn" @tap="handleNotification">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
-          <path d="M10 5.5a3.5 3.5 0 0 1 3.5 3.5v2.5c0 .8.4 1.5 1 2l.5.5H5l.5-.5c.6-.5 1-1.2 1-2V9A3.5 3.5 0 0 1 10 5.5z"/>
-          <path d="M8.5 14.5a1.5 1.5 0 0 0 3 0"/>
-        </svg>
-        <view class="dot"></view>
+      <view class="header-actions">
+        <view class="logout-btn" @tap="handleLogout">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4H5.5A1.5 1.5 0 0 0 4 5.5v9A1.5 1.5 0 0 0 5.5 16H8"/><path d="M13 14l3.5-4L13 6"/><path d="M16.2 10H8"/></svg>
+        </view>
+        <view class="bell-btn" @tap="handleNotification">
+          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M10 5.5a3.5 3.5 0 0 1 3.5 3.5v2.5c0 .8.4 1.5 1 2l.5.5H5l.5-.5c.6-.5 1-1.2 1-2V9A3.5 3.5 0 0 1 10 5.5z"/>
+            <path d="M8.5 14.5a1.5 1.5 0 0 0 3 0"/>
+          </svg>
+          <view class="dot"></view>
+        </view>
       </view>
     </view>
     <view class="ribbon">
@@ -77,6 +82,15 @@
       </view>
     </view>
   </view>
+
+  <!-- 通知窗口：背景透明，右上角关闭键 -->
+  <view :class="['notif-modal', showNotifModal ? 'show' : '']" @tap="closeNotifModal">
+    <view class="notif-content" @tap.stop="stopPropagation">
+      <view class="notif-close" @tap="closeNotifModal">
+        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M5 5l10 10M15 5L5 15"/></svg>
+      </view>
+    </view>
+  </view>
 </template>
 
 <script>
@@ -90,7 +104,8 @@ export default {
       statusBarHeight: 0,
       userStore: null,
       isAdmin: false,
-      menuItems: []
+      menuItems: [],
+      showNotifModal: false
     }
   },
   computed: {
@@ -140,7 +155,23 @@ export default {
       this.menuItems = baseItems
     },
     handleNotification() {
-      uni.showToast({ title: '功能开发中', icon: 'none', duration: 1500 })
+      this.showNotifModal = true
+    },
+    closeNotifModal() {
+      this.showNotifModal = false
+    },
+    stopPropagation() {},
+    handleLogout() {
+      uni.showModal({
+        title: '退出登录',
+        content: '确定要退出登录吗？',
+        success: (res) => {
+          if (res.confirm) {
+            this.userStore.logout()
+            uni.reLaunch({ url: '/pages/login/login' })
+          }
+        }
+      })
     },
     handleFabTap() {
       uni.navigateTo({ url: '/pages/session/session' })
@@ -150,7 +181,7 @@ export default {
       switch (id) {
         case 'today': break
         case 'characters': uni.navigateTo({ url: '/pages/characters/index' }); break
-        case 'collect': uni.showToast({ title: '功能开发中', icon: 'none', duration: 1500 }); break
+        case 'collect': uni.navigateTo({ url: '/pages/collect/collect' }); break
         case 'profile': uni.showToast({ title: '功能开发中', icon: 'none', duration: 1500 }); break
       }
     },
@@ -161,7 +192,7 @@ export default {
         case 'import': uni.navigateTo({ url: '/pages/import/import' }); break
         case 'persona': uni.navigateTo({ url: '/pages/persona/index' }); break
         case 'characters': uni.navigateTo({ url: '/pages/characters/index' }); break
-        case 'collect': uni.showToast({ title: '功能开发中', icon: 'none', duration: 1500 }); break
+        case 'collect': uni.navigateTo({ url: '/pages/collect/collect' }); break
         case 'monitor': uni.navigateTo({ url: '/pages/monitor/monitor' }); break
         case 'settings': uni.navigateTo({ url: '/pages/settings/settings' }); break
       }
@@ -247,6 +278,37 @@ export default {
   color: var(--muted);
   position: relative;
   transition: border-color 150ms ease, color 150ms ease;
+}
+
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  flex: none;
+}
+
+.logout-btn {
+  width: 68rpx;
+  height: 68rpx;
+  flex: none;
+  border-radius: 22rpx;
+  background: var(--surface);
+  border: 1rpx solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  transition: border-color 150ms ease, color 150ms ease;
+}
+
+.logout-btn:active {
+  border-color: var(--border-strong);
+  color: var(--fg-soft);
+}
+
+.logout-btn svg {
+  width: 32rpx;
+  height: 32rpx;
 }
 
 .bell-btn:active {
@@ -557,5 +619,47 @@ export default {
 .fab svg {
   width: 30rpx;
   height: 30rpx;
+}
+
+.notif-modal {
+  position: fixed;
+  top: 0; left: 0; right: 0; bottom: 0;
+  background: transparent;
+  display: none;
+  align-items: flex-start;
+  justify-content: flex-end;
+  z-index: 1000;
+  padding: 32rpx;
+  box-sizing: border-box;
+}
+
+.notif-modal.show { display: flex; }
+
+.notif-content {
+  position: relative;
+  width: 560rpx;
+  min-height: 320rpx;
+  background: transparent;
+  border-radius: 24rpx;
+}
+
+.notif-close {
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 56rpx;
+  height: 56rpx;
+  border-radius: 18rpx;
+  background: var(--surface);
+  border: 1rpx solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--fg-soft);
+}
+
+.notif-close svg {
+  width: 26rpx;
+  height: 26rpx;
 }
 </style>

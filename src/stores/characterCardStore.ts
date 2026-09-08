@@ -87,7 +87,7 @@ export const useCharacterCardStore = defineStore('characterCard', {
     /** 自动加载内置角色卡（仅H5端；用全局单例 Promise 确保多页面并发调用时只真正执行一次）
      *  按"缺哪张就补哪张"的逐项比对，而不是"有任意一张内置卡就整体跳过"——
      *  避免此前并发覆盖 bug 导致的部分导入残留状态，让后续启动时把剩余缺失的内置卡补齐。
-     *  判重用 extensions.builtinKey（稳定的文件标识符，如 'beth'/'DM_v2'/'xia'），
+     *  判重用 extensions.builtinKey（稳定的文件标识符，如 'beth'/'DM_v2'），
      *  而不是比较角色卡里解析出来的显示名字（显示名字来自 PNG 元数据，与文件名完全不同，
      *  之前用"[内置] + manifest.name"去匹配"[内置] + 角色卡里的真实name"永远匹配不上，
      *  导致每次启动都判定为全部缺失、重复导入）。 */

@@ -1,5 +1,20 @@
 <template>
   <view class="brand-container" @tap="handleTap">
+    <video
+      class="brand-bg-video"
+      src="/static/videos/backgroud_1.mp4"
+      :autoplay="true"
+      :loop="true"
+      :muted="true"
+      :controls="false"
+      :show-center-play-btn="false"
+      :show-fullscreen-btn="false"
+      :show-play-btn="false"
+      :enable-progress-gesture="false"
+      object-fit="cover"
+      :page-gesture="false"
+    ></video>
+    <view class="brand-bg-overlay"></view>
     <canvas canvas-id="particleCanvas" id="particleCanvas" class="particle-canvas"></canvas>
     
     <view class="cover">
@@ -225,6 +240,28 @@ export default {
   flex-direction: column;
   overflow: hidden;
   margin: 0 auto;
+}
+
+.brand-bg-video {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.brand-bg-overlay {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: oklch(13.5% 0.011 70 / 0.55);
+  pointer-events: none;
+  z-index: 0;
 }
 
 .particle-canvas {

@@ -1,5 +1,5 @@
 <template>
-  <view class="login-container" :style="{ paddingTop: statusBarHeight + 'px' }">
+  <view class="login-container" :style="{ paddingTop: (statusBarHeight + 60) + 'px' }">
 
     <view class="auth-head">
       <view class="auth-crest"><image src="/static/images/dragon-logo.png" mode="aspectFill"></image></view>
