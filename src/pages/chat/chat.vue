@@ -14,8 +14,8 @@
     </view>
 
     <!-- 消息流：不再用嵌套的 scroll-view（那是"第二条滚动条"的来源），改成普通 view 让整个页面
-         用系统自带的滚动（也就是要保留的那一条）。滚到底通过 uni.pageScrollTo 实现，用一个远超实际
-         内容高度的数值，页面滚动会自动 clamp 到真实底部，不需要精确测量高度。 -->
+         用系统自带的滚动（也就是要保留的那一条）。不做任何程序化滚动/钉底：视口任何时候都可以
+         自由上下滑动，LLM 输出期间也不会被脚本拉走或锁定。 -->
     <view class="messages-container" :style="{ paddingTop: navbarHeight + 'px' }">
       <view class="messages-wrapper">
         <view v-for="(item, index) in runtimeStore.messages" :key="index" class="message-wrapper" :id="'msg-' + index">
@@ -124,7 +124,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onUnmounted, onMounted } from 'vue'
-import { onLoad, onPageScroll } from '@dcloudio/uni-app'
+import { onLoad } from '@dcloudio/uni-app'
 import { useRuntimeStore } from '../../stores/runtimeStore'
 import { useCharacterCardStore } from '../../stores/characterCardStore'
 import { usePresetStore } from '../../stores/presetStore'
@@ -179,191 +179,12 @@ onMounted(() => {
   } catch (e) { /* 忽略，取默认值 0 */ }
 })
 
-// ── 滚动跟随状态（流式输出智能滚动） ──────────────────
-// 改用页面原生滚动（onPageScroll + uni.pageScrollTo），不再用嵌套的 scroll-view。
-//
-// isAtBottom：当前视口是否位于消息列表底部（onPageScroll 持续更新）
-// autoFollow：本轮流式输出是否处于"自动跟随"状态。
-//
-// ═══ 滚动模型 v3：位置驱动 + 手势锁 ═══
-// 前两版用"程序化滚动标记/计时器"来区分"我们自己滚到底"与"用户手势"：
-// 流式期间每个分片都触发滚动，标记会被反复重置/续期，把用户的手势事件吞掉，
-// autoFollow 永远来不及置 false → 滚动条被钉死在底部，视口完全无法移动（锁死）。
-//
-// 新版不再在滚动事件里猜测来源，改为：
-//   1. autoFollow 只由几何事实驱动：视口在底部 → true，离开底部 → false。
-//      我们只在 autoFollow=true 时才会主动滚到底；主动滚动的回声同样落在底部，
-//      autoFollow 保持 true（无害）。用户上滑离开底部的那一次事件会立即把它置 false，
-//      后续分片不再拉回；用户滑回底部即恢复跟随 —— 与需求行为一致。
-//   2. H5 叠加"手势锁"：touchstart/touchmove/wheel/mousedown 期间暂停一切主动钉底，
-//      避免"程序化滚到底与用户上滑同帧竞争、浏览器滚动事件只报告最终(底部)位置"
-//      导致的死锁 —— 手势一开，钉底立刻让路，用户的滚动事件就能真实产生并取消跟随。
-const isAtBottom = ref(true)
-const autoFollow = ref(true)
-// pageScrollHeight：页面内容总高（实测 .chat-container 高度；navbar/输入栏 fixed，不占文档流）
-const pageScrollHeight = ref(0)
-const viewportHeight = ref(0)
-// 最近一次 onPageScroll 报告的真实 scrollTop
-let _currentScrollTop = 0
-// 同帧合并：一帧内多次 scrollToBottom（append 双调用 / 高频分片）只真正滚一次
-let _scrollPending = false
-// 内容高度与视口差小于该值时视为"不可滚动"，禁止任何跳转（避免发送后被 clamp 到顶部）
-const SCROLL_MIN_DELTA = 4
-// H5 用户手势进行中：期间暂停一切主动钉底（手势结束后 180ms 内仍视为活跃）
-let _userGestureActive = false
-let _userGestureTimer: ReturnType<typeof setTimeout> | null = null
-
-function _measurePage() {
-  try {
-    const info = uni.getSystemInfoSync()
-    viewportHeight.value = info.windowHeight || 0
-  } catch (e) { /* 忽略 */ }
-  const query = uni.createSelectorQuery()
-  query.select('.chat-container').boundingClientRect((rect: any) => {
-    if (rect && rect.height > 0) pageScrollHeight.value = rect.height
-  }).exec()
-}
-
-function _nextFrame(cb: () => void) {
-  // 跨端下一帧调度：H5 用 requestAnimationFrame（在 Vue 异步渲染完成后执行），
-  // 小程序无 rAF 则退化为 16ms setTimeout。
-  const raf = (globalThis as any).requestAnimationFrame
-  if (typeof raf === 'function') raf(cb)
-  else setTimeout(cb, 16)
-}
-
-function _markUserGesture() {
-  _userGestureActive = true
-  if (_userGestureTimer) clearTimeout(_userGestureTimer)
-  _userGestureTimer = setTimeout(() => { _userGestureActive = false }, 180)
-}
-
-function _bindUserGestureListeners() {
-  // #ifdef H5
-  if (typeof document === 'undefined') return
-  document.addEventListener('touchstart', _markUserGesture, { passive: true })
-  document.addEventListener('touchmove', _markUserGesture, { passive: true })
-  document.addEventListener('wheel', _markUserGesture, { passive: true })
-  document.addEventListener('mousedown', _markUserGesture, { passive: true })
-  // #endif
-}
-
-function _unbindUserGestureListeners() {
-  // #ifdef H5
-  if (typeof document === 'undefined') return
-  document.removeEventListener('touchstart', _markUserGesture)
-  document.removeEventListener('touchmove', _markUserGesture)
-  document.removeEventListener('wheel', _markUserGesture)
-  document.removeEventListener('mousedown', _markUserGesture)
-  if (_userGestureTimer) { clearTimeout(_userGestureTimer); _userGestureTimer = null }
-  _userGestureActive = false
-  // #endif
-}
-
-/**
- * 统一滚到底部入口（发送、流式分片、swipe/续写/重生成共用）：
- * 1. 仅在 autoFollow=true 时动作（几何模型：用户在底部才跟随）；
- * 2. 用户手势进行中直接让路（绝不同用户抢滚动，这是"视口锁死"的根治点）；
- * 3. 同一渲染帧内的多次调用合并为一次；
- * 4. 推迟到 DOM 渲染完成后的下一帧执行，实测 .chat-container 高度得出真实可滚目标
- *    —— 绝不再用"巨大魔法值靠 clamp"（发送后抢在渲染前用旧高度滚动 → 被 clamp 到顶部）；
- * 5. 内容不足一屏（目标 ≤ 0）直接跳过，不产生任何滚动。
- */
-function scrollToBottom() {
-  if (!autoFollow.value) return
-  if (_userGestureActive) return
-  if (_scrollPending) return
-  _scrollPending = true
-  _nextFrame(() => {
-    _scrollPending = false
-    _doScrollToBottom()
-  })
-}
-
-function _doScrollToBottom() {
-  // 执行前复查：跟随态可能已在排队期间被用户手势/位置改变
-  if (!autoFollow.value || _userGestureActive) return
-  const query = uni.createSelectorQuery()
-  query.select('.chat-container').boundingClientRect((rect: any) => {
-    const contentH = rect?.height || 0
-    if (contentH <= 0) return
-    const maxTop = contentH - viewportHeight.value
-    if (maxTop <= SCROLL_MIN_DELTA) return // 内容不足一屏：无可滚空间，禁止跳到顶部
-    uni.pageScrollTo({ scrollTop: maxTop, duration: 0 })
-    // 一帧后复查：若仍在真实底部之上（内容异步增高/视口变化），且仍处于跟随态，则补滚
-    _nextFrame(() => {
-      if (!autoFollow.value || _userGestureActive || _scrollPending) return
-      const q2 = uni.createSelectorQuery()
-      q2.select('.chat-container').boundingClientRect((rect2: any) => {
-        const maxTop2 = (rect2?.height || 0) - viewportHeight.value
-        if (maxTop2 > SCROLL_MIN_DELTA && _currentScrollTop < maxTop2 - 2) {
-          uni.pageScrollTo({ scrollTop: maxTop2, duration: 0 })
-        }
-      }).exec()
-    })
-  }).exec()
-}
-
-let _lastLoggedFollow: boolean | null = null
-onPageScroll((e: any) => {
-  const scrollTop = e?.scrollTop || 0
-  _currentScrollTop = scrollTop
-  // 流式期间内容持续增高：每次滚动事件重新异步测量 .chat-container 高度（供下一次事件使用）
-  _measurePage()
-  const contentH = pageScrollHeight.value
-  const threshold = 60 // px 容差，避免四舍五入导致的抖动
-  // 内容总高尚未测出时保守视为"在底部"（不打断刚进入页面的跟随状态）
-  const atBottom = contentH <= 0 ? true : (scrollTop + viewportHeight.value >= contentH - threshold)
-  isAtBottom.value = atBottom
-  // 位置驱动跟随：离开底部即取消，回到底部即恢复（见区块顶部说明）
-  autoFollow.value = atBottom
-  if (autoFollow.value !== _lastLoggedFollow) {
-    _lastLoggedFollow = autoFollow.value
-    console.log('[scroll][follow]', autoFollow.value ? '跟随' : '取消跟随',
-      'top=' + Math.round(scrollTop), 'contentH=' + Math.round(contentH), 'viewportH=' + Math.round(viewportHeight.value))
-  }
-})
-
-/**
- * 发送/续写/重生成后的短窗自愈：
- * 手机端键盘收起、输入框失焦等原生行为可能在发送瞬间把视口瞬移到最顶部
- * （没有任何用户手势），此时位置驱动会把 autoFollow 误判为 false → 内容明明可滚
- * 却停在顶部（=“发送后回顶、或停在顶部”）。本函数在发送后 0.4s/1s 各检查一次：
- * 仅当 ①期间没有用户手势（排除用户主动滑走）②内容明显可滚 ③视口却贴在顶部，
- * 才判定为异常瞬移并恢复跟随回到底部。
- */
-function _healScrollAfterSend() {
-  if (!autoFollow.value) return // 发送瞬间用户本就不在底部（在看历史）→ 尊重，不做任何事
-  let checks = 0
-  const tryFix = () => {
-    checks++
-    if (checks > 2) return
-    if (_userGestureActive) return // 用户正在滚动：绝不干预
-    const q = uni.createSelectorQuery()
-    q.select('.chat-container').boundingClientRect((rect: any) => {
-      const contentH = rect?.height || 0
-      const maxTop = contentH - viewportHeight.value
-      // 内容可滚但视口在顶部（用户无手势）→ 原生瞬移，恢复跟随并回到底部
-      if (maxTop > SCROLL_MIN_DELTA && _currentScrollTop <= 2) {
-        console.log('[scroll] 检测到发送后异常回顶，恢复跟随并回到底部')
-        autoFollow.value = true
-        scrollToBottom()
-      }
-    }).exec()
-  }
-  setTimeout(tryFix, 400)
-  setTimeout(tryFix, 1000)
-}
-
-onMounted(() => {
-  _measurePage()
-  _bindUserGestureListeners()
-})
-
-onUnmounted(() => {
-  _unbindUserGestureListeners()
-})
-
+// ── 视口滚动：不再做任何程序化操作 ──────────────────
+// 之前版本用"位置驱动跟随 + 手势锁"等机制试图在流式输出时自动把视口钉在底部，
+// 但无论如何调整，只要 LLM 开始输出就会在某个时机把视口拉/锁到某个位置，
+// 用户完全无法在生成过程中自由滚动。现在彻底移除这一整套自动滚动逻辑：
+// 页面滚动完全交给系统原生行为，任何时候都可以自由上下滑动，代码不再调用
+// uni.pageScrollTo，也不再监听 onPageScroll/手势事件来"纠正"视口位置。
 
 const processor = new MessageProcessor()
 
@@ -613,9 +434,6 @@ async function handleContinue() {
     return uni.showToast({ title: '正在生成中...', icon: 'none' })
   }
 
-  // 发送瞬间若视口不在底部（用户正在翻看历史），则本轮流式输出不强制跳转，保持用户当前位置
-  autoFollow.value = isAtBottom.value
-
   const lastAiMsg = msgs[msgs.length - 1]
   const aiMsg: ChatMessage = { role: 'assistant', content: lastAiMsg.content || '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 }
   const aiIndex = msgs.length - 1
@@ -624,9 +442,7 @@ async function handleContinue() {
   const newMsgs = [...msgs]
   newMsgs[aiIndex] = aiMsg
   runtimeStore.setMessages(newMsgs)
-  
-  if (autoFollow.value) scrollToBottom()
-  _healScrollAfterSend()
+
   runtimeStore.setLoading(true)
 
   const activePresetResolved = _resolvePreset()
@@ -649,7 +465,6 @@ async function handleContinue() {
       if (!m || m.role !== 'assistant') return
       m.content = (m.content || '') + chunk
       m.swipes[m.swipe_id || 0] = m.content
-      if (autoFollow.value) scrollToBottom()
       _persistConversation()
     }
   })
@@ -663,7 +478,6 @@ async function handleContinue() {
 
   runtimeStore.setLoading(false)
   _persistConversation()
-  if (autoFollow.value) scrollToBottom()
 }
 
 async function handleSend() {
@@ -695,19 +509,11 @@ function onFateDice() {
 }
 
 async function sendUserMessage(text: string) {
-  // 发送瞬间若视口不在底部（用户正在翻看历史），则本轮流式输出不强制跳转，保持用户当前位置
-  autoFollow.value = isAtBottom.value
-
   runtimeStore.appendMessage({ role: 'user', content: text })
 
   const aiMsg: ChatMessage = { role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 }
   runtimeStore.appendMessage(aiMsg)
   const aiIndex = runtimeStore.messages.length - 1
-  // 滚动统一推迟到 DOM 渲染完成后执行（scrollToBottom 内部按帧合并 + nextFrame 后才实测高度）。
-  // 不再在 append 后同步滚动：旧实现抢在 Vue 批处理渲染前用旧页面高度滚动，
-  // 内容不足一屏/尚未增高时目标被 clamp 到顶部 → 发送后视口跳顶、再被后续分片拉回的闪烁。
-  if (autoFollow.value) scrollToBottom()
-  _healScrollAfterSend()
 
   runtimeStore.setLoading(true)
 
@@ -733,7 +539,6 @@ async function sendUserMessage(text: string) {
       // 避免先显示纯文本、结束后再跳变为富文本渲染造成的布局抖动
       msgs[aiIndex] = { ...msgs[aiIndex], content: partial, isStreaming: true, segments: parseBlocks(partial) }
       runtimeStore.setMessages(msgs)
-      if (autoFollow.value) scrollToBottom()
     },
     onComplete: (finalText, segments, wiState) => {
       const msgs = [...runtimeStore.messages]
@@ -796,7 +601,6 @@ function onSwipeNext(idx: number) {
 
 async function regenerateSwipe(messageIndex: number) {
   if (runtimeStore.isLoading) return
-  autoFollow.value = isAtBottom.value
 
   const msgs = [...runtimeStore.messages]
   const msg = msgs[messageIndex]
@@ -809,10 +613,6 @@ async function regenerateSwipe(messageIndex: number) {
   msgs[messageIndex] = { ...msg, swipes: newSwipes, swipe_id: newSwipeId, content: '', isStreaming: true }
   runtimeStore.setMessages(msgs)
   runtimeStore.setLoading(true)
-  // 内容被替换为流式占位（高度可能先缩小）：跟随状态下先锚定到新的底部/loading 区，
-  // 滚动本身由 scrollToBottom 推迟到 DOM 渲染完成后执行，避免旧高度导致跳位。
-  if (autoFollow.value) scrollToBottom()
-  _healScrollAfterSend()
 
   const activePresetResolved = _resolvePreset()
   const character = activeCard.value
@@ -834,7 +634,6 @@ async function regenerateSwipe(messageIndex: number) {
       const m2 = [...runtimeStore.messages]
       m2[messageIndex] = { ...m2[messageIndex], content: partial, isStreaming: true, segments: parseBlocks(partial) }
       runtimeStore.setMessages(m2)
-      if (autoFollow.value) scrollToBottom()
     },
     onComplete: (finalText, segments, wiState) => {
       const m2 = [...runtimeStore.messages]
