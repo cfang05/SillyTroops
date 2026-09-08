@@ -180,40 +180,38 @@ onMounted(() => {
 })
 
 // ── 滚动跟随状态（流式输出智能滚动） ──────────────────
-// 改用页面原生滚动（onPageScroll + uni.pageScrollTo），不再用嵌套的 scroll-view，
-// 这样页面只有系统自带的那一条滚动条，不会出现"内外两条滚动条同时存在"的问题。
+// 改用页面原生滚动（onPageScroll + uni.pageScrollTo），不再用嵌套的 scroll-view。
 //
-// isAtBottom：当前视口是否位于消息列表底部（由 onPageScroll 持续更新，反映真实滚动位置）
+// isAtBottom：当前视口是否位于消息列表底部（onPageScroll 持续更新）
 // autoFollow：本轮流式输出是否处于"自动跟随"状态。
 //
-// 关键点：autoFollow 只能由"用户自己的滚动动作"来置位/复位，不能被我们自己调用
-// scrollToBottom() 触发的 onPageScroll 事件重新置为 true —— 否则会出现"用户往上滑，
-// 下一个流式分片一来又被强制拉回底部"的问题（因为程序化滚动本身也会触发 onPageScroll，
-// 落点恰好在底部，若不加区分就会把 autoFollow 误判为用户主动跟随）。
-// 做法：用 _isProgrammaticScroll 标记"接下来这次 onPageScroll 是我们自己滚的"，
-// 该次事件只更新 isAtBottom（用于展示"回到底部"按钮等），不改写 autoFollow；
-// 只有非程序化触发的 onPageScroll（即用户手势）才会用位置同步 autoFollow —— 用户
-// 滑走即取消跟随，用户自己划回底部即恢复跟随，同时仍可随时自由上下滑动。
+// ═══ 滚动模型 v3：位置驱动 + 手势锁 ═══
+// 前两版用"程序化滚动标记/计时器"来区分"我们自己滚到底"与"用户手势"：
+// 流式期间每个分片都触发滚动，标记会被反复重置/续期，把用户的手势事件吞掉，
+// autoFollow 永远来不及置 false → 滚动条被钉死在底部，视口完全无法移动（锁死）。
+//
+// 新版不再在滚动事件里猜测来源，改为：
+//   1. autoFollow 只由几何事实驱动：视口在底部 → true，离开底部 → false。
+//      我们只在 autoFollow=true 时才会主动滚到底；主动滚动的回声同样落在底部，
+//      autoFollow 保持 true（无害）。用户上滑离开底部的那一次事件会立即把它置 false，
+//      后续分片不再拉回；用户滑回底部即恢复跟随 —— 与需求行为一致。
+//   2. H5 叠加"手势锁"：touchstart/touchmove/wheel/mousedown 期间暂停一切主动钉底，
+//      避免"程序化滚到底与用户上滑同帧竞争、浏览器滚动事件只报告最终(底部)位置"
+//      导致的死锁 —— 手势一开，钉底立刻让路，用户的滚动事件就能真实产生并取消跟随。
 const isAtBottom = ref(true)
 const autoFollow = ref(true)
-// pageScrollHeight：页面内容总高（实测 .chat-container 的高度 = 页面真实可滚高度的基准；
-// navbar / 输入栏都是 fixed，不参与文档流高度）。viewportHeight：视口高。
+// pageScrollHeight：页面内容总高（实测 .chat-container 高度；navbar/输入栏 fixed，不占文档流）
 const pageScrollHeight = ref(0)
 const viewportHeight = ref(0)
-// 程序化滚动标记：_markProgrammaticScroll() 置位后，下一次 onPageScroll（我们自己滚动的
-// 回声事件）只更新 isAtBottom、不改写 autoFollow，随即复位标记 —— 不再用"固定 120ms 窗口"：
-// 流式期间每个 chunk 都会滚动，固定窗口被反复重置，等于把整个流式期间的用户手势全吞掉，
-// autoFollow 永远来不及被用户上滑置 false → 视口被锁死拉回底部（问题一根因）。
-// 现在标记只在"置位 → 自己的回声事件"这一小段内有效；若滚动没产生事件（如已在底部），
-// 由兜底计时器尽快复位，绝不长期悬挂。
-let _isProgrammaticScroll = false
-let _programmaticScrollTimer: ReturnType<typeof setTimeout> | null = null
-// 最近一次 onPageScroll 报告的真实 scrollTop（供滚动后复查是否真到底）
+// 最近一次 onPageScroll 报告的真实 scrollTop
 let _currentScrollTop = 0
-// 同帧合并：一帧内多次 scrollToBottom（append 双调用 / 流式高频 chunk）只真正滚一次
+// 同帧合并：一帧内多次 scrollToBottom（append 双调用 / 高频分片）只真正滚一次
 let _scrollPending = false
 // 内容高度与视口差小于该值时视为"不可滚动"，禁止任何跳转（避免发送后被 clamp 到顶部）
 const SCROLL_MIN_DELTA = 4
+// H5 用户手势进行中：期间暂停一切主动钉底（手势结束后 180ms 内仍视为活跃）
+let _userGestureActive = false
+let _userGestureTimer: ReturnType<typeof setTimeout> | null = null
 
 function _measurePage() {
   try {
@@ -234,30 +232,46 @@ function _nextFrame(cb: () => void) {
   else setTimeout(cb, 16)
 }
 
-function _markProgrammaticScroll() {
-  _isProgrammaticScroll = true
-  if (_programmaticScrollTimer) clearTimeout(_programmaticScrollTimer)
-  _programmaticScrollTimer = setTimeout(() => { _isProgrammaticScroll = false }, 250)
+function _markUserGesture() {
+  _userGestureActive = true
+  if (_userGestureTimer) clearTimeout(_userGestureTimer)
+  _userGestureTimer = setTimeout(() => { _userGestureActive = false }, 180)
 }
 
-function _clearProgrammaticScroll() {
-  _isProgrammaticScroll = false
-  if (_programmaticScrollTimer) {
-    clearTimeout(_programmaticScrollTimer)
-    _programmaticScrollTimer = null
-  }
+function _bindUserGestureListeners() {
+  // #ifdef H5
+  if (typeof document === 'undefined') return
+  document.addEventListener('touchstart', _markUserGesture, { passive: true })
+  document.addEventListener('touchmove', _markUserGesture, { passive: true })
+  document.addEventListener('wheel', _markUserGesture, { passive: true })
+  document.addEventListener('mousedown', _markUserGesture, { passive: true })
+  // #endif
+}
+
+function _unbindUserGestureListeners() {
+  // #ifdef H5
+  if (typeof document === 'undefined') return
+  document.removeEventListener('touchstart', _markUserGesture)
+  document.removeEventListener('touchmove', _markUserGesture)
+  document.removeEventListener('wheel', _markUserGesture)
+  document.removeEventListener('mousedown', _markUserGesture)
+  if (_userGestureTimer) { clearTimeout(_userGestureTimer); _userGestureTimer = null }
+  _userGestureActive = false
+  // #endif
 }
 
 /**
  * 统一滚到底部入口（发送、流式分片、swipe/续写/重生成共用）：
- * 1. 同一渲染帧内的多次调用合并为一次；
- * 2. 推迟到 DOM 渲染完成后的下一帧执行，再实测 .chat-container 高度计算真实可滚目标
- *    —— 绝不再用"巨大魔法值靠浏览器 clamp"（旧实现抢在 Vue 渲染前用旧页面高度滚动，
- *    内容不足一屏/尚未增高时被 clamp 到 0 = 顶部，是"发送后跳顶"的根因之一）；
- * 3. 内容不足一屏（目标 ≤ 0）时直接跳过，不产生任何滚动；
- * 4. 滚完后下一帧复查一次：内容若仍在异步增高（图片/富文本块），补滚到新底部。
+ * 1. 仅在 autoFollow=true 时动作（几何模型：用户在底部才跟随）；
+ * 2. 用户手势进行中直接让路（绝不同用户抢滚动，这是"视口锁死"的根治点）；
+ * 3. 同一渲染帧内的多次调用合并为一次；
+ * 4. 推迟到 DOM 渲染完成后的下一帧执行，实测 .chat-container 高度得出真实可滚目标
+ *    —— 绝不再用"巨大魔法值靠 clamp"（发送后抢在渲染前用旧高度滚动 → 被 clamp 到顶部）；
+ * 5. 内容不足一屏（目标 ≤ 0）直接跳过，不产生任何滚动。
  */
 function scrollToBottom() {
+  if (!autoFollow.value) return
+  if (_userGestureActive) return
   if (_scrollPending) return
   _scrollPending = true
   _nextFrame(() => {
@@ -267,22 +281,22 @@ function scrollToBottom() {
 }
 
 function _doScrollToBottom() {
+  // 执行前复查：跟随态可能已在排队期间被用户手势/位置改变
+  if (!autoFollow.value || _userGestureActive) return
   const query = uni.createSelectorQuery()
   query.select('.chat-container').boundingClientRect((rect: any) => {
     const contentH = rect?.height || 0
     if (contentH <= 0) return
     const maxTop = contentH - viewportHeight.value
     if (maxTop <= SCROLL_MIN_DELTA) return // 内容不足一屏：无可滚空间，禁止跳到顶部
-    _markProgrammaticScroll()
     uni.pageScrollTo({ scrollTop: maxTop, duration: 0 })
-    // 复查：一帧后若仍在真实底部之上（异步渲染内容又长高了），再补滚一次
+    // 一帧后复查：若仍在真实底部之上（内容异步增高/视口变化），且仍处于跟随态，则补滚
     _nextFrame(() => {
-      if (_isProgrammaticScroll || _scrollPending) return
+      if (!autoFollow.value || _userGestureActive || _scrollPending) return
       const q2 = uni.createSelectorQuery()
       q2.select('.chat-container').boundingClientRect((rect2: any) => {
         const maxTop2 = (rect2?.height || 0) - viewportHeight.value
         if (maxTop2 > SCROLL_MIN_DELTA && _currentScrollTop < maxTop2 - 2) {
-          _markProgrammaticScroll()
           uni.pageScrollTo({ scrollTop: maxTop2, duration: 0 })
         }
       }).exec()
@@ -290,31 +304,64 @@ function _doScrollToBottom() {
   }).exec()
 }
 
+let _lastLoggedFollow: boolean | null = null
 onPageScroll((e: any) => {
   const scrollTop = e?.scrollTop || 0
   _currentScrollTop = scrollTop
-  // 流式期间内容持续增高：每次滚动事件重新异步测量 .chat-container 高度（结果供下一次事件使用）
+  // 流式期间内容持续增高：每次滚动事件重新异步测量 .chat-container 高度（供下一次事件使用）
   _measurePage()
   const contentH = pageScrollHeight.value
   const threshold = 60 // px 容差，避免四舍五入导致的抖动
   // 内容总高尚未测出时保守视为"在底部"（不打断刚进入页面的跟随状态）
   const atBottom = contentH <= 0 ? true : (scrollTop + viewportHeight.value >= contentH - threshold)
   isAtBottom.value = atBottom
-
-  // 程序化滚动的回声事件：只更新 isAtBottom，不改写 autoFollow，并立即复位标记。
-  // 若回声位置已明显离开底部（说明用户在我们的滚动后紧接着上滑了），按用户手势处理：
-  // 立即取消跟随 —— 保证流式过程中用户随时能上滑查看历史，不被拉回。
-  if (_isProgrammaticScroll) {
-    _clearProgrammaticScroll()
-    if (!atBottom) autoFollow.value = false
-    return
-  }
-  // 非程序化（用户手势）事件才用位置同步 autoFollow：滑走即取消跟随，滑回底部即恢复跟随
+  // 位置驱动跟随：离开底部即取消，回到底部即恢复（见区块顶部说明）
   autoFollow.value = atBottom
+  if (autoFollow.value !== _lastLoggedFollow) {
+    _lastLoggedFollow = autoFollow.value
+    console.log('[scroll][follow]', autoFollow.value ? '跟随' : '取消跟随',
+      'top=' + Math.round(scrollTop), 'contentH=' + Math.round(contentH), 'viewportH=' + Math.round(viewportHeight.value))
+  }
 })
+
+/**
+ * 发送/续写/重生成后的短窗自愈：
+ * 手机端键盘收起、输入框失焦等原生行为可能在发送瞬间把视口瞬移到最顶部
+ * （没有任何用户手势），此时位置驱动会把 autoFollow 误判为 false → 内容明明可滚
+ * 却停在顶部（=“发送后回顶、或停在顶部”）。本函数在发送后 0.4s/1s 各检查一次：
+ * 仅当 ①期间没有用户手势（排除用户主动滑走）②内容明显可滚 ③视口却贴在顶部，
+ * 才判定为异常瞬移并恢复跟随回到底部。
+ */
+function _healScrollAfterSend() {
+  if (!autoFollow.value) return // 发送瞬间用户本就不在底部（在看历史）→ 尊重，不做任何事
+  let checks = 0
+  const tryFix = () => {
+    checks++
+    if (checks > 2) return
+    if (_userGestureActive) return // 用户正在滚动：绝不干预
+    const q = uni.createSelectorQuery()
+    q.select('.chat-container').boundingClientRect((rect: any) => {
+      const contentH = rect?.height || 0
+      const maxTop = contentH - viewportHeight.value
+      // 内容可滚但视口在顶部（用户无手势）→ 原生瞬移，恢复跟随并回到底部
+      if (maxTop > SCROLL_MIN_DELTA && _currentScrollTop <= 2) {
+        console.log('[scroll] 检测到发送后异常回顶，恢复跟随并回到底部')
+        autoFollow.value = true
+        scrollToBottom()
+      }
+    }).exec()
+  }
+  setTimeout(tryFix, 400)
+  setTimeout(tryFix, 1000)
+}
 
 onMounted(() => {
   _measurePage()
+  _bindUserGestureListeners()
+})
+
+onUnmounted(() => {
+  _unbindUserGestureListeners()
 })
 
 
@@ -579,6 +626,7 @@ async function handleContinue() {
   runtimeStore.setMessages(newMsgs)
   
   if (autoFollow.value) scrollToBottom()
+  _healScrollAfterSend()
   runtimeStore.setLoading(true)
 
   const activePresetResolved = _resolvePreset()
@@ -659,6 +707,7 @@ async function sendUserMessage(text: string) {
   // 不再在 append 后同步滚动：旧实现抢在 Vue 批处理渲染前用旧页面高度滚动，
   // 内容不足一屏/尚未增高时目标被 clamp 到顶部 → 发送后视口跳顶、再被后续分片拉回的闪烁。
   if (autoFollow.value) scrollToBottom()
+  _healScrollAfterSend()
 
   runtimeStore.setLoading(true)
 
@@ -763,6 +812,7 @@ async function regenerateSwipe(messageIndex: number) {
   // 内容被替换为流式占位（高度可能先缩小）：跟随状态下先锚定到新的底部/loading 区，
   // 滚动本身由 scrollToBottom 推迟到 DOM 渲染完成后执行，避免旧高度导致跳位。
   if (autoFollow.value) scrollToBottom()
+  _healScrollAfterSend()
 
   const activePresetResolved = _resolvePreset()
   const character = activeCard.value
