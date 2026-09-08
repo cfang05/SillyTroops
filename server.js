@@ -107,6 +107,12 @@ app.use('/api', (req, res, next) => {
 const staticPath = path.join(__dirname, 'dist', 'build', 'h5');
 app.use(express.static(staticPath));
 
+// 内置资源（角色卡 PNG / 预设 JSON / 正侧 JSON）位于 public/assets/…，
+// uni-app H5 构建并不总是把它们拷入 dist/build/h5，因此额外把 public/ 也作为静态根，
+// 保证线上（Railway）与本地 node server.js 预览都能命中 /assets/presets|regex|characters/…
+const publicPath = path.join(__dirname, 'public');
+app.use(express.static(publicPath));
+
 // ========== Vue 路由回退：防止刷新 404 ==========
 app.get('*', (req, res) => {
   // 如果是 API 请求，不回退到 index.html

@@ -30,6 +30,34 @@ const TEST_API_CONFIG = {
 };
 
 /**
+ * 是否为 DeepSeek V4 系模型/端点（需显式传 thinking 参数）。
+ * DeepSeek V4（deepseek-v4-flash / deepseek-v4-pro）的 thinking 参数默认是 enabled（思考模式）：
+ * 思考模式下最终答案之前的推理全部进入 message.reasoning_content，且默认 reasoning_effort=high，
+ * 若 max_tokens 预算先被推理耗尽，message.content 会为空字符串 —— 本产品的角色卡提示词要求 AI
+ * 把 [thinking] 框作为可见正文输出（content），所以对 DeepSeek 显式传 thinking:disabled，
+ * 让正文直接进 content；只有非 DeepSeek 的自定义端点不受影响。
+ */
+function _isDeepSeekLike(endpoint, model) {
+  const host = String(endpoint || '').toLowerCase();
+  const mdl = String(model || '').toLowerCase();
+  return host.includes('deepseek.com') || host.includes('deepseek') || mdl.startsWith('deepseek-v4') || mdl === 'deepseek-chat' || mdl === 'deepseek-reasoner';
+}
+
+/**
+ * 从 OpenAI 兼容的非流式响应 message 中取正文：
+ * 优先 message.content；若为空（例如 DeepSeek 思考模式下推理把预算耗尽），
+ * 退而取 message.reasoning_content，避免把一次可用的响应误判为"格式异常"。
+ */
+function _pickAssistantText(message) {
+  if (!message || typeof message !== 'object') return '';
+  const content = message.content;
+  if (typeof content === 'string' && content.trim()) return content;
+  const reasoning = message.reasoning_content;
+  if (typeof reasoning === 'string' && reasoning.trim()) return reasoning;
+  return '';
+}
+
+/**
  * 默认配置常量
  * 从原 ai-helper.js 中提取的默认值，作为后备配置
  * 注意：ai-helper.js 使用的是腾讯云开发的 AI 能力，没有传统的 API endpoint
@@ -337,6 +365,11 @@ class LLMClient {
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
     if (typeof params.n === 'number' && params.n > 1) requestBody.n = params.n;
+    // DeepSeek V4：thinking 默认 enabled（思考模式会吞掉正文，content 可能为空），
+    // 显式关闭思考模式，让回复正文直接进 content（详见 _isDeepSeekLike 注释）。
+    if (_isDeepSeekLike(endpoint, model)) {
+      requestBody.thinking = { type: 'disabled' };
+    }
 
     const controller = new AbortController();
     this._abortController = controller;
@@ -405,7 +438,7 @@ class LLMClient {
       // 极少数代理/网关会直接把 stream 请求降级为一次性标准 JSON 响应，这里再兜底解析一次
       try {
         const data = JSON.parse(rawText);
-        const content = data?.choices?.[0]?.message?.content || '';
+        const content = _pickAssistantText(data?.choices?.[0]?.message);
         if (onChunk) onChunk(content);
         return content;
       } catch (e) {
@@ -445,7 +478,9 @@ class LLMClient {
           }
           try {
             const json = JSON.parse(data);
-            const delta = json?.choices?.[0]?.delta?.content;
+            // 兼容思考模式：正文增量在 delta.content，若模型返回了 reasoning_content
+            // 增量（理论上已通过 thinking:disabled 关闭，仅作兜底），也累加进去
+            const delta = json?.choices?.[0]?.delta?.content || json?.choices?.[0]?.delta?.reasoning_content;
             if (delta) {
               fullText += delta;
               if (onChunk) onChunk(fullText);
@@ -488,7 +523,7 @@ class LLMClient {
       if (data === '[DONE]') break;
       try {
         const json = JSON.parse(data);
-        const delta = json?.choices?.[0]?.delta?.content;
+        const delta = json?.choices?.[0]?.delta?.content || json?.choices?.[0]?.delta?.reasoning_content;
         if (delta) {
           fullText += delta;
           if (onChunk) onChunk(fullText);
@@ -603,6 +638,11 @@ class LLMClient {
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
     if (typeof params.n === 'number' && params.n > 1) requestBody.n = params.n;
+    // DeepSeek V4：thinking 默认 enabled（思考模式让 content 为空、文本全在 reasoning_content），
+    // 显式关闭思考模式，正文直接进 content（详见 _isDeepSeekLike 注释）。
+    if (_isDeepSeekLike(endpoint, model)) {
+      requestBody.thinking = { type: 'disabled' };
+    }
     // 注意：预设里的 stream 开关目前不会转发给真实请求。当前 uni.request 调用方式期望一次性
     // 返回完整 JSON（res.data.choices[0].message.content），不具备解析 SSE 分块响应的能力；
     // 如果把 stream:true 传给服务端，返回的会是 text/event-stream 分块文本，会直接解析失败。
@@ -663,12 +703,16 @@ class LLMClient {
           }
 
           if (res.statusCode === 200) {
-            const content = data?.choices?.[0]?.message?.content;
+            const message = data?.choices?.[0]?.message;
+            const content = _pickAssistantText(message);
             if (content) {
               resolve(content);
             } else {
-              console.error('[API Error] HTTP 200 但未能取出 choices[0].message.content，完整响应见上方 Body preview');
-              reject(new Error('API 返回格式异常（HTTP 200 但响应体不含预期字段，详见控制台 Body preview 日志）'));
+              const finishReason = data?.choices?.[0]?.finish_reason;
+              console.error('[API Error] HTTP 200 但正文为空（content 与 reasoning_content 均无内容）');
+              console.error('[API Error] finish_reason:', finishReason);
+              console.error('[API Error] 完整响应见上方 Body preview');
+              reject(new Error('API 返回格式异常（HTTP 200 但正文为空' + (finishReason ? `，finish_reason=${finishReason}` : '') + '，详见控制台 Body preview 日志）'));
             }
           } else {
             const errMsg = (typeof data === 'object' ? data?.error?.message : null) || preview || '请求失败';
