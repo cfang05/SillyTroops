@@ -41,20 +41,34 @@
 
       <!-- 用户列表 -->
       <view class="section">
-        <text class="section-title">测试账号详情</text>
+        <text class="section-title">账号测试权限</text>
+        <text class="section-sub">开关控制各账号能否使用内置测试 API；admin 恒有权限，不可关闭</text>
         <view class="user-list">
-          <view v-for="user in testUsers" :key="user.userId" class="user-card">
+          <view v-for="user in userStats" :key="user.userId" class="user-card">
             <view class="user-header">
               <view class="user-info">
                 <text class="user-name">{{ user.username }}</text>
                 <text class="user-nickname">{{ user.nickname }}</text>
               </view>
-              <view :class="['status-dot', user.lastAction === 'login' ? 'online' : 'offline']"></view>
+              <view class="user-header-right">
+                <view :class="['status-dot', isOnline(user) ? 'online' : 'offline']"></view>
+                <view class="perm-toggle">
+                  <text class="perm-label">{{ user.isAdmin ? '管理员' : '测试权限' }}</text>
+                  <switch
+                    :checked="!!user.isTest"
+                    :disabled="!!user.isAdmin"
+                    color="#e9cf8c"
+                    class="perm-switch"
+                    @change="onToggleTest"
+                    :data-id="user.userId"
+                  />
+                </view>
+              </view>
             </view>
             <view class="user-stats-grid">
               <view class="stat-item">
                 <text class="stat-label-sm">登录次数</text>
-                <text class="stat-value-sm">{{ user.loginCount }}</text>
+                <text class="stat-value-sm">{{ user.loginCount || 0 }}</text>
               </view>
               <view class="stat-item">
                 <text class="stat-label-sm">使用时长</text>
@@ -66,7 +80,7 @@
               </view>
               <view class="stat-item">
                 <text class="stat-label-sm">Token用量</text>
-                <text class="stat-value-sm token-placeholder">待统计</text>
+                <text class="stat-value-sm">{{ formatTokens((user.tokenUsage && user.tokenUsage.total) || 0) }}</text>
               </view>
             </view>
           </view>
@@ -81,7 +95,7 @@
           <view v-for="(log, index) in recentLogs" :key="index" class="log-item">
             <view class="log-header">
               <text class="log-username">{{ log.username }}</text>
-              <text :class="['log-action', log.action]">{{ log.action === 'login' ? '登录' : '登出' }}</text>
+              <text :class="['log-action', log.action]">{{ logActionText(log.action) }}</text>
             </view>
             <text class="log-time">{{ formatDateTime(log.timestamp) }}</text>
           </view>
@@ -112,12 +126,6 @@ export default {
       }
     }
   },
-  computed: {
-    testUsers() {
-      // 只显示测试账号（test01~05 + admin）
-      return this.userStats.filter(u => u.isTest || u.isAdmin)
-    }
-  },
   onLoad() {
     this.statusBarHeight = getNavBarHeight()
     // #ifdef H5
@@ -131,19 +139,33 @@ export default {
       return
     }
 
+    // 打开监控页前先把当前账号累计到现在的会话时长结算掉，让页面看到最新的使用时长
+    try { userManager.heartbeat() } catch (e) { /* ignore */ }
+
     this.loadData()
   },
   methods: {
-    loadData() {
-      // 加载用户统计
-      this.userStats = userManager.getUserStats() || []
-      
-      // 加载登录日志
-      this.recentLogs = userManager.getLoginLogs({ limit: 50 }) || []
-      
+    async loadData() {
+      try {
+        // 加载用户统计（本机 + 服务器跨设备汇总：服务器数据来自所有设备上报的
+        // 登录/登出/心跳/Token 事件，因此能看到其他账号在其他设备上的登录情况与次数）
+        this.userStats = (await userManager.getUserStatsMerged()) || []
+      } catch (e) {
+        this.userStats = userManager.getUserStats() || []
+      }
+
+      // 加载登录日志（同样合并服务器汇总）；"登录日志"栏目只展示登录/登出动作，
+      // 心跳/注册/Token 上报动作只参与账号卡片里的统计展示，不刷屏日志列表
+      try {
+        this.recentLogs = (await userManager.getLoginLogsMerged({ limit: 100 })) || []
+      } catch (e) {
+        this.recentLogs = userManager.getLoginLogs({ limit: 100 }) || []
+      }
+      this.recentLogs = this.recentLogs.filter(l => l.action === 'login' || l.action === 'logout').slice(0, 50)
+
       // 计算统计数据
       this.calculateStats()
-      
+
       uni.showToast({ title: '数据已刷新', icon: 'success', duration: 1000 })
     },
     
@@ -151,11 +173,15 @@ export default {
       const todayStart = new Date().setHours(0, 0, 0, 0)
       
       this.stats.totalUsers = this.userStats.length
-      this.stats.activeToday = this.userStats.filter(u => u.lastLoginAt >= todayStart).length
+      // 今日活跃 = 今天（凌晨起）有最后活动（登录/在线心跳/token上报）的账号数
+      this.stats.activeToday = this.userStats.filter(u => {
+        const lastTs = u.lastActionTime || u.lastLoginAt
+        return !!lastTs && lastTs >= todayStart
+      }).length
       this.stats.totalUsageTime = this.userStats.reduce((sum, u) => sum + (u.totalUsageTime || 0), 0)
     },
     
-    setTimeFilter(filter) {
+    async setTimeFilter(filter) {
       this.timeFilter = filter
       let startTime = null
       
@@ -168,12 +194,14 @@ export default {
       }
       
       if (startTime) {
-        this.recentLogs = userManager.getLoginLogs({ startTime, limit: 50 }) || []
+        const merged = await userManager.getLoginLogsMerged({ startTime, limit: 200 }) || []
+        this.recentLogs = merged.filter(l => l.action === 'login' || l.action === 'logout').slice(0, 50)
       } else {
-        this.recentLogs = userManager.getLoginLogs({ limit: 50 }) || []
+        const merged = await userManager.getLoginLogsMerged({ limit: 200 }) || []
+        this.recentLogs = merged.filter(l => l.action === 'login' || l.action === 'logout').slice(0, 50)
       }
     },
-    
+
     formatTime(ms) {
       if (!ms) return '0分钟'
       const minutes = Math.floor(ms / 60000)
@@ -182,6 +210,22 @@ export default {
         return `${hours}小时${minutes % 60}分钟`
       }
       return `${minutes}分钟`
+    },
+
+    /** Token 数字的展示格式化：1.2万 / 345万 等，便于阅读 */
+    formatTokens(n) {
+      n = Number(n) || 0
+      if (n <= 0) return '0'
+      if (n >= 100000000) return (n / 100000000).toFixed(1) + '亿'
+      if (n >= 10000) return (n / 10000).toFixed(1) + '万'
+      return String(Math.round(n))
+    },
+
+    /** 在线状态：最近 15 分钟内有登录/心跳/上报活动视为在线 */
+    isOnline(user) {
+      const lastTs = user.lastActionTime || user.lastLoginAt
+      if (!lastTs) return false
+      return (Date.now() - lastTs) < 15 * 60 * 1000
     },
     
     formatDate(timestamp) {
@@ -205,6 +249,40 @@ export default {
       const hour = String(date.getHours()).padStart(2, '0')
       const minute = String(date.getMinutes()).padStart(2, '0')
       return `${month}-${day} ${hour}:${minute}`
+    },
+
+    logActionText(action) {
+      switch (action) {
+        case 'login': return '登录'
+        case 'logout': return '登出'
+        case 'heartbeat': return '在线'
+        case 'register': return '注册'
+        case 'token': return '用量'
+        default: return action || ''
+      }
+    },
+
+    /** admin 切换某个账号的测试权限（本地立即反映 + 上报服务器权威值） */
+    onToggleTest(e) {
+      const id = e.currentTarget.dataset.id
+      const value = e.detail.value
+      const u = this.userStats.find(x => x.userId === id)
+      if (!u) return
+      if (u.isAdmin) {
+        uni.showToast({ title: '管理员恒有测试权限，不可关闭', icon: 'none' })
+        return
+      }
+      userManager.setTestPermission(id, value, {
+        username: u.username,
+        nickname: u.nickname,
+        isAdmin: u.isAdmin
+      })
+      // 立即更新本地列表，让开关状态即时反馈（下次刷新会以服务器为准重新合并）
+      u.isTest = value
+      uni.showToast({
+        title: (value ? '已开启 ' : '已关闭 ') + u.username + ' 的测试权限',
+        icon: 'none'
+      })
     },
     
     goBack() {
@@ -323,7 +401,15 @@ export default {
   font-size: 28rpx;
   font-weight: 700;
   color: var(--fg);
+  margin-bottom: 8rpx;
+}
+
+.section-sub {
+  display: block;
+  font-size: 20rpx;
+  color: var(--faint);
   margin-bottom: 16rpx;
+  line-height: 1.5;
 }
 
 .user-list {
@@ -344,6 +430,29 @@ export default {
   align-items: center;
   justify-content: space-between;
   margin-bottom: 16rpx;
+}
+
+.user-header-right {
+  display: flex;
+  align-items: center;
+  gap: 16rpx;
+  flex: none;
+}
+
+.perm-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+
+.perm-label {
+  font-size: 20rpx;
+  color: var(--faint);
+}
+
+.perm-switch {
+  transform: scale(0.75);
+  transform-origin: right center;
 }
 
 .user-info {
@@ -400,11 +509,6 @@ export default {
   font-size: 24rpx;
   font-weight: 600;
   color: var(--fg-soft);
-}
-
-.token-placeholder {
-  color: var(--muted);
-  font-style: italic;
 }
 
 .empty-hint {

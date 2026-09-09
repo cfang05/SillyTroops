@@ -15,7 +15,10 @@ import type { WorldInfoSessionState } from './WorldInfoEngine'
 import { applyRegexScripts } from './RegexScriptEngine'
 import { parseBlocks } from './BlockParser'
 import { DEBUG_ENABLED, debugGroup, debugTable, truncate } from './DebugLogger'
+import { countTokens } from './tokenizer'
 import LLMClient from '../utils/llm/client.js'
+// @ts-ignore
+import userManager from '../utils/account/userManager.js'
 
 export interface SendOptions {
   character: CharacterV2 | null
@@ -130,6 +133,34 @@ export class MessageProcessor {
 
       // Continue模式：将原AI消息作为前缀拼接在新生成内容前面
       const finalReply = continuePrefix ? (continuePrefix + processedReply) : processedReply
+
+      // ═══════════════════════════════════════════════════════════
+      // Token 用量统计（估算值）：把本次请求的输入（messages）+ 输出（最终回复）
+      // 的估算 token 数累加到当前登录用户头上，供测试监控页展示。
+      // 估算口径见 engine/tokenizer.ts：H5 端优先用真实 tiktoken(cl100k_base)，
+      // 未就绪或非 H5 端用启发式估算（中日韩≈1token/字、英文≈1.3token/词）。
+      // 计的是"单次往返全量上下文"，不含多轮回复的历史重放，属于合理近似。
+      // ═══════════════════════════════════════════════════════════
+      try {
+        let promptChars = 0
+        for (const m of messages) {
+          if (m && m.content) promptChars += m.content.length
+        }
+        const promptTokens = countTokens(messages.map(m => m.content || '').join('\n'))
+        const completionTokens = countTokens(finalReply)
+        if (promptTokens > 0 || completionTokens > 0) {
+          userManager.recordTokenUsage(promptTokens, completionTokens)
+          if (DEBUG_ENABLED) {
+            debugGroup('[TokenUsage] 本次估算用量', () => {
+              console.log('输入字符数(近似):', promptChars)
+              console.log('prompt 估算 tokens:', promptTokens)
+              console.log('completion 估算 tokens:', completionTokens)
+            })
+          }
+        }
+      } catch (e) {
+        console.warn('[TokenUsage] 统计失败（不影响对话）:', e)
+      }
 
       if (streamEnabled) {
         // 流式路径已在上面实时回调 onChunk，无需再打字机模拟

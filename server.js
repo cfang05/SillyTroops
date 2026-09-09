@@ -8,6 +8,7 @@
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 const path = require('path');
+const fs = require('fs');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -16,9 +17,159 @@ const PORT = process.env.PORT || 3000;
 // ⚠️ 关键：/api/* 走代理，绝不能在这里用 express.json() 解析——它会消费并结束请求流，
 // 导致 http-proxy 转发给上游 LLM 的 body 为空、且上游请求流永不收尾；上游会一直等 body
 // 直到超时后重置连接（日志表现为 [HPM] ECONNRESET，前端表现为 loading 卡住）。
+// /api/stats/* 是本地新增的统计上报接口（不走代理，需要正常解析 JSON body），
+// 所以显式排除在"跳过解析"的判断之外。
 app.use((req, res, next) => {
-  if (req.path.startsWith('/api')) return next();
+  if (req.path.startsWith('/api') && !req.path.startsWith('/api/stats')) return next();
   express.json()(req, res, next);
+});
+
+// ========== 账号统计（登录次数/使用时长/Token 用量）跨设备汇总 ==========
+// 背景：账号系统主存储是浏览器 localStorage，天然按设备/浏览器隔离——管理员在自己的
+// 设备上打开监控页永远看不到其他账号在其他设备上产生的登录/使用数据。这里落一份
+// 服务器端共享的 JSON 文件，各设备通过 /api/stats/event 上报事件，管理员通过
+// /api/stats/summary 拉取全量汇总。数据是"设备各自上报的最佳努力估算"，Railway 等
+// 平台的临时文件系统重启后会清空，属已知限制，但足以解决"完全看不到"的问题。
+const STATS_FILE = path.join(__dirname, 'data', 'stats.json');
+
+function _ensureStatsDir() {
+  const dir = path.dirname(STATS_FILE);
+  if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+}
+
+function _loadStats() {
+  try {
+    _ensureStatsDir();
+    if (!fs.existsSync(STATS_FILE)) return { users: {}, logs: [] };
+    const raw = fs.readFileSync(STATS_FILE, 'utf8');
+    const data = JSON.parse(raw);
+    if (!data.users || typeof data.users !== 'object') data.users = {};
+    if (!Array.isArray(data.logs)) data.logs = [];
+    return data;
+  } catch (e) {
+    console.warn('[Stats] 读取统计文件失败，使用空数据:', e.message);
+    return { users: {}, logs: [] };
+  }
+}
+
+// 简单串行写入队列：避免并发上报同时写文件导致后一次写覆盖前一次的丢数据问题
+let _statsWriteQueue = Promise.resolve();
+function _saveStats(data) {
+  _statsWriteQueue = _statsWriteQueue.then(() => {
+    try {
+      _ensureStatsDir();
+      fs.writeFileSync(STATS_FILE, JSON.stringify(data, null, 2), 'utf8');
+    } catch (e) {
+      console.warn('[Stats] 写入统计文件失败:', e.message);
+    }
+  });
+  return _statsWriteQueue;
+}
+
+// 上报一次统计事件：login / logout / heartbeat（累加使用时长）/ token（累加估算用量）
+// / set-test（admin 调整某账号测试权限）/ register（建档）
+app.post('/api/stats/event', async (req, res) => {
+  try {
+    const body = req.body || {};
+    const { userId, username, nickname, isAdmin, isTest, action, sessionMs, tokenUsage } = body;
+    if (!userId || !username || !action) {
+      return res.status(400).json({ error: '缺少必需字段 userId/username/action' });
+    }
+
+    const data = _loadStats();
+    if (!data.users[userId]) {
+      data.users[userId] = {
+        userId,
+        username,
+        nickname: nickname || '',
+        isAdmin: !!isAdmin,
+        // 新账号建档：register（注册默认有测试权限）或首次 login（账号本地 isTest）决定初始值
+        isTest: !!isTest,
+        loginCount: 0,
+        totalUsageTime: 0,
+        tokenUsage: { prompt: 0, completion: 0, total: 0 },
+        createdAt: Date.now(),
+        lastLoginAt: null,
+        lastAction: null,
+        lastActionTime: null
+      };
+    }
+    const u = data.users[userId];
+    u.username = username;
+    if (typeof nickname === 'string') u.nickname = nickname;
+    u.isAdmin = !!isAdmin;
+    // ⚠️ 测试权限以服务器为权威：仅在 admin 显式 set-test、或账号 register 建档时更新。
+    // 普通 login/heartbeat/token/logout 事件不再用本地的 isTest 覆盖服务器值——否则
+    // admin 在别处关闭了某账号权限后，该账号自己登录又回传本地旧的 true 把权限重新打开。
+    if (action === 'set-test') {
+      u.isTest = !!isTest;
+    } else if (action === 'register') {
+      u.isTest = !!isTest;
+    }
+    if (!u.tokenUsage) u.tokenUsage = { prompt: 0, completion: 0, total: 0 };
+
+    const now = Date.now();
+    if (action === 'login') {
+      u.loginCount = (u.loginCount || 0) + 1;
+      u.lastLoginAt = now;
+      data.logs.push({ userId, username, timestamp: now, action: 'login' });
+    } else if (action === 'logout') {
+      data.logs.push({ userId, username, timestamp: now, action: 'logout' });
+    } else if (action === 'register') {
+      // 注册事件只负责把账号建档（upsert 已在上面统一处理），不额外计数
+      u.createdAt = u.createdAt || now;
+    } else if (action === 'set-test') {
+      // 权限调整不写入登录日志
+    } else if (action === 'heartbeat') {
+      const ms = Number(sessionMs) || 0;
+      if (ms > 0) u.totalUsageTime = (u.totalUsageTime || 0) + ms;
+    } else if (action === 'token') {
+      const p = Number(tokenUsage && tokenUsage.prompt) || 0;
+      const c = Number(tokenUsage && tokenUsage.completion) || 0;
+      u.tokenUsage.prompt += p;
+      u.tokenUsage.completion += c;
+      u.tokenUsage.total += (p + c);
+    }
+    u.lastAction = action;
+    u.lastActionTime = now;
+
+    // 日志上限，避免文件无限增长
+    if (data.logs.length > 2000) data.logs = data.logs.slice(-2000);
+
+    await _saveStats(data);
+    res.json({ ok: true, isTest: u.isTest });
+  } catch (e) {
+    console.error('[Stats] /api/stats/event 处理失败:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 查询单个账号在服务器上的测试权限（权威值，供账号登录/发请求前核对）
+app.get('/api/stats/test-permission', (req, res) => {
+  try {
+    const userId = req.query.userId;
+    if (!userId) return res.status(400).json({ error: '缺少 userId' });
+    const data = _loadStats();
+    const u = data.users[userId];
+    res.json({ userId, isTest: u ? !!u.isTest : null, exists: !!u });
+  } catch (e) {
+    console.error('[Stats] /api/stats/test-permission 处理失败:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// 拉取全量汇总（管理员监控页使用）
+app.get('/api/stats/summary', (req, res) => {
+  try {
+    const data = _loadStats();
+    res.json({
+      users: Object.values(data.users),
+      logs: data.logs.slice(-200).reverse()
+    });
+  } catch (e) {
+    console.error('[Stats] /api/stats/summary 处理失败:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // ========== 动态代理中间件：/api/* 请求转发到真实 API ==========

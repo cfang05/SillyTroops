@@ -281,7 +281,8 @@ class LLMClient {
       throw new Error('[LLMClient] generateWithMessagesStream: messages 不能为空');
     }
     const userConfig = storage.get(scopedKey('ai_model_settings')) || storage.get(STORAGE_KEYS.LLM_CONFIG) || {};
-    const isTestAccount = userManager.isTestAccount();
+    // 测试权限以服务器为权威：发请求前异步核对，admin 在别处关闭权限后下一次请求即被拦截
+    const isTestAccount = await userManager.isTestAccountChecked();
     const wantsTestModel = userConfig.model === 'test';
     if (wantsTestModel && !isTestAccount) {
       throw new Error('内置测试 API 仅测试账号可用，请在设置中选择其他模型');
@@ -546,7 +547,8 @@ class LLMClient {
   async _callAPI(messages, genParams) {
     // 1. 优先从 storage 读取用户配置（按当前登录用户隔离，settings.vue 写入时用同一 scopedKey）
     const userConfig = storage.get(scopedKey('ai_model_settings')) || storage.get(STORAGE_KEYS.LLM_CONFIG) || {};
-    const isTestAccount = userManager.isTestAccount();
+    // 测试权限以服务器为权威：发请求前异步核对
+    const isTestAccount = await userManager.isTestAccountChecked();
 
     // 安全兜底：测试模型仅测试账号（含 admin）可用，非测试账号即使本地配置被篡改为 test 也会被拒绝
     const wantsTestModel = userConfig.model === 'test';
