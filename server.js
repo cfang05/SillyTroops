@@ -172,19 +172,63 @@ app.get('/api/stats/summary', (req, res) => {
   }
 });
 
+// ========== 内置测试 API 的密钥（只保存在服务端，前端不携带） ==========
+// 背景：内置测试 Key 以前硬编码在 src/utils/llm/client.js 里，会随前端打包分发，
+// 任何访客都能从 dist 产物里抄走。现在前端只发一个 X-Test-Mode: 1 标记，真实 Key
+// 由这里读取并注入。读取顺序：
+//   1) 环境变量 TEST_API_KEY（Railway 等平台在 Variables 里配置，推荐）
+//   2) 本地开发兜底 data/secrets.json 的 { "TEST_API_KEY": "sk-..." }
+//      （data/ 已在 .gitignore 中，Key 不会入库、也不会进入前端产物）
+const SECRETS_FILE = path.join(__dirname, 'data', 'secrets.json');
+
+let _testApiKeyCache = null;
+function _readTestApiKey() {
+  if (_testApiKeyCache !== null) return _testApiKeyCache;
+  let value = process.env.TEST_API_KEY ? String(process.env.TEST_API_KEY).trim() : '';
+  if (!value) {
+    try {
+      if (fs.existsSync(SECRETS_FILE)) {
+        const raw = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf8'));
+        if (raw && raw.TEST_API_KEY) value = String(raw.TEST_API_KEY).trim();
+      }
+    } catch (e) {
+      console.warn('[TestAPI] 读取 data/secrets.json 失败:', e.message);
+    }
+  }
+  _testApiKeyCache = value;
+  return value;
+}
+
+// 内置测试通道的目标地址：只由服务端决定，客户端传来的 X-API-Base 在测试通道下会被忽略，
+// 否则任何人都能借它把服务端注入的内置 Key 转发到自己的服务器上。
+const TEST_API_TARGET = (process.env.TEST_API_TARGET || 'https://api.deepseek.com').replace(/\/$/, '');
+
 // ========== 动态代理中间件：/api/* 请求转发到真实 API ==========
 app.use('/api', (req, res, next) => {
   // 1. 读取用户自定义配置（优先级最高）
   const userApiBase = req.headers['x-api-base'];
   const userApiKey = req.headers['x-api-key'];
+  // 内置测试通道：前端只发 X-Test-Mode: 1，且不带 X-API-Key（带了 Key 就按用户自己的配置走）
+  const testMode = req.headers['x-test-mode'] === '1' && !userApiKey;
 
   // 2. 回退到环境变量（Railway 部署时配置）
   const defaultApiBase = process.env.API_TARGET || 'https://api.deepseek.com';
   const defaultApiKey = process.env.API_KEY || '';
 
   // 3. 确定最终使用的目标 API
-  let targetBase = userApiBase || defaultApiBase;
-  const targetKey = userApiKey || defaultApiKey;
+  let targetBase;
+  let targetKey;
+  if (testMode) {
+    targetKey = _readTestApiKey();
+    if (!targetKey) {
+      console.warn('[Proxy] 测试通道请求被拒：服务端未配置 TEST_API_KEY（环境变量 / data/secrets.json 均无）');
+      return res.status(503).json({ error: '内置测试 API 未配置：服务端缺少 TEST_API_KEY' });
+    }
+    targetBase = TEST_API_TARGET;
+  } else {
+    targetBase = userApiBase || defaultApiBase;
+    targetKey = userApiKey || defaultApiKey;
+  }
 
   // 4. 自动补全 OpenAI 兼容路径
   if (targetBase && !targetBase.endsWith('/completions') && !targetBase.endsWith('/chat/completions')) {
@@ -193,6 +237,7 @@ app.use('/api', (req, res, next) => {
 
   console.log('[Proxy] 请求路径:', req.path);
   console.log('[Proxy] 目标 API:', targetBase);
+  console.log('[Proxy] 内置测试通道:', testMode);
   console.log('[Proxy] 使用自定义 Key:', !!userApiKey);
 
   // 5. 动态创建代理中间件
@@ -210,6 +255,7 @@ app.use('/api', (req, res, next) => {
       // 移除前端传来的自定义头（避免泄露给第三方 API）
       proxyReq.removeHeader('x-api-base');
       proxyReq.removeHeader('x-api-key');
+      proxyReq.removeHeader('x-test-mode');
 
       console.log('[Proxy] 最终请求头:', {
         host: proxyReq.getHeader('host'),
@@ -283,7 +329,10 @@ app.listen(PORT, () => {
   console.log(`📂 静态文件目录: ${staticPath}`);
   console.log(`🔑 默认 API 目标: ${process.env.API_TARGET || 'https://api.deepseek.com'}`);
   console.log(`🔐 环境变量 API_KEY: ${process.env.API_KEY ? '已设置' : '未设置（用户需自行配置）'}`);
+  console.log(`🧪 内置测试 Key(TEST_API_KEY): ${_readTestApiKey() ? '已设置' : '未设置（测试通道不可用）'}`);
+  console.log(`🧪 内置测试目标(TEST_API_TARGET): ${TEST_API_TARGET}`);
   console.log('='.repeat(50));
   console.log('💡 用户可通过请求头 X-API-Base 和 X-API-Key 自定义 API');
+  console.log('💡 前端「测试 API」通过请求头 X-Test-Mode: 1 使用服务端内置 Key');
   console.log('='.repeat(50));
 });

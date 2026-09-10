@@ -42,11 +42,32 @@ git push origin main
 |--------|------|--------|----------|
 | `API_TARGET` | 默认 API 地址 | `https://api.deepseek.com` | 否（用户可自行配置） |
 | `API_KEY` | 默认 API Key | `sk-xxxxxxxxxxxx` | 否（用户可自行配置） |
+| `TEST_API_KEY` | **内置测试 API 的 Key**（测试账号选「测试 API」时由后端注入） | `sk-xxxxxxxxxxxx` | 否（不配则测试通道返回 503） |
+| `TEST_API_TARGET` | 内置测试 API 的目标地址 | `https://api.deepseek.com` | 否（默认即此值） |
 | `PORT` | 服务器端口 | `3000` | 否（Railway 自动注入） |
 
 **注意**：
 - 如果不配置环境变量，用户必须在网页设置中输入自己的 API 地址和 Key
 - 如果配置了环境变量，用户可以使用默认配置，也可以覆盖为自己的配置
+
+### 4.1 内置测试 API 的 Key 现在只放在服务端
+
+内置测试 Key **不再硬编码在前端**（以前在 `src/utils/llm/client.js`，会随 `dist` 产物分发、任何访客都能抄走）。
+现在的取用顺序：
+
+1. 环境变量 `TEST_API_KEY`（Railway Variables，推荐）
+2. 本地开发兜底 `data/secrets.json`：
+
+   ```json
+   { "TEST_API_KEY": "sk-你的Key" }
+   ```
+
+   `data/` 已在 `.gitignore` 中，Key 不会入库、也不会进入前端产物。
+
+前端（H5）选择「测试 API」时只发请求头 `X-Test-Mode: 1`，由 `server.js` 的 `/api` 代理注入 Key，
+并且**忽略客户端传来的 `X-API-Base`**（避免有人把服务端的内置 Key 转发到自己的服务器）。
+
+> ⚠️ 小程序端没有 `/api` 代理，因此**不支持内置测试 API**，必须自配 Key。
 
 ### 5. 等待部署完成
 

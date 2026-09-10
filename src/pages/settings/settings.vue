@@ -281,7 +281,9 @@ export default {
         const settings = storage.get(llmConfigKey())
         if (settings) {
           // #ifdef MP-WEIXIN
-          this.currentModel = settings.model || 'default'
+          // 小程序端不支持内置测试 API（没有 /api 代理，Key 也无法放在服务端），
+          // 若本地残留 model='test' 则回落到默认模型，避免对话页一直报「不支持」
+          this.currentModel = (settings.model && settings.model !== 'test') ? settings.model : 'default'
           // #endif
           // #ifndef MP-WEIXIN
           this.currentModel = settings.model || (this.isTestAccount ? 'test' : 'hunyuan')
