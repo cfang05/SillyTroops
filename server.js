@@ -598,7 +598,13 @@ async function startServer() {
     console.warn('[DB] 未配置 DATABASE_URL：账号与统计接口将返回 503');
   }
 
-  // 3. 监听
+  // 3. 静态产物自检：dist/build/h5 由本地构建后随仓库提交（部署时不再重新构建前端，
+  //    见 nixpacks.toml —— NODE_ENV=production 会跳过 devDependencies，uni CLI 不可用）
+  if (!fs.existsSync(path.join(staticPath, 'index.html'))) {
+    console.warn('[Static] 未找到 dist/build/h5/index.html：前端产物缺失，请先在本地执行 npm run build 并提交 dist/ 再部署');
+  }
+
+  // 4. 监听
   app.listen(PORT, () => {
     console.log('='.repeat(50));
     console.log(`📡 监听端口: ${PORT}`);

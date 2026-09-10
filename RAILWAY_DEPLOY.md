@@ -9,7 +9,7 @@
 
 ## 🚀 部署步骤
 
-### 1. 构建前端代码
+### 1. 构建前端代码（**必须在本地做**）
 
 在项目根目录运行：
 
@@ -17,14 +17,20 @@
 npm run build
 ```
 
-这会生成 `dist/build/h5` 目录，包含编译后的静态文件。
+这会生成/更新 `dist/build/h5` 目录，包含编译后的静态文件。
+
+> ⚠️ **部署时不会在 Railway 上重新构建前端**：Railway 变量里 `NODE_ENV=production` 会让
+> Nixpacks 跳过 devDependencies，而构建命令 `uni` 由 devDependency `@dcloudio/vite-plugin-uni`
+> 提供，线上执行 `npm run build` 会报 `sh: 1: uni: not found`（exit 127）导致部署失败。
+> 因此本项目约定：**前端在本地构建，`dist/` 随仓库提交**（`nixpacks.toml` 里已显式跳过线上构建）。
+> 改了 `src/` 下任何前端代码，都必须重新 `npm run build` 并把 `dist/` 一起提交，否则线上前端仍是旧版本。
 
 ### 2. 提交代码到 Git 仓库
 
 ```bash
 git add .
 git commit -m "feat: 支持 Railway 部署"
-git push origin main
+git push origin master
 ```
 
 ### 3. 在 Railway 上创建项目
@@ -33,6 +39,8 @@ git push origin main
 2. 点击 **New Project** → **Deploy from GitHub repo**
 3. 选择你的仓库（授权 Railway 访问 GitHub）
 4. Railway 会自动检测 `package.json` 并开始部署
+5. 部署后会读取仓库根目录的 `nixpacks.toml`：只安装生产依赖（`npm ci --omit=dev`）、
+   跳过前端构建、以 `npm start` 启动
 
 ### 4. 配置环境变量（可选）
 

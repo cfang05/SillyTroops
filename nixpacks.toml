@@ -1,0 +1,24 @@
+# Railway（Nixpacks）部署配置
+#
+# 背景（2026-09 修复的部署失败）：
+#   Railway 变量里设置了 NODE_ENV=production，Nixpacks 以生产模式安装依赖时会跳过
+#   devDependencies；而前端构建命令 `uni` 由 devDependency @dcloudio/vite-plugin-uni 提供，
+#   于是 Nixpacks 默认执行的 `npm run build` 会报 `sh: 1: uni: not found`（exit 127），
+#   整个部署失败。
+#
+# 处理方式：
+#   前端产物 dist/ 已随仓库提交并保持同步，因此部署时**跳过服务端的前端构建**，
+#   只安装生产依赖（pg / express / http-proxy-middleware 等），然后启动 Node 服务。
+#
+# ⚠️ 重要约定：改了 src/ 下的前端源码后，必须先在本地执行 `npm run build`，
+#    并把重新生成的 dist/ 一起提交推送，否则线上前端仍是旧版本
+#    （服务启动时会在日志里提示 dist/build/h5/index.html 是否缺失）。
+
+[phases.install]
+cmds = ["npm ci --omit=dev --no-audit --no-fund"]
+
+[phases.build]
+cmds = ["echo 'skip frontend build: dist/ is committed (run npm run build locally and commit dist)'"]
+
+[start]
+cmd = "npm start"
