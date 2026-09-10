@@ -4,8 +4,13 @@
 
 import { defineStore } from 'pinia'
 import storage from '../utils/storage.js'
+import { scopedKey } from '../utils/account/userScope.js'
 
-const STORAGE_KEY = 'plugin_settings'
+// 渲染开关按用户隔离（原先是全局键 plugin_settings，A 用户改开关会影响 B 用户）。
+// 迁移前的旧全局数据按既定决策作废/重置，各账号从默认值开始。
+function storageKey() {
+  return scopedKey('plugin_settings')
+}
 
 export interface RendererState {
   branch: boolean
@@ -30,7 +35,7 @@ export const usePluginStore = defineStore('plugin', {
   actions: {
     load() {
       try {
-        const saved = storage.get(STORAGE_KEY)
+        const saved = storage.get(storageKey())
         if (saved && saved.renderers) {
           Object.assign(this.renderers, saved.renderers)
         }
@@ -45,7 +50,7 @@ export const usePluginStore = defineStore('plugin', {
 
     save() {
       try {
-        storage.set(STORAGE_KEY, { renderers: this.renderers })
+        storage.set(storageKey(), { renderers: this.renderers })
       } catch (e) {
         console.warn('[pluginStore] save 失败:', e)
       }

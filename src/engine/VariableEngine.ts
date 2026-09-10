@@ -9,14 +9,19 @@
 //
 // 变量分层（对齐酒馆）：
 //   - 局部变量：runtimeStore.localVariables（随对话存档）
-//   - 全局变量：storage['global_variables']（跨对话持久化）
+//   - 全局变量：storage[u_{userId}_global_variables]（按用户隔离，跨对话持久化）
+//     注：迁移前是不带前缀的 global_variables（所有人共用一份），按既定决策作废重置。
 
 import { useRuntimeStore } from '../stores/runtimeStore'
 import storage from '../utils/storage.js'
+import { scopedKey } from '../utils/account/userScope.js'
 // @ts-ignore - dice-helper.js 无类型声明
 import diceHelper from '../utils/dice-helper.js'
 
-const GLOBAL_VAR_STORAGE_KEY = 'global_variables'
+/** 全局变量存储键（按当前用户隔离） */
+function globalVarStorageKey(): string {
+  return scopedKey('global_variables')
+}
 
 export type VariableScope = 'local' | 'global'
 
@@ -35,7 +40,7 @@ export function setVar(name: string, value: string, scope: VariableScope = 'loca
   if (scope === 'global') {
     const vars = _loadGlobalVars()
     vars[name] = value
-    storage.set(GLOBAL_VAR_STORAGE_KEY, vars)
+    storage.set(globalVarStorageKey(), vars)
   } else {
     const runtimeStore = useRuntimeStore()
     runtimeStore.setLocalVariable(name, value)
@@ -70,7 +75,7 @@ function delVar(name: string, scope: VariableScope = 'local'): void {
   if (scope === 'global') {
     const vars = _loadGlobalVars()
     delete vars[name]
-    storage.set(GLOBAL_VAR_STORAGE_KEY, vars)
+    storage.set(globalVarStorageKey(), vars)
   } else {
     const runtimeStore = useRuntimeStore()
     delete runtimeStore.localVariables[name]
@@ -308,7 +313,7 @@ export function substituteVariables(text: string, vars: Record<string, string> =
 
 function _loadGlobalVars(): Record<string, string> {
   try {
-    return storage.get(GLOBAL_VAR_STORAGE_KEY) || {}
+    return storage.get(globalVarStorageKey()) || {}
   } catch (e) {
     return {}
   }

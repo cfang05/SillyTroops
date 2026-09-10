@@ -14,17 +14,21 @@ export default {
     userManager.ensureAdminSeed()
     this.loadOpenid()
     this.checkUserLogin()
-    this._startHeartbeatTimer()
+    // 活跃时长统计：只在用户真正有交互（点击/按键/触摸/滚动）时计时，
+    // 挂机超过 5 分钟不计；由 userManager 内部每 30 秒结算并上报一次。
+    userManager.startActivityTracking()
     // #ifdef H5
     // H5 端 uni-app 的 onHide 依赖页面可见性事件，用户直接关标签页/刷新时可能不触发，
-    // 使用时长会丢在"最后一次心跳之后、页面关闭之前"这段。补浏览器原生事件做兜底：
-    // 页面隐藏或关闭时立刻把已累计的会话时长结算进 totalUsageTime 并上报服务器。
+    // 活跃时长会丢在"最后一次结算之后、页面关闭之前"这段。补浏览器原生事件做兜底：
+    // 页面隐藏或关闭时立刻结算并上报。
     if (typeof window !== 'undefined') {
       window.addEventListener('pagehide', () => { try { userManager.heartbeat() } catch (e) { /* ignore */ } })
       window.addEventListener('beforeunload', () => { try { userManager.heartbeat() } catch (e) { /* ignore */ } })
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState === 'hidden') {
           try { userManager.heartbeat() } catch (e) { /* ignore */ }
+        } else {
+          try { userManager.markActivity() } catch (e) { /* ignore */ }
         }
       })
     }
@@ -33,35 +37,13 @@ export default {
 
   onShow() {
     this.checkLoginStatus()
-    // 重新开始会话计时（从后台返回）
-    const userId = userManager.getCurrentUserId()
-    if (userId) {
-      try {
-        // 已有会话进行中（会话开始时间在有效期内）就不要重置，避免把已累计的
-        // 前台使用时段归零；只有尚未开始计时（冷启动/刚登录后首次展示）才初始化
-        const start = uni.getStorageSync('sillytroops_session_start')
-        if (!start || (Date.now() - start) > 24 * 60 * 60 * 1000) {
-          uni.setStorageSync('sillytroops_session_start', Date.now())
-        }
-      } catch (e) { /* ignore */ }
-    }
+    // 回到前台视为重新活跃（后台期间不计入活跃时长）
+    try { userManager.markActivity() } catch (e) { /* ignore */ }
   },
 
   onHide() {
-    // 切到后台时把已经过去的使用时长计入统计（并上报服务器）
+    // 切到后台时把已经累计的活跃时长结算并上报
     userManager.heartbeat()
-  },
-
-  /**
-   * 周期性心跳：只依赖 onHide（切后台）无法覆盖"用户长时间挂在前台不切走"的场景，
-   * 使用时长会一直停在 0 直到真正切后台/登出才结算一次。这里额外用一个前台定时器
-   * 每 60 秒调用一次 heartbeat()，让使用时长即使不切后台也能持续、及时地累加与上报。
-   */
-  _startHeartbeatTimer() {
-    if (this._heartbeatTimer) return
-    this._heartbeatTimer = setInterval(() => {
-      try { userManager.heartbeat() } catch (e) { /* ignore */ }
-    }, 60000)
   },
 
   // 检查本地账号系统的登录态；未登录则跳转登录页（首次启动/退出登录后）

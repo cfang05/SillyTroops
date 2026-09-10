@@ -7,13 +7,19 @@
     "build:h5": "uni build",
     "build:mp-weixin": "uni build -p mp-weixin",
     "build": "npm run build:h5",
-    "start": "node server.js"
+    "start": "node server.js",
+    "migrate": "node migrate.js",
+    "smoke:accounts": "node scripts/smoke-accounts.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "dompurify": "^3.1.6",
     "express": "^4.22.2",
     "http-proxy-middleware": "^2.0.10",
     "js-tiktoken": "^1.0.21",
+    "pg": "^8.23.0",
     "pinia": "^2.0.32",
     "vue": "^3.2.47"
   },
@@ -26,6 +32,7 @@
     "@dcloudio/uni-mp-weixin": "^3.0.0-alpha-3080120221122001",
     "@dcloudio/vite-plugin-uni": "^3.0.0-alpha-3080120221122001",
     "@vue/tsconfig": "^0.5.1",
+    "pg-mem": "^3.0.14",
     "sass": "^1.58.0",
     "typescript": "^5.4.5",
     "vite": "^5.0.0"

@@ -26,10 +26,10 @@
         <input class="input" type="text" placeholder="展示用昵称" v-model="nickname" />
       </view>
 
-      <button class="btn-primary" @tap="onSubmit">{{ isRegisterMode ? '注册并登录' : '登录' }}</button>
+      <button class="btn-primary" :loading="submitting" :disabled="submitting" @tap="onSubmit">{{ isRegisterMode ? '注册并登录' : '登录' }}</button>
 
       <view class="hint-box" v-if="!isRegisterMode">
-        <text class="hint-text"><text class="hint-b">测试账号：</text>test01~test05（密码详见开发文档）；注册的新账号同为测试账号，均可使用内置测试 API</text>
+        <text class="hint-text"><text class="hint-b">提示：</text>账号保存在服务器（密码加密存储）。新注册的账号默认为测试账号，可直接使用内置测试 API，也可以在设置页填写自己的 API Key。</text>
       </view>
 
       <view class="switch-mode" @tap="toggleMode">
@@ -54,6 +54,7 @@ onMounted(() => {
 })
 
 const isRegisterMode = ref(false)
+const submitting = ref(false)
 const username = ref('')
 const password = ref('')
 const nickname = ref('')
@@ -62,35 +63,41 @@ function toggleMode() {
   isRegisterMode.value = !isRegisterMode.value
 }
 
-function onSubmit() {
+async function onSubmit() {
   const u = username.value.trim()
   const p = password.value.trim()
   if (!u || !p) {
     uni.showToast({ title: '请输入用户名和密码', icon: 'none' })
     return
   }
+  if (submitting.value) return
+  submitting.value = true
 
-  if (isRegisterMode.value) {
-    const res = userStore.register(u, p, nickname.value.trim())
-    if (!res.success) {
-      uni.showToast({ title: res.message || '注册失败', icon: 'none' })
-      return
-    }
-    // 注册成功后自动登录
-    const loginRes = userStore.login(u, p)
-    if (loginRes.success) {
-      _afterLoginSuccess()
+  try {
+    if (isRegisterMode.value) {
+      const res = await userStore.register(u, p, nickname.value.trim())
+      if (!res.success) {
+        uni.showToast({ title: res.message || '注册失败', icon: 'none' })
+        return
+      }
+      // 注册成功后自动登录（服务端已签发 token，这里直接用注册结果登录）
+      const loginRes = await userStore.login(u, p)
+      if (loginRes.success) {
+        _afterLoginSuccess()
+      } else {
+        uni.showToast({ title: '注册成功，请登录', icon: 'none' })
+        isRegisterMode.value = false
+      }
     } else {
-      uni.showToast({ title: '注册成功，请登录', icon: 'none' })
-      isRegisterMode.value = false
+      const res = await userStore.login(u, p)
+      if (!res.success) {
+        uni.showToast({ title: res.message || '登录失败', icon: 'none' })
+        return
+      }
+      _afterLoginSuccess()
     }
-  } else {
-    const res = userStore.login(u, p)
-    if (!res.success) {
-      uni.showToast({ title: res.message || '登录失败', icon: 'none' })
-      return
-    }
-    _afterLoginSuccess()
+  } finally {
+    submitting.value = false
   }
 }
 

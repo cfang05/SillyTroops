@@ -90,7 +90,8 @@
            避免出现两个地方都能改生成参数、互相打架、又没有一个是实际生效的来源这种情况。
            这里只负责"用什么模型 / 用什么接口地址 / 用什么 Key"这类连接层配置。 -->
       <view class="section" v-if="currentModel === 'test'">
-        <text class="section-subtitle">已使用内置 DeepSeek 测试接口，无需额外配置即可直接对话</text>
+        <text class="section-subtitle" v-if="testApiInfo.enabled">已使用内置测试接口（{{ testApiInfo.label }}）：模型与 Key 由服务端统一配置，无需填写</text>
+        <text class="section-subtitle" v-else>内置测试接口当前不可用，请选择其他模型并填写自己的 API Key</text>
       </view>
 
       <!-- 渲染开关 -->
@@ -179,6 +180,7 @@ import { useCharacterCardStore } from '../../stores/characterCardStore'
 import { useNoteStore } from '../../stores/noteStore'
 import { useRegexPresetStore } from '../../stores/regexPresetStore'
 import { getNavBarHeight } from '../../utils/navbar.js'
+import { getTestApiConfig } from '../../utils/llm/client.js'
 import NavBar from '../../components/common/NavBar.vue'
 
 // LLM 配置改为按当前用户隔离存储（原全局 STORAGE_KEYS.LLM_CONFIG 键名不变，但加上用户前缀）
@@ -231,6 +233,9 @@ export default {
         { value: 'assistant', label: 'assistant' }
       ],
       isMpWeixin: false,
+      // 内置测试通道的公开信息（无密钥）：可用性与展示名都来自服务端，
+      // 这样官方调整模型名时只需改服务端变量，前端无需改代码/重新发版
+      testApiInfo: { enabled: false, label: '' },
       // 全局正则（正侧）
       regexPresets: []
     }
@@ -240,6 +245,7 @@ export default {
     this.navBarHeight = getNavBarHeight().navBarHeight
     this._initModelList()
     this.loadSettings()
+    this._loadTestApiInfo()
     this._initPluginAndModuleStores()
     this._initNoteStore()
     this._initRegexPresetStore()
@@ -249,6 +255,15 @@ export default {
   },
 
   methods: {
+    /** 读取内置测试通道的公开配置（无密钥，仅用于显示可用性与展示名） */
+    async _loadTestApiInfo() {
+      try {
+        this.testApiInfo = await getTestApiConfig()
+      } catch (e) {
+        console.warn('[Settings] 读取内置测试通道配置失败:', e && e.message)
+      }
+    },
+
     _initModelList() {
       this.isTestAccount = userManager.isTestAccount()
       // #ifdef MP-WEIXIN

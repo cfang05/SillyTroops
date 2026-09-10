@@ -19,21 +19,46 @@ const H5_DEFAULT_CONFIG = {
 // #endif
 
 /**
- * 内置测试 API（DeepSeek）——这里只保留公开信息，不含任何密钥。
- * 仅供测试账号（含 admin）用于测试游戏玩法，无需在设置页配置 Key。
+ * 内置测试通道（一切都由服务端决定）。
  *
- * 🔐 密钥不再随前端分发：前端只发一个 X-Test-Mode: 1 标记，真实 Key 由服务端持有并注入
- *    （生产环境 = Railway 变量 TEST_API_KEY；本地开发 = data/secrets.json，
- *      见 server.js 的 _readTestApiKey()；data/ 已在 .gitignore 中，不会入库）。
- * 小程序端没有 /api 代理可用，因此不支持内置测试 API，必须自配 Key。
+ * 前端不再持有 Key，也不知道模型名与目标地址：只调用服务端接口 POST /api/chat/test，
+ * 由服务端按数据库判定权限（is_admin || is_test）、注入 Key、决定模型名（TEST_API_MODEL）
+ * 与协议参数（如 DeepSeek 的 thinking:disabled）。采样参数由前端预设决定，服务端原样透传。
+ *
+ * 可用性与展示名来自 GET /api/test-api/config（无密钥）；官方改模型名时只需改服务端变量。
+ * 小程序端没有 /api 代理可用，不支持内置测试 API，必须自配 Key。
  */
-const TEST_API_CONFIG = {
-  ENDPOINT: 'https://api.deepseek.com',
-  MODEL: 'deepseek-v4-flash'
-};
+const TEST_API_CHAT_PATH = '/api/chat/test';
+const TEST_API_CONFIG_PATH = '/api/test-api/config';
 
-/** 内置测试通道的请求标记：服务端据此把内置 Key 注入到请求头（前端永远拿不到该 Key） */
-const TEST_MODE_HEADER = 'X-Test-Mode';
+let _testApiConfigCache = null;
+
+/**
+ * 读取内置测试通道的公开配置（用于设置页显示与可用性判断）
+ * @param {boolean} [force] 忽略缓存强制刷新
+ * @returns {Promise<{enabled:boolean, label:string, model:string}>}
+ */
+export async function getTestApiConfig(force) {
+  if (!force && _testApiConfigCache) return _testApiConfigCache;
+  if (typeof fetch === 'undefined') {
+    // 小程序等没有 fetch 的环境
+    _testApiConfigCache = { enabled: false, label: '', model: '' };
+    return _testApiConfigCache;
+  }
+  try {
+    const resp = await fetch(TEST_API_CONFIG_PATH, { method: 'GET' });
+    const data = await resp.json();
+    _testApiConfigCache = {
+      enabled: !!(data && data.enabled),
+      label: (data && data.label) || '',
+      model: (data && data.model) || ''
+    };
+  } catch (e) {
+    console.warn('[TestAPI] 读取内置测试通道配置失败:', e && e.message);
+    _testApiConfigCache = { enabled: false, label: '', model: '' };
+  }
+  return _testApiConfigCache;
+}
 
 /**
  * 是否为 DeepSeek V4 系模型/端点（需显式传 thinking 参数）。
@@ -295,14 +320,13 @@ class LLMClient {
     }
 
     // 显式选择"测试模型"：走内置测试通道。
-    // 🔐 前端不携带任何 Key：H5 端只发 X-Test-Mode 标记，由 server.js 的 /api 代理注入 Key；
-    // 小程序端没有该代理，因此不支持内置测试 API，必须自配 Key。
+    // 前端只带登录 token，模型/Key/目标地址全部由服务端决定；小程序端没有该代理，不支持。
     if (wantsTestModel) {
       // #ifdef MP-WEIXIN
       throw new Error('小程序端不支持内置测试 API，请在「设置」页填写自己的 API Key');
       // #endif
       // #ifndef MP-WEIXIN
-      return await this._streamWithFetch(TEST_API_CONFIG.ENDPOINT, '', TEST_API_CONFIG.MODEL, messages, genParams, onChunk, { testMode: true });
+      return await this._streamTestApi(messages, genParams, onChunk);
       // #endif
     }
 
@@ -326,9 +350,9 @@ class LLMClient {
     if (!endpoint) endpoint = H5_DEFAULT_CONFIG.ENDPOINT;
     if (!modelName) modelName = H5_DEFAULT_CONFIG.MODEL;
     if (!apiKey) {
-      // 测试账号兜底：未配置 Key 时走内置测试通道（Key 在服务端，前端只发 X-Test-Mode 标记）
+      // 测试账号兜底：未配置 Key 时走内置测试通道（Key 与模型都在服务端）
       if (isTestAccount) {
-        return await this._streamWithFetch(TEST_API_CONFIG.ENDPOINT, '', TEST_API_CONFIG.MODEL, messages, genParams, onChunk, { testMode: true });
+        return await this._streamTestApi(messages, genParams, onChunk);
       }
       throw new Error('未配置 API Key，请在「设置」页填写 API Key 后再对话');
     }
@@ -347,14 +371,11 @@ class LLMClient {
   }
 
   /**
-   * H5 端：fetch + ReadableStream 解析 OpenAI 兼容 SSE 流
-   * @param {object} [options] - { testMode: true } 表示走内置测试通道：不带 Key、不带 X-API-Base，
-   *                            仅发 X-Test-Mode 标记，由 server.js 注入服务端持有的 Key
+   * H5 端：fetch + ReadableStream 解析 OpenAI 兼容 SSE 流（用户自配 Key 通道）
    * @private
    */
   // #ifndef MP-WEIXIN
-  async _streamWithFetch(endpoint, apiKey, model, messages, genParams, onChunk, options) {
-    const testMode = !!(options && options.testMode);
+  async _streamWithFetch(endpoint, apiKey, model, messages, genParams, onChunk) {
     // H5 环境：将所有请求改为相对路径 /api，由后端代理转发
     let url = '/api/chat/completions';
 
@@ -381,18 +402,12 @@ class LLMClient {
     const controller = new AbortController();
     this._abortController = controller;
 
-    // H5 环境：将 API 配置通过请求头传递给后端代理
+    // H5 环境：将用户自配的 endpoint / apiKey 通过请求头传给后端代理
     const headers = {
       'Content-Type': 'application/json'
     };
-    if (testMode) {
-      // 内置测试通道：不带 Key，也不带 X-API-Base —— 目标地址与 Key 全部由服务端决定，
-      // 避免任何人借 X-API-Base 把服务端注入的内置 Key 转发到自己的服务器。
-      headers[TEST_MODE_HEADER] = '1';
-    } else {
-      if (endpoint) headers['X-API-Base'] = endpoint;
-      if (apiKey) headers['X-API-Key'] = apiKey;
-    }
+    if (endpoint) headers['X-API-Base'] = endpoint;
+    if (apiKey) headers['X-API-Key'] = apiKey;
 
     console.log('[API Request] URL:', url);
     console.log('[API Request] Headers:', headers);
@@ -433,6 +448,15 @@ class LLMClient {
       throw new Error(`HTTP ${resp.status}: ${errText || '请求失败'}`);
     }
 
+    return await this._consumeSSE(resp, onChunk);
+  }
+
+  /**
+   * 消费一次 SSE 响应（用户自配 Key 通道与内置测试通道共用）
+   * @private
+   */
+  // #ifndef MP-WEIXIN
+  async _consumeSSE(resp, onChunk) {
     const supportsStreamReader = !!(resp.body && typeof resp.body.getReader === 'function');
     console.log('[API Response] 当前环境是否支持 ReadableStream.getReader:', supportsStreamReader);
 
@@ -522,6 +546,121 @@ class LLMClient {
   }
 
   /**
+   * 把预设里的采样参数整理成请求体字段（值不做任何修改，服务端原样透传）
+   * @private
+   */
+  _collectSamplingParams(params) {
+    const p = params || {};
+    const out = {
+      temperature: typeof p.temperature === 'number' ? p.temperature : 0.7,
+      max_tokens: typeof p.maxTokens === 'number' ? p.maxTokens : 2000
+    };
+    if (typeof p.topP === 'number') out.top_p = p.topP;
+    if (typeof p.presencePenalty === 'number') out.presence_penalty = p.presencePenalty;
+    if (typeof p.frequencyPenalty === 'number') out.frequency_penalty = p.frequencyPenalty;
+    if (typeof p.topK === 'number' && p.topK > 0) out.top_k = p.topK;
+    if (typeof p.seed === 'number' && p.seed >= 0) out.seed = p.seed;
+    if (typeof p.n === 'number' && p.n > 1) out.n = p.n;
+    return out;
+  }
+
+  /**
+   * 内置测试通道：流式（模型/Key/目标地址/thinking 全部由服务端决定，此处只带登录 token）
+   * @private
+   */
+  async _streamTestApi(messages, genParams, onChunk) {
+    const token = userManager.getAuthToken();
+    if (!token) throw new Error('登录状态无效，请重新登录后再使用内置测试 API');
+
+    // 只有服务端明确说可用时才发起请求，错误提示更明确（而不是等到 403）
+    const cfg = await getTestApiConfig();
+    if (!cfg.enabled) throw new Error('内置测试 API 当前不可用，请在「设置」页填写自己的 API Key');
+
+    const requestBody = Object.assign({
+      messages: messages,
+      stream: true
+    }, this._collectSamplingParams(genParams));
+
+    const controller = new AbortController();
+    this._abortController = controller;
+
+    const headers = {
+      'Content-Type': 'application/json',
+      'Authorization': 'Bearer ' + token
+    };
+
+    console.log('[TestAPI Request] URL:', TEST_API_CHAT_PATH);
+    console.log('[TestAPI Request] Body size:', JSON.stringify(requestBody).length);
+
+    let resp;
+    try {
+      resp = await fetch(TEST_API_CHAT_PATH, {
+        method: 'POST',
+        headers: headers,
+        body: JSON.stringify(requestBody),
+        signal: controller.signal
+      });
+    } catch (error) {
+      this._abortController = null;
+      console.error('[TestAPI] fetch() 抛出异常:', error.name, error.message);
+      throw error;
+    }
+
+    console.log('[TestAPI Response] Status:', resp.status);
+    if (!resp.ok) {
+      const errText = await resp.text().catch(() => '');
+      this._abortController = null;
+      let message = errText;
+      try {
+        const parsed = JSON.parse(errText);
+        message = parsed.error || parsed.detail || errText;
+      } catch (e) { /* 保持原文 */ }
+      throw new Error(`HTTP ${resp.status}: ${message || '请求失败'}`);
+    }
+
+    return await this._consumeSSE(resp, onChunk);
+  }
+
+  /**
+   * 内置测试通道：非流式（关闭流式的预设使用）
+   * @private
+   */
+  async _callTestApiOnce(messages, genParams) {
+    const token = userManager.getAuthToken();
+    if (!token) throw new Error('登录状态无效，请重新登录后再使用内置测试 API');
+
+    const cfg = await getTestApiConfig();
+    if (!cfg.enabled) throw new Error('内置测试 API 当前不可用，请在「设置」页填写自己的 API Key');
+
+    const requestBody = Object.assign({
+      messages: messages,
+      stream: false
+    }, this._collectSamplingParams(genParams));
+
+    const resp = await fetch(TEST_API_CHAT_PATH, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Bearer ' + token
+      },
+      body: JSON.stringify(requestBody)
+    });
+
+    const text = await resp.text().catch(() => '');
+    let data = null;
+    try { data = JSON.parse(text); } catch (e) { /* 保持 null */ }
+
+    if (!resp.ok) {
+      const message = (data && (data.error || data.detail)) || text || '请求失败';
+      throw new Error(`HTTP ${resp.status}: ${message}`);
+    }
+    const content = _pickAssistantText(data?.choices?.[0]?.message);
+    if (!content) throw new Error('API 返回格式异常（正文为空）');
+    return content;
+  }
+  // #endif
+
+  /**
    * 手动解析一段完整的 SSE 文本（用于 fetch 不支持 ReadableStream.getReader 的手机浏览器兜底）
    * @private
    */
@@ -568,13 +707,13 @@ class LLMClient {
       throw new Error('内置测试 API 仅测试账号可用，请在设置中选择其他模型');
     }
 
-    // 显式选择"测试模型"：走内置测试通道（密钥在服务端，前端只发 X-Test-Mode 标记）
+    // 显式选择"测试模型"：走内置测试通道（模型/Key 全部在服务端，前端只带登录 token）
     if (wantsTestModel) {
       // #ifdef MP-WEIXIN
       throw new Error('小程序端不支持内置测试 API，请在「设置」页填写自己的 API Key');
       // #endif
       // #ifndef MP-WEIXIN
-      return await this._callCustomAPI(TEST_API_CONFIG.ENDPOINT, '', TEST_API_CONFIG.MODEL, messages, genParams, { testMode: true });
+      return await this._callTestApiOnce(messages, genParams);
       // #endif
     }
 
@@ -603,9 +742,9 @@ class LLMClient {
     if (!endpoint) endpoint = H5_DEFAULT_CONFIG.ENDPOINT;
     if (!modelName) modelName = H5_DEFAULT_CONFIG.MODEL;
     if (!apiKey) {
-      // 测试账号兜底：未配置 Key 时走内置测试通道（Key 在服务端），便于直接测试玩法
+      // 测试账号兜底：未配置 Key 时走内置测试通道（Key 与模型都在服务端），便于直接测试玩法
       if (isTestAccount) {
-        return await this._callCustomAPI(TEST_API_CONFIG.ENDPOINT, '', TEST_API_CONFIG.MODEL, messages, genParams, { testMode: true });
+        return await this._callTestApiOnce(messages, genParams);
       }
       throw new Error('未配置 API Key，请在「设置」页填写 API Key 后再对话');
     }
@@ -620,15 +759,12 @@ class LLMClient {
   }
 
   /**
-   * 调用自定义 API（OpenAI 兼容接口）
+   * 调用自定义 API（OpenAI 兼容接口，用户自配 Key 通道）
    * @param {object} [genParams] - { temperature, maxTokens, topP, presencePenalty, frequencyPenalty }
    *                                来自 Preset.generationParams，未提供字段使用默认值
-   * @param {object} [options] - { testMode: true } 表示走内置测试通道：不带 Key、不带 X-API-Base，
-   *                             仅发 X-Test-Mode 标记，由 server.js 注入服务端持有的 Key
    * @private
    */
-  async _callCustomAPI(endpoint, apiKey, model, messages, genParams, options) {
-    const testMode = !!(options && options.testMode);
+  async _callCustomAPI(endpoint, apiKey, model, messages, genParams) {
     // #ifdef H5
     // H5 环境：将所有请求改为相对路径 /api，由后端代理转发
     const url = '/api/chat/completions';
@@ -671,19 +807,12 @@ class LLMClient {
     console.log('[LLMClient] 调用自定义 API', { url, model, temperature: requestBody.temperature, max_tokens: requestBody.max_tokens });
 
     // #ifdef H5
-    // H5 环境：将 API 配置通过请求头传递给后端代理
+    // H5 环境：将用户自配的 endpoint / apiKey 通过请求头传给后端代理
     const headers = {
       'Content-Type': 'application/json'
     };
-    if (testMode) {
-      // 内置测试通道：不带 Key，也不带 X-API-Base —— 目标地址与 Key 全部由服务端决定，
-      // 避免任何人借 X-API-Base 把服务端注入的内置 Key 转发到自己的服务器。
-      headers[TEST_MODE_HEADER] = '1';
-    } else {
-      // 将用户配置的 endpoint 和 apiKey 通过自定义请求头传递
-      if (endpoint) headers['X-API-Base'] = endpoint;
-      if (apiKey) headers['X-API-Key'] = apiKey;
-    }
+    if (endpoint) headers['X-API-Base'] = endpoint;
+    if (apiKey) headers['X-API-Key'] = apiKey;
     // #endif
     
     // #ifndef H5

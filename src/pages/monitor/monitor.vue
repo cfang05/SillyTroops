@@ -101,6 +101,20 @@
           </view>
         </view>
       </view>
+      <!-- 按天活跃（Asia/Shanghai 日历日；数据来自数据库 usage_daily） -->
+      <view class="section">
+        <text class="section-title">最近 7 天活跃</text>
+        <view v-if="dailyStats.length === 0" class="empty-hint">暂无按天数据</view>
+        <view v-else class="log-list">
+          <view v-for="d in dailyStats" :key="d.userId + '_' + d.day" class="log-item">
+            <view class="log-header">
+              <text class="log-username">{{ d.day }} · {{ usernameOf(d.userId) }}</text>
+              <text class="log-action">活跃 {{ formatTime(d.activeMs) }}</text>
+            </view>
+            <text class="log-time">Token {{ formatTokens(d.promptTokens + d.completionTokens) }} · 登录 {{ d.loginCount }} 次</text>
+          </view>
+        </view>
+      </view>
     </view>
   </view>
 </template>
@@ -119,6 +133,7 @@ export default {
       timeFilter: 'all',
       userStats: [],
       recentLogs: [],
+      dailyStats: [],
       stats: {
         totalUsers: 0,
         activeToday: 0,
@@ -163,6 +178,13 @@ export default {
       }
       this.recentLogs = this.recentLogs.filter(l => l.action === 'login' || l.action === 'logout').slice(0, 50)
 
+      // 按天活跃（数据库 usage_daily；day 由服务端按 Asia/Shanghai 计算）
+      try {
+        this.dailyStats = (await userManager.getDailyStats({ limit: 7 })) || []
+      } catch (e) {
+        this.dailyStats = []
+      }
+
       // 计算统计数据
       this.calculateStats()
 
@@ -173,9 +195,9 @@ export default {
       const todayStart = new Date().setHours(0, 0, 0, 0)
       
       this.stats.totalUsers = this.userStats.length
-      // 今日活跃 = 今天（凌晨起）有最后活动（登录/在线心跳/token上报）的账号数
+      // 今日活跃 = 今天（凌晨起）有活动的账号数（活跃 = 登录或活跃时长上报；服务端按 Asia/Shanghai 记 day）
       this.stats.activeToday = this.userStats.filter(u => {
-        const lastTs = u.lastActionTime || u.lastLoginAt
+        const lastTs = u.lastActiveAt || u.lastLoginAt
         return !!lastTs && lastTs >= todayStart
       }).length
       this.stats.totalUsageTime = this.userStats.reduce((sum, u) => sum + (u.totalUsageTime || 0), 0)
@@ -221,9 +243,9 @@ export default {
       return String(Math.round(n))
     },
 
-    /** 在线状态：最近 15 分钟内有登录/心跳/上报活动视为在线 */
+    /** 在线状态：最近 15 分钟内有登录或活跃时长上报视为在线 */
     isOnline(user) {
-      const lastTs = user.lastActionTime || user.lastLoginAt
+      const lastTs = user.lastActiveAt || user.lastLoginAt
       if (!lastTs) return false
       return (Date.now() - lastTs) < 15 * 60 * 1000
     },
@@ -262,8 +284,8 @@ export default {
       }
     },
 
-    /** admin 切换某个账号的测试权限（本地立即反映 + 上报服务器权威值） */
-    onToggleTest(e) {
+    /** admin 切换某个账号的测试权限（写数据库；服务端权威，下一次该账号请求即生效） */
+    async onToggleTest(e) {
       const id = e.currentTarget.dataset.id
       const value = e.detail.value
       const u = this.userStats.find(x => x.userId === id)
@@ -272,17 +294,25 @@ export default {
         uni.showToast({ title: '管理员恒有测试权限，不可关闭', icon: 'none' })
         return
       }
-      userManager.setTestPermission(id, value, {
-        username: u.username,
-        nickname: u.nickname,
-        isAdmin: u.isAdmin
-      })
-      // 立即更新本地列表，让开关状态即时反馈（下次刷新会以服务器为准重新合并）
+      const prev = u.isTest
+      // 立即更新本地列表，让开关状态即时反馈
       u.isTest = value
+      const res = await userManager.setTestPermission(id, value)
+      if (!res || !res.success) {
+        u.isTest = prev // 失败回滚，避免界面与数据库不一致
+        uni.showToast({ title: (res && res.message) || '权限调整失败', icon: 'none' })
+        return
+      }
       uni.showToast({
         title: (value ? '已开启 ' : '已关闭 ') + u.username + ' 的测试权限',
         icon: 'none'
       })
+    },
+
+    /** 按天统计里把 userId 显示成用户名 */
+    usernameOf(userId) {
+      const u = this.userStats.find(x => x.userId === userId)
+      return (u && (u.username || u.nickname)) || userId
     },
     
     goBack() {

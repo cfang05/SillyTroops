@@ -81,16 +81,18 @@ export const useUserStore = defineStore('user', {
       this.loadLevelData()
     },
 
-    login(username: string, password: string): { success: boolean; message?: string } {
-      const res = userManager.login(username, password)
-      if (res.success) {
-        this.currentUser = res.user
-        this.loadLevelData()
-      }
-      return res
+    login(username: string, password: string): Promise<{ success: boolean; message?: string }> {
+      // 账号已迁移到服务端：登录是异步网络请求（含老本地账号自动认领）
+      return userManager.login(username, password).then((res: any) => {
+        if (res.success) {
+          this.currentUser = res.user
+          this.loadLevelData()
+        }
+        return res
+      })
     },
 
-    register(username: string, password: string, nickname?: string): { success: boolean; message?: string } {
+    register(username: string, password: string, nickname?: string): Promise<{ success: boolean; message?: string }> {
       return userManager.register(username, password, nickname)
     },
 
@@ -101,9 +103,10 @@ export const useUserStore = defineStore('user', {
       this.xp = 0
     },
 
-    updateProfile(updates: { nickname?: string; avatar?: string }) {
+    async updateProfile(updates: { nickname?: string; avatar?: string }) {
       if (!this.currentUser) return
-      userManager.updateProfile(this.currentUser.id, updates)
+      // 昵称走服务端（跨设备同步），头像暂只存本地
+      await userManager.updateProfile(this.currentUser.id, updates)
       this.syncCurrentUser()
     },
 
@@ -122,8 +125,9 @@ export const useUserStore = defineStore('user', {
           this.level = data.level || 1
           this.xp = data.xp || 0
         } else {
-          // 首次加载，初始化为 1 级 0 经验
-          this.level = 1
+          // 首次加载：管理员沿用原有的 15 级，普通账号从 1 级 0 经验开始
+          const isAdmin = !!userManager.isAdmin()
+          this.level = isAdmin ? 15 : 1
           this.xp = 0
           this.saveLevelData()
         }

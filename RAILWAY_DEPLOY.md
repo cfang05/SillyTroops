@@ -40,34 +40,58 @@ git push origin main
 
 | 变量名 | 说明 | 示例值 | 是否必填 |
 |--------|------|--------|----------|
-| `API_TARGET` | 默认 API 地址 | `https://api.deepseek.com` | 否（用户可自行配置） |
-| `API_KEY` | 默认 API Key | `sk-xxxxxxxxxxxx` | 否（用户可自行配置） |
-| `TEST_API_KEY` | **内置测试 API 的 Key**（测试账号选「测试 API」时由后端注入） | `sk-xxxxxxxxxxxx` | 否（不配则测试通道返回 503） |
+| `DATABASE_URL` | Neon **池化**连接串（含 `-pooler`），应用运行时用 | `postgresql://user:pw@ep-xxx-pooler.us-west-2.aws.neon.tech/neondb?sslmode=require` | **是**（账号与统计必需） |
+| `DATABASE_URL_DIRECT` | Neon **直连**串（去掉 `-pooler`），迁移/建表用 | 同上，去掉 `-pooler` | 否（缺省回退到 `DATABASE_URL`） |
+| `AUTH_SECRET` | 登录 token 的 HMAC 签名密钥（随机长串） | `openssl rand -hex 32` 的输出 | **是**（生产环境缺失会拒绝启动；**上线后不要再改**，改了所有人被登出） |
+| `ADMIN_INITIAL_PASSWORD` | admin 账号密码：**变量值就是密码值**，改变量=改密码 | 自己设定 | 是（未设置则 admin 无法登录） |
+| `NODE_ENV` | 运行环境 | `production` | 是 |
+| `TEST_API_KEY` | **内置测试 API 的 Key**（只保存在服务端） | `sk-xxxxxxxxxxxx` | 否（不配则测试通道返回 503） |
 | `TEST_API_TARGET` | 内置测试 API 的目标地址 | `https://api.deepseek.com` | 否（默认即此值） |
+| `TEST_API_MODEL` | 内置测试 API 的**模型名**（官方改名只改这里，前端无需改代码） | `deepseek-v4-flash` | 否（默认即此值） |
+| `TEST_API_LABEL` | 设置页展示名 | `DeepSeek V4 Flash` | 否（缺省显示模型名） |
+| `TEST_API_ENABLED` | 内置测试通道开关 | `true` | 否（默认开启） |
+| `TOKEN_TTL_DAYS` | 登录有效天数 | `7` | 否（默认 7 天） |
+| `API_TARGET` | 用户自配 Key 通道的默认目标地址 | `https://api.deepseek.com` | 否 |
+| `API_KEY` | 用户自配 Key 通道的兜底 Key | — | **建议永远不配**（不给未带 Key 的请求兜底） |
 | `PORT` | 服务器端口 | `3000` | 否（Railway 自动注入） |
 
 **注意**：
-- 如果不配置环境变量，用户必须在网页设置中输入自己的 API 地址和 Key
-- 如果配置了环境变量，用户可以使用默认配置，也可以覆盖为自己的配置
+- 账号、密码哈希、权限（is_admin/is_test）、使用统计都在 Neon Postgres，不再依赖 Railway 的临时文件系统
+- 数据库表结构由服务启动时自动迁移（`migrate.js`），**不需要手动建表**
+- Neon 与 Railway 建议同区域（如 Neon `us-west-2` + Railway `US West (SFO)`），否则登录会明显变慢
 
-### 4.1 内置测试 API 的 Key 现在只放在服务端
+### 4.1 账号体系（Neon Postgres）
 
-内置测试 Key **不再硬编码在前端**（以前在 `src/utils/llm/client.js`，会随 `dist` 产物分发、任何访客都能抄走）。
-现在的取用顺序：
+- 密码用 `scrypt` + 每账号独立 salt 哈希存储，**明文永不落库、永不返回前端**；前端只保存签名 token 与脱敏后的用户信息
+- 权限以数据库为准：`is_admin || is_test` 决定能否使用内置测试 API；管理员可在监控页随时开关任意账号的测试权限，**下一次请求即生效**
+- `admin` 账号长期存在；`ADMIN_INITIAL_PASSWORD` 就是它的密码：
+  - 改变量 → 重新部署 → 服务启动时幂等对齐密码，并让**所有旧登录态立刻失效**
+  - 变量缺失 → 账号仍存在，只是无法登录（不会覆盖已有密码）
+- 迁移前存在于浏览器本地的老账号（含明文密码）：首次登录时用本地旧密码校验通过后自动「认领」到服务端，并删除本地明文记录
+- 新注册账号默认 `is_test = true`（注册即测试账号）
 
-1. 环境变量 `TEST_API_KEY`（Railway Variables，推荐）
-2. 本地开发兜底 `data/secrets.json`：
+### 4.2 内置测试 API（Key / 模型名都只放在服务端）
 
-   ```json
-   { "TEST_API_KEY": "sk-你的Key" }
-   ```
+内置测试 Key 与模型名**都不在前端**。前端只调用服务端接口：
 
-   `data/` 已在 `.gitignore` 中，Key 不会入库、也不会进入前端产物。
+- `GET /api/test-api/config` —— 返回 `{ enabled, label, model }`（**无密钥**，仅用于设置页显示）
+- `POST /api/chat/test` —— 带登录 token，服务端校验 `is_admin || is_test` 后注入 Key、**强制使用 `TEST_API_MODEL`**、注入 `thinking` 等协议参数；**采样参数（temperature/top_p/max_tokens…）由前端预设决定并原样透传**
+- 响应为 SSE 流式透传（`X-Accel-Buffering: no`，边收边写，不缓冲）
 
-前端（H5）选择「测试 API」时只发请求头 `X-Test-Mode: 1`，由 `server.js` 的 `/api` 代理注入 Key，
-并且**忽略客户端传来的 `X-API-Base`**（避免有人把服务端的内置 Key 转发到自己的服务器）。
+本地开发：Key 可放 `data/secrets.json`（`data/` 已在 `.gitignore` 中，不会入库）：
+
+```json
+{ "TEST_API_KEY": "sk-你的Key", "AUTH_SECRET": "本地开发用的随机串" }
+```
 
 > ⚠️ 小程序端没有 `/api` 代理，因此**不支持内置测试 API**，必须自配 Key。
+
+### 4.3 使用统计
+
+- 记录在数据库 `usage_stats`（累计）与 `usage_daily`（按天，`day` 按 **Asia/Shanghai** 切分）
+- 使用时长口径为**活跃时长**：只在用户真正有交互（点击/按键/触摸/滚动）时累计，空闲超过 5 分钟不计；页面切到后台也不计
+- 监控页「总时长」= 迁移前的老口径历史值（`legacy_total_usage_ms`）+ 新的活跃时长（`active_ms`）
+- 统计事件的身份由 token 解析，客户端无法伪造他人用量或自行获取测试权限
 
 ### 5. 等待部署完成
 
