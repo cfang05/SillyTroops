@@ -343,8 +343,8 @@ function _afterLogin(user) {
   _logAction(user.id, user.username, 'login');
   _bumpLocalStats(user.id, { loginCount: 1, lastLoginAt: Date.now() });
   _resetActivityBaseline();
-  // 上报登录事件（服务端以 token 判定身份）
-  _report({ action: 'login' });
+  // 注意：登录次数由服务端在 /api/auth/login、/api/auth/claim 里统一计数，
+  // 这里不再上报 login 事件，避免同一次登录被记两次。
 }
 
 function logout() {

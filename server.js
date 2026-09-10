@@ -196,6 +196,13 @@ app.post('/api/auth/claim', async (req, res) => {
       isTest: body.isTest === undefined ? true : !!body.isTest
     });
     console.log('[Auth] 老本地账号已认领:', row.username, '(legacy=' + (legacyLocalId || '-') + ')');
+    try {
+      // 认领即一次登录：登录次数由服务端统一计数（前端不再重复上报 login 事件）
+      await stats.recordLogin(pool, row.id);
+      await stats.recordEvent(pool, row.id, row.username, 'login');
+    } catch (e) {
+      console.warn('[Stats] 记录认领登录失败（不影响认领）:', e && e.message);
+    }
     res.json({ token: auth.signToken(row), user: accounts.toPublicUser(row) });
   } catch (e) {
     if (e && e.code === '23505') return res.status(409).json({ error: '该用户名已被占用，请换一个用户名' });

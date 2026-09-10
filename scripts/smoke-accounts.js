@@ -236,6 +236,9 @@ async function main() {
   expect('管理员账号不允许被关闭测试权限', adminCannotBeToggled.status === 400);
 
   console.log('\n=== 7. 统计入库（累计 + 按天 + 活跃时长夹取） ===');
+  const userRelogin = await req('/api/auth/login', { method: 'POST', body: { username: 'smoke_user', password: 'userpass123' } });
+  expect('再次登录成功', userRelogin.status === 200);
+
   const hb = await req('/api/stats/event', { method: 'POST', headers: bearer(userToken), body: { action: 'heartbeat', activeMs: 45000 } });
   expect('心跳上报成功', hb.status === 200, hb.text.slice(0, 120));
 
@@ -249,6 +252,7 @@ async function main() {
   expect('管理员拉全站统计成功', summary.status === 200 && Array.isArray(summary.json.users), summary.text.slice(0, 200));
   const statUser = summary.json.users.find((u) => u.userId === reg.json.user.id);
   expect('统计里能查到该账号', !!statUser);
+  expect('登录次数只记一次（服务端计数，前端不重复上报）', statUser && statUser.loginCount === 1, statUser && statUser.loginCount);
   expect('活跃时长 = 45000 + 夹取上限 120000', statUser && statUser.activeMs === 45000 + stats.MAX_ACTIVE_DELTA_MS, statUser && statUser.activeMs);
   expect('总时长 = 老口径(0) + 新口径活跃时长', statUser && statUser.totalUsageTime === statUser.activeMs);
   expect('token 用量已累计', statUser && statUser.tokenUsage.prompt === 1000 && statUser.tokenUsage.completion === 500);
