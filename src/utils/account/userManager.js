@@ -26,6 +26,7 @@ var PROFILE_KEY = 'sillytroops_current_user';           // 脱敏后的用户信
 var LOGIN_LOGS_KEY = 'sillytroops_login_logs';          // 本地登录日志（离线兜底）
 var LOCAL_STATS_KEY = 'sillytroops_local_usage';        // 本地用量缓存（离线兜底）
 var LEGACY_USERS_KEY = 'sillytroops_users';             // 旧账号表（仅用于一次性认领，认领后删除）
+var LEGACY_IMPORTED_KEY = 'sillytroops_legacy_stats_imported'; // 记录哪些老账号的历史用量已导入服务端
 
 // 活跃时长追踪（替代旧的"开页即计时"）
 var ACT_LAST_ACTIVITY = 'sillytroops_active_last_activity';
@@ -215,6 +216,53 @@ function _legacyUsers() {
   return Array.isArray(list) ? list : [];
 }
 
+/** 按用户名查老本地记录（迁移前的明文账号表） */
+function _legacyRecordFor(username) {
+  var list = _legacyUsers();
+  for (var i = 0; i < list.length; i++) {
+    if (list[i] && list[i].username === username) return list[i];
+  }
+  return null;
+}
+
+/**
+ * 把老本地账号的历史用量（登录次数 / 旧口径使用时长 / token）一次性导入服务端。
+ * 每个用户名只导入一次（本地打标记）；服务端用 GREATEST 取值，重复调用也不会翻倍。
+ */
+function _importLegacyStatsIfNeeded(username) {
+  var legacy = _legacyRecordFor(username);
+  if (!legacy) return Promise.resolve(false);
+
+  var imported = _get(LEGACY_IMPORTED_KEY, null);
+  if (!imported || typeof imported !== 'object') imported = {};
+  if (imported[username]) return Promise.resolve(false);
+
+  var tokens = legacy.tokenUsage || {};
+  var payload = {
+    legacyTotalUsageMs: legacy.totalUsageTime || 0,
+    loginCount: legacy.loginCount || 0,
+    tokenUsage: { prompt: tokens.prompt || 0, completion: tokens.completion || 0 }
+  };
+  if (!payload.legacyTotalUsageMs && !payload.loginCount && !payload.tokenUsage.prompt && !payload.tokenUsage.completion) {
+    imported[username] = true;
+    _set(LEGACY_IMPORTED_KEY, imported);
+    return Promise.resolve(false);
+  }
+
+  return _request('/api/stats/legacy-import', { method: 'POST', body: payload })
+    .then(function () {
+      imported[username] = true;
+      _set(LEGACY_IMPORTED_KEY, imported);
+      console.log('[UserManager] 老账号历史用量已导入服务端:', username);
+      return true;
+    })
+    .catch(function (e) {
+      // 失败不标记，下次登录再试
+      console.warn('[UserManager] 历史用量导入失败（下次登录重试）:', e && e.message);
+      return false;
+    });
+}
+
 function _saveLegacyUsers(list) {
   _set(LEGACY_USERS_KEY, list);
 }
@@ -323,15 +371,16 @@ async function _tryClaimLegacyAccount(username, password) {
     });
     var user = _refreshProfile(data.user);
     _saveSession(data.token, user);
-    _removeLegacyRecord(username);
-    // 老账号的历史本地用量并入本地缓存（服务端会在启动/后续流程中累计）
+    // 老账号的历史本地用量并入本地缓存（离线兜底显示用）
     _bumpLocalStats(user.id, {
       legacyTotalUsageMs: legacy.totalUsageTime || 0,
       tokens: legacy.tokenUsage ? { prompt: legacy.tokenUsage.prompt || 0, completion: legacy.tokenUsage.completion || 0 } : null,
       loginCount: legacy.loginCount || 0
     });
     uni.showToast({ title: '老账号已迁移到服务器', icon: 'none' });
+    // 注意顺序：_afterLogin 里会把老记录的历史用量导入服务端，因此必须等它跑完再删本地记录
     _afterLogin(user);
+    _removeLegacyRecord(username);
     return { success: true, user: user, claimed: true };
   } catch (e) {
     return { success: false, message: (e && e.message) ? e.message : '老账号迁移失败' };
@@ -345,6 +394,9 @@ function _afterLogin(user) {
   _resetActivityBaseline();
   // 注意：登录次数由服务端在 /api/auth/login、/api/auth/claim 里统一计数，
   // 这里不再上报 login 事件，避免同一次登录被记两次。
+  // 老本地账号（迁移前统计只存在浏览器里）：把历史登录次数/时长/token 一次性搬上服务端，
+  // 这样监控页里的历史数字不会"归零"（admin 与已认领的老账号都会走这条）。
+  _importLegacyStatsIfNeeded(user.username);
 }
 
 function logout() {

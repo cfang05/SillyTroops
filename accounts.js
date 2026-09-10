@@ -18,6 +18,13 @@ const auth = require('./auth');
 /** 账号公开字段（永远不要 SELECT 出 password_hash 给接口层用） */
 const PUBLIC_COLUMNS = 'id, username, nickname, is_admin, is_test, token_version, legacy_local_id, created_at';
 
+/**
+ * admin 的固定 id：与迁移前本地账号（sillytroops_users 里的 user_admin）保持一致。
+ * 这样各设备上历史遗留的 u_user_admin_* 业务数据（角色卡/会话/预设/API Key）仍能被读到。
+ */
+const ADMIN_USERNAME = 'admin';
+const ADMIN_ID = 'user_admin';
+
 /** 生成与历史格式一致的字符串 id：user_<base36 时间戳><6位随机> */
 function generateUserId() {
   return 'user_' + Date.now().toString(36) + crypto.randomBytes(3).toString('hex');
@@ -158,12 +165,13 @@ async function countAccounts(pool) {
 async function ensureAdminAccount(pool, initialPassword) {
   const password = initialPassword == null ? '' : String(initialPassword);
   const hasPasswordSource = password.trim().length > 0;
-  const existing = await findByUsername(pool, 'admin');
+  const existing = await findByUsername(pool, ADMIN_USERNAME);
 
   if (!existing) {
     const effectivePassword = hasPasswordSource ? password : crypto.randomBytes(32).toString('hex');
     await createAccount(pool, {
-      username: 'admin',
+      id: ADMIN_ID,          // 固定 user_admin：保证历史本地数据可读（见 ADMIN_ID 注释）
+      username: ADMIN_USERNAME,
       password: effectivePassword,
       nickname: '管理员',
       isAdmin: true,
@@ -192,8 +200,86 @@ async function ensureAdminAccount(pool, initialPassword) {
   return { created: false, aligned: true, canLogin: true };
 }
 
+/**
+ * 把已有的 admin 账号 id 迁移为固定的 user_admin（幂等）。
+ *
+ * 背景：早期版本启动时新建 admin 用的是随机 id（user_xxxx），导致各设备上历史遗留的
+ * u_user_admin_* 业务数据（角色卡/会话/预设/API Key）因为 userId 前缀对不上而"看不见"。
+ * 这里把库里的 admin 换成固定 id，并把引用它的统计行一起搬过去。
+ *
+ * 实现要点：
+ * - 先释放 username='admin' 的唯一约束（临时改名），再插入固定 id 的新行，最后删除旧行；
+ *   整体放在一个事务里，失败就回滚，绝不让启动流程挂掉。
+ * - id=user_admin 已被别的账号占用时不做任何事，只告警（不猜、不抢）。
+ *
+ * @returns {Promise<{changed:boolean, from?:string, reason?:string}>}
+ */
+async function reconcileAdminId(pool) {
+  const admin = await findByUsername(pool, ADMIN_USERNAME);
+  if (!admin) return { changed: false, reason: 'no-admin' };
+  if (admin.id === ADMIN_ID) return { changed: false, reason: 'already-ok' };
+
+  const occupied = await findById(pool, ADMIN_ID);
+  if (occupied) {
+    console.warn(`[Auth] id=${ADMIN_ID} 已被账号 ${occupied.username} 占用，跳过 admin id 迁移`);
+    return { changed: false, reason: 'id-occupied' };
+  }
+
+  const canUseTransaction = typeof pool.connect === 'function';
+  let client = null;
+  const run = (text, params) => (client ? client.query(text, params) : pool.query(text, params));
+
+  try {
+    if (canUseTransaction) {
+      client = await pool.connect();
+      await run('BEGIN');
+    }
+
+    // 1) 释放 username 唯一约束
+    await run('UPDATE accounts SET username = $2, updated_at = $3 WHERE id = $1', [
+      admin.id,
+      ADMIN_USERNAME + '__migrating__' + admin.id,
+      new Date()
+    ]);
+
+    // 2) 插入固定 id 的新行（复制原行的密码哈希与权限）
+    //    显式 ::timestamptz：INSERT ... SELECT 的参数无法从目标列推断类型（PG 与 pg-mem 行为差异）
+    await run(
+      `INSERT INTO accounts
+         (id, username, nickname, password_hash, salt, hash_algo, hash_n, hash_r, hash_p,
+          is_admin, is_test, token_version, legacy_local_id, created_at, updated_at)
+       SELECT $1, $2, nickname, password_hash, salt, hash_algo, hash_n, hash_r, hash_p,
+              is_admin, is_test, token_version, legacy_local_id, created_at, $3::timestamptz
+         FROM accounts WHERE id = $4`,
+      [ADMIN_ID, ADMIN_USERNAME, new Date(), admin.id]
+    );
+
+    // 3) 把统计行搬到新 id 上（此时 id=user_admin 在 accounts 里已存在，外键满足）
+    for (const table of ['usage_stats', 'usage_daily', 'login_events']) {
+      await run(`UPDATE ${table} SET user_id = $1 WHERE user_id = $2`, [ADMIN_ID, admin.id]);
+    }
+
+    // 4) 删除旧行
+    await run('DELETE FROM accounts WHERE id = $1', [admin.id]);
+
+    if (client) await run('COMMIT');
+    console.log(`[Auth] admin 账号 id 已从 ${admin.id} 迁移为 ${ADMIN_ID}（历史本地数据 u_user_admin_* 恢复可读）`);
+    return { changed: true, from: admin.id };
+  } catch (e) {
+    if (client) {
+      try { await client.query('ROLLBACK'); } catch (e2) { /* ignore */ }
+    }
+    console.error('[Auth] admin id 迁移失败（已回滚，不影响启动）:', e && e.message);
+    return { changed: false, reason: 'error', error: e && e.message };
+  } finally {
+    if (client && typeof client.release === 'function') client.release();
+  }
+}
+
 module.exports = {
   PUBLIC_COLUMNS: PUBLIC_COLUMNS,
+  ADMIN_USERNAME: ADMIN_USERNAME,
+  ADMIN_ID: ADMIN_ID,
   generateUserId: generateUserId,
   toPublicUser: toPublicUser,
   findByUsername: findByUsername,
@@ -206,5 +292,6 @@ module.exports = {
   usernameExists: usernameExists,
   listAccounts: listAccounts,
   countAccounts: countAccounts,
-  ensureAdminAccount: ensureAdminAccount
+  ensureAdminAccount: ensureAdminAccount,
+  reconcileAdminId: reconcileAdminId
 };

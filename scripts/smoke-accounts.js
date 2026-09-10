@@ -121,6 +121,7 @@ async function main() {
 
   const adminRow = await accounts.findByUsername(pool, 'admin');
   expect('admin 账号已被创建且是管理员', !!adminRow && adminRow.is_admin === true);
+  expect('admin 的 id 固定为 user_admin（保证历史本地数据 u_user_admin_* 可读）', adminRow && adminRow.id === 'user_admin', adminRow && adminRow.id);
   expect('admin 密码在库里是哈希而非明文', !!adminRow && adminRow.password_hash !== ADMIN_PASSWORD && adminRow.password_hash.length > 40);
   expect('admin 有独立随机 salt', !!adminRow && !!adminRow.salt && adminRow.salt.length >= 16);
 
@@ -296,6 +297,75 @@ async function main() {
 
   console.log('\n=== 10. 未配置数据库时的降级 ===');
   expect('isConfigured() 为 true（注入了内存库）', db.isConfigured() === true);
+
+  console.log('\n=== 11. admin id 迁移（随机 id -> user_admin，统计一并搬迁） ===');
+  // 模拟历史状态：admin 用的是随机 id，并且在 usage_stats 里已有统计
+  await pool.query('DELETE FROM accounts WHERE username = $1', ['admin']);
+  await pool.query('DELETE FROM accounts WHERE id = $1', ['user_admin']);
+  const legacyAdmin = await accounts.createAccount(pool, {
+    username: 'admin',
+    password: 'Admin#12345',
+    nickname: '管理员',
+    isAdmin: true,
+    isTest: true
+  });
+  expect('模拟出的 admin 是随机 id（不是 user_admin）', legacyAdmin.id !== 'user_admin', legacyAdmin.id);
+  await stats.recordTokens(pool, legacyAdmin.id, 777, 333);
+  await stats.recordLogin(pool, legacyAdmin.id);
+
+  const rec = await accounts.reconcileAdminId(pool);
+  expect('id 迁移执行成功', rec.changed === true, rec);
+  const migrated = await accounts.findByUsername(pool, 'admin');
+  expect('admin 的 id 已变为 user_admin', migrated && migrated.id === 'user_admin', migrated && migrated.id);
+  expect('迁移后密码哈希保持不变（仍可用原密码登录）', await auth.verifyPassword('Admin#12345', migrated));
+  const migratedStats = await stats.getSummary(pool);
+  const migratedAdminStat = migratedStats.find((u) => u.userId === 'user_admin');
+  expect('迁移后统计跟着搬到 user_admin 名下', migratedAdminStat && migratedAdminStat.tokenUsage.prompt === 777 && migratedAdminStat.tokenUsage.completion === 333, migratedAdminStat && migratedAdminStat.tokenUsage);
+  expect('迁移后旧 id 已不存在', (await accounts.findById(pool, legacyAdmin.id)) === null);
+  const recAgain = await accounts.reconcileAdminId(pool);
+  expect('再次执行迁移是幂等的（不再改动）', recAgain.changed === false);
+
+  // 迁移后重新登录拿一个有效 token（旧 token 的 ver 对不上新行）
+  const adminRelogin = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'Admin#12345' } });
+  expect('迁移后 admin 仍能用原密码登录', adminRelogin.status === 200 && !!adminRelogin.json.token, adminRelogin.text.slice(0, 120));
+  const adminToken2 = adminRelogin.json.token;
+
+  console.log('\n=== 12. 老账号历史用量导入（GREATEST 语义，重复导入不翻倍） ===');
+  const legacyImport = await req('/api/stats/legacy-import', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { legacyTotalUsageMs: 3600000, loginCount: 12, tokenUsage: { prompt: 50000, completion: 20000 } }
+  });
+  expect('历史用量导入成功', legacyImport.status === 200 && legacyImport.json.imported === true, legacyImport.text.slice(0, 160));
+
+  const afterImport = await req('/api/stats/summary', { headers: bearer(adminToken2) });
+  const importedUser = afterImport.json.users.find((u) => u.userId === reg.json.user.id);
+  expect('旧口径时长已写入（legacyTotalUsageMs）', importedUser && importedUser.legacyTotalUsageMs === 3600000, importedUser && importedUser.legacyTotalUsageMs);
+  expect('总时长 = 老口径 + 活跃时长', importedUser && importedUser.totalUsageTime === 3600000 + importedUser.activeMs, importedUser && importedUser.totalUsageTime);
+  expect('历史登录次数已合并（取较大值）', importedUser && importedUser.loginCount === 12, importedUser && importedUser.loginCount);
+  expect('历史 token 已合并', importedUser && importedUser.tokenUsage.prompt === 50000 && importedUser.tokenUsage.completion === 20000);
+
+  await req('/api/stats/legacy-import', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { legacyTotalUsageMs: 3600000, loginCount: 12, tokenUsage: { prompt: 50000, completion: 20000 } }
+  });
+  const afterImport2 = await req('/api/stats/summary', { headers: bearer(adminToken2) });
+  const importedUser2 = afterImport2.json.users.find((u) => u.userId === reg.json.user.id);
+  expect('重复导入不会翻倍', importedUser2 && importedUser2.legacyTotalUsageMs === 3600000 && importedUser2.tokenUsage.prompt === 50000, importedUser2 && importedUser2.legacyTotalUsageMs);
+
+  const forgedImport = await req('/api/stats/legacy-import', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { legacyTotalUsageMs: 999999999, loginCount: 0, tokenUsage: {}, userId: adminRow.id }
+  });
+  expect('历史用量导入只作用于自己（伪造 userId 无效）', forgedImport.status === 200);
+  const afterForged = await req('/api/stats/summary', { headers: bearer(adminToken2) });
+  const forgedAdminStat = afterForged.json.users.find((u) => u.userId === 'user_admin');
+  expect('admin 的时长没有被伪造导入污染', forgedAdminStat && forgedAdminStat.legacyTotalUsageMs === 0, forgedAdminStat && forgedAdminStat.legacyTotalUsageMs);
+
+  console.log('\n=== 13. 未配置数据库时的降级（说明） ===');
+  expect('isConfigured() 仍为 true（本测试全程使用注入的内存库）', db.isConfigured() === true);
 
   console.log('\n──────────────────────────────');
   console.log(`通过 ${passed} 项，失败 ${failed} 项`);

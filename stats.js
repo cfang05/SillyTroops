@@ -88,6 +88,37 @@ async function recordTokens(pool, userId, promptTokens, completionTokens) {
   await _bumpDaily(pool, userId, { promptTokens: p, completionTokens: c }, now);
 }
 
+/**
+ * 导入老本地账号的历史用量（迁移前账号存在浏览器里，统计也只在本地）。
+ *
+ * 一律用 GREATEST 取值：重复导入不会翻倍，只增不减，因此可以安全地多次调用。
+ * 只作用于传入的 userId（服务端从 token 取），客户端无法给他人导入。
+ *
+ * @param {{legacyTotalUsageMs?:number, prompt?:number, completion?:number, loginCount?:number}} data
+ * @returns {Promise<boolean>} 是否写入了数据
+ */
+async function importLegacyStats(pool, userId, data) {
+  const d = data || {};
+  const legacyMs = Math.max(0, Math.round(Number(d.legacyTotalUsageMs) || 0));
+  const prompt = Math.min(Math.max(0, Math.round(Number(d.prompt) || 0)), MAX_TOKENS_PER_REPORT);
+  const completion = Math.min(Math.max(0, Math.round(Number(d.completion) || 0)), MAX_TOKENS_PER_REPORT);
+  const logins = Math.max(0, Math.round(Number(d.loginCount) || 0));
+  if (!legacyMs && !prompt && !completion && !logins) return false;
+
+  await ensureRow(pool, userId);
+  await pool.query(
+    `UPDATE usage_stats
+        SET legacy_total_usage_ms = GREATEST(legacy_total_usage_ms, $2),
+            prompt_tokens         = GREATEST(prompt_tokens, $3),
+            completion_tokens     = GREATEST(completion_tokens, $4),
+            login_count           = GREATEST(login_count, $5),
+            updated_at            = $6
+      WHERE user_id = $1`,
+    [userId, legacyMs, prompt, completion, logins, new Date()]
+  );
+  return true;
+}
+
 /** usage_daily 累加（按 Asia/Shanghai 的日期） */
 async function _bumpDaily(pool, userId, delta, when) {
   const day = shanghaiDay(when);
@@ -263,6 +294,7 @@ module.exports = {
   recordTokens: recordTokens,
   recordEvent: recordEvent,
   getRecentEvents: getRecentEvents,
+  importLegacyStats: importLegacyStats,
   getSummary: getSummary,
   getDaily: getDaily,
   importLegacyStatsFile: importLegacyStatsFile

@@ -268,8 +268,28 @@ app.post('/api/stats/event', requireAuth, async (req, res) => {
   }
 });
 
-/** 全量汇总（监控页；仅管理员，含最近登录事件） */
-app.get('/api/stats/summary', requireAuth, requireAdmin, async (req, res) => {
+/**
+ * 导入老本地账号的历史用量（迁移前统计只存在浏览器里，迁移后一次性搬上服务端）。
+ * 身份取 token（只能给自己导入），采用 GREATEST 语义，重复导入不会翻倍。
+ */
+app.post('/api/stats/legacy-import', requireAuth, async (req, res) => {
+  try {
+    const body = req.body || {};
+    const t = body.tokenUsage || {};
+    const imported = await stats.importLegacyStats(db.getPool(), req.account.id, {
+      legacyTotalUsageMs: body.legacyTotalUsageMs,
+      prompt: t.prompt,
+      completion: t.completion,
+      loginCount: body.loginCount
+    });
+    res.json({ ok: true, imported: imported });
+  } catch (e) {
+    console.error('[Stats] /api/stats/legacy-import 处理失败:', e && e.message);
+    res.status(500).json({ error: '历史用量导入失败' });
+  }
+});
+
+/** 全量汇总（监控页；仅管理员，含最近登录事件） */app.get('/api/stats/summary', requireAuth, requireAdmin, async (req, res) => {
   try {
     const pool = db.getPool();
     const users = await stats.getSummary(pool);
@@ -585,6 +605,8 @@ async function startServer() {
       console.error('[DB] 结构迁移失败:', e && e.message);
     }
     try {
+      // 先把可能存在的"随机 id 的 admin"迁移为固定 user_admin（幂等），再确保 admin 存在
+      await accounts.reconcileAdminId(db.getPool());
       await accounts.ensureAdminAccount(db.getPool(), process.env.ADMIN_INITIAL_PASSWORD);
     } catch (e) {
       console.error('[Auth] 确保 admin 账号失败:', e && e.message);
