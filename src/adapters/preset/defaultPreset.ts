@@ -150,6 +150,14 @@ const DEFAULT_PROMPT_ORDER: PromptOrderItem[] = [
 export const DEFAULT_PRESET_ID = 'default'
 
 /**
+ * 「系统预设」的固定 id（D19）
+ *
+ * 与「系统正侧」（D15）对称：**代码内置、默认选中、用户另选其他预设时被替换、不落盘**。
+ * id 固定，因此它不需要持久化也能在每次启动后被重新植入并被正确引用。
+ */
+export const SYSTEM_PRESET_ID = 'system'
+
+/**
  * 生成内置默认预设（深拷贝，避免调用方修改污染工厂常量）
  */
 export function createDefaultPreset(): Preset {
@@ -173,6 +181,35 @@ export function createDefaultPreset(): Preset {
       namesBehavior: 0,
       squashSystemMessages: false,
       continuePrefill: false
+    }
+  }
+}
+
+/**
+ * 生成「系统预设」（D19）：在默认预设基础上 **开启流式**，并把上下文参数调到合理区间。
+ *
+ * 为什么必须调上下文参数：改造前 `maxContext` **只用于世界书预算**，历史是"有多少发多少"，
+ * 所以 4096 这个值一直是"无害的摆设"；P3 让 `maxContext` 真正成为 prompt 预算上限后，
+ * 4096 − 2000(回复预留) − 安全余量 ≈ 2000 tokens 的预算只够约 1500 汉字（含角色卡与系统提示），
+ * 长一点的对话立刻就会被裁到只剩最近几条，用户会以为"模型失忆"。
+ *
+ * 因此系统预设给一组现代模型常见的默认值：窗口 32K、回复预留 4K（约 27K 的 prompt 预算）。
+ * ⚠️ 这个值应当与实际使用的模型匹配，用户可在「预设编辑 → 上下文长度/最大回复长度」里改。
+ */
+export const SYSTEM_PRESET_MAX_CONTEXT = 32768
+export const SYSTEM_PRESET_MAX_TOKENS = 4096
+
+export function createSystemPreset(): Preset {
+  const preset = createDefaultPreset()
+  return {
+    ...preset,
+    id: SYSTEM_PRESET_ID,
+    name: '系统预设',
+    generationParams: {
+      ...preset.generationParams,
+      stream: true,
+      maxContext: SYSTEM_PRESET_MAX_CONTEXT,
+      maxTokens: SYSTEM_PRESET_MAX_TOKENS
     }
   }
 }

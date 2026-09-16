@@ -1,5 +1,5 @@
 <template>
-  <view class="chat-container">
+  <view class="chat-container" :class="{ 'is-streaming': runtimeStore.isLoading }">
     <!-- 自定义导航栏：暗色毛玻璃，返回键+居中标题+设置按钮，三段等宽对齐 -->
     <view class="custom-navbar" :style="{ paddingTop: statusBarHeight + 'px' }">
       <view class="navbar-row">
@@ -18,46 +18,25 @@
          自由上下滑动，LLM 输出期间也不会被脚本拉走或锁定。 -->
     <view class="messages-container" :style="{ paddingTop: navbarHeight + 'px' }">
       <view class="messages-wrapper">
-        <view v-for="(item, index) in runtimeStore.messages" :key="index" class="message-wrapper" :id="'msg-' + index">
-          <!-- 系统消息 -->
-          <view class="message-system" v-if="item.role === 'system'">
-            <view class="system-content"><text>{{ item.content }}</text></view>
-          </view>
-
-          <!-- AI 消息 -->
-          <view class="message-ai" v-else-if="item.role === 'assistant'">
-            <view class="avatar">
-              <image v-if="characterAvatar" class="avatar-img" :src="characterAvatar" mode="aspectFill" />
-              <text v-else class="avatar-text">AI</text>
-            </view>
-            <view class="ai-bubble-col">
-              <view class="bubble" @longpress="onMessageLongPress(index)">
-                <BlockRenderer
-                  v-if="item.segments && item.segments.length > 0"
-                  :nodes="item.segments"
-                  @select="onBranchSelect"
-                />
-                <text v-else class="message-text">{{ item.content }}<text v-if="item.isStreaming" class="stream-cursor">▋</text></text>
-              </view>
-              <view class="swipe-row" v-if="item.swipes && item.swipes.length > 1 && !item.isStreaming">
-                <text class="swipe-arrow" :class="(item.swipe_id || 0) <= 0 ? 'swipe-arrow-disabled' : ''" @tap="onSwipePrev(index)">‹</text>
-                <text class="swipe-count">{{ (item.swipe_id || 0) + 1 }}/{{ item.swipes.length }}</text>
-                <text class="swipe-arrow" @tap="onSwipeNext(index)">›</text>
-              </view>
-            </view>
-          </view>
-
-          <!-- 用户消息 -->
-          <view class="message-user" v-else-if="item.role === 'user'">
-            <view class="bubble" @longpress="onMessageLongPress(index)">
-              <text class="message-text">{{ item.content }}</text>
-            </view>
-            <view class="avatar">
-              <image v-if="personaAvatar" class="avatar-img" :src="personaAvatar" mode="aspectFill" />
-              <text v-else class="avatar-text">{{ personaFirstName || '我' }}</text>
-            </view>
-          </view>
+        <!-- 渲染窗口（P2.6 / C2）：历史很长时只渲染最近 N 条，避免首屏与滚动被拖垮。
+             数据仍是全量在内存/存档里，这里只是"少渲染"；点顶部按钮逐批往前加载。 -->
+        <view class="show-more-row" v-if="hiddenMessageCount > 0" @tap="loadMoreMessages">
+          <text class="show-more-text">显示更早的 {{ Math.min(MESSAGE_PAGE_SIZE, hiddenMessageCount) }} 条（共 {{ hiddenMessageCount }} 条未显示）</text>
         </view>
+
+        <MessageItem
+          v-for="(item, index) in visibleMessages"
+          :key="visibleStartIndex + index"
+          :message="item"
+          :index="visibleStartIndex + index"
+          :character-avatar="characterAvatar"
+          :persona-avatar="personaAvatar"
+          :persona-first-name="personaFirstName"
+          @longpress="onMessageLongPress"
+          @branch-select="onBranchSelect"
+          @swipe-prev="onSwipePrev"
+          @swipe-next="onSwipeNext"
+        />
 
         <view class="loading-indicator" v-if="runtimeStore.isLoading">
           <view class="loading-dots">
@@ -123,7 +102,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onUnmounted, onMounted } from 'vue'
+import { ref, computed, onUnmounted, onMounted, nextTick } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { useRuntimeStore } from '../../stores/runtimeStore'
 import { useCharacterCardStore } from '../../stores/characterCardStore'
@@ -136,13 +115,16 @@ import { useNoteStore } from '../../stores/noteStore'
 import { MessageProcessor, toChatHistory } from '../../engine/MessageProcessor'
 import { substituteVariables } from '../../engine/VariableEngine'
 import { parseBlocks } from '../../engine/BlockParser'
+import { applyRegexScripts } from '../../engine/RegexScriptEngine'
+import { SYSTEM_REGEX_PRESET_ID } from '../../engine/systemRegex'
+import type { RenderNode } from '../../types/render'
 import BlockRenderer from '../../components/render/BlockRenderer.vue'
 import CharacterStatus from '../../components/modules/CharacterStatus.vue'
 import InventoryPanel from '../../components/modules/InventoryPanel.vue'
 import DiceRoller from '../../components/modules/DiceRoller.vue'
 import { initTrpgState, trpgStateToCharStatus } from '../../utils/persona/trpgProfile.js'
 import { DEFAULT_TRPG_MODULES } from '../../types/character'
-import { createDefaultPreset } from '../../adapters/preset/defaultPreset'
+import { createSystemPreset, SYSTEM_PRESET_ID } from '../../adapters/preset/defaultPreset'
 import type { ChatMessage } from '../../types/message'
 import type { Preset } from '../../types/preset'
 import type { RegexScript } from '../../types/script'
@@ -152,6 +134,13 @@ import conversationManager from '../../utils/account/conversationManager.js'
 import itemManager from '../../utils/items/item-manager.js'
 // @ts-ignore
 import intentParser from '../../utils/llm/intentParser.js'
+import { notifyStorageFailure, notifyError } from '../../utils/notify'
+import MessageItem from '../../components/render/MessageItem.vue'
+import { balanceIncompleteMarkdown } from '../../engine/BlockParser'
+import type { PromptInfo } from '../../engine/PromptBuilder'
+import { savePromptInfo } from '../../services/promptInfoStore'
+import { initCustomCss } from '../../utils/customCss'
+import { splitReasoning, loadReasoningConfig, type ReasoningSplitConfig } from '../../engine/ReasoningHandler'
 
 const runtimeStore = useRuntimeStore()
 const characterCardStore = useCharacterCardStore()
@@ -177,6 +166,12 @@ onMounted(() => {
     // 44px 是导航栏内容自身的标准高度（不含状态栏），H5/小程序通用近似值
     navbarHeight.value = statusBarHeight.value + 44
   } catch (e) { /* 忽略，取默认值 0 */ }
+
+  // #ifdef H5
+  // 存档改为防抖后（D12），直接关闭标签页可能落在防抖窗口内；
+  // beforeunload 里同步写一次本地存储是来得及的（uni.setStorageSync 是同步的）
+  try { window.addEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
+  // #endif
 })
 
 // ── 视口滚动：不再做任何程序化操作 ──────────────────
@@ -187,6 +182,230 @@ onMounted(() => {
 // uni.pageScrollTo，也不再监听 onPageScroll/手势事件来"纠正"视口位置。
 
 const processor = new MessageProcessor()
+
+// ── 消息渲染窗口（P2.6 / C2）─────────────────────────────────
+// 历史很长时不再全量渲染：只渲染最近 MESSAGE_PAGE_SIZE 条，顶部按钮逐批往前加载。
+// 对齐酒馆的 chat_truncation（默认 100，见 referencecode/public/scripts/power-user.js:133）。
+const MESSAGE_PAGE_SIZE = 100
+const visibleCount = ref(MESSAGE_PAGE_SIZE)
+
+const visibleStartIndex = computed(() => Math.max(0, runtimeStore.messages.length - visibleCount.value))
+const visibleMessages = computed(() => runtimeStore.messages.slice(visibleStartIndex.value))
+const hiddenMessageCount = computed(() => visibleStartIndex.value)
+
+/**
+ * 往前多加载一批。
+ *
+ * 注意要把滚动位置补回来：内容是在**上方**插入的，浏览器保持 scrollTop 不变时
+ * 用户看到的内容会整体下移（视觉上"跳一下"）。这里用"锚点消息相对视口的位置差"补偿。
+ * 只在用户主动点击时执行一次，不涉及流式期间的自动跟随（那套逻辑是被刻意移除的）。
+ */
+function loadMoreMessages() {
+  const anchorIndex = visibleStartIndex.value
+  if (anchorIndex <= 0) return
+  const query = uni.createSelectorQuery()
+  query.select('#msg-' + anchorIndex).boundingClientRect()
+  query.selectViewport().scrollOffset()
+  query.exec((res: any[]) => {
+    const before = res && res[0]
+    const scroll = res && res[1]
+    visibleCount.value += MESSAGE_PAGE_SIZE
+    nextTick(() => {
+      if (!before || !scroll) return
+      const q2 = uni.createSelectorQuery()
+      q2.select('#msg-' + anchorIndex).boundingClientRect()
+      q2.exec((res2: any[]) => {
+        const after = res2 && res2[0]
+        if (!after) return
+        const delta = after.top - before.top
+        if (Math.abs(delta) > 1) {
+          uni.pageScrollTo({ scrollTop: Math.max(0, (scroll.scrollTop || 0) + delta), duration: 0 })
+        }
+      })
+    })
+  })
+}
+
+// ── 流式更新的帧率节流（P2.1 / B1）────────────────────────────
+// 改造前：**每个 chunk** 都替换整个 messages 数组 + 重跑 parseBlocks(全文)——
+// 长回复是 O(n²) 的重复解析，而且父组件整张消息表都会重渲染。
+// 现在：增量攒进缓冲区，约 30fps 写一次（对齐酒馆 Stopwatch(1000/streaming_fps) 的节流）。
+const STREAM_FLUSH_MS = 33
+/** 正文与思考可以分别到达，所以缓冲区里两个字段各自可选 */
+let _pendingStream: { index: number; content?: string; reasoning?: string } | null = null
+let _streamTimer: ReturnType<typeof setTimeout> | null = null
+
+function _ensurePending(index: number) {
+  if (!_pendingStream || _pendingStream.index !== index) _pendingStream = { index }
+  _pendingStream.index = index
+  if (!_streamTimer) _streamTimer = setTimeout(_flushStreamContent, STREAM_FLUSH_MS)
+}
+
+/** 排入正文增量（调用方负责算出"这条消息此刻应该显示成什么"） */
+function _queueStreamContent(index: number, content: string) {
+  _ensurePending(index)
+  _pendingStream!.content = content
+}
+
+/** 排入思考增量（D17 / P6.1：与正文完全独立的通道） */
+function _queueStreamReasoning(index: number, reasoning: string) {
+  if (!_reasoningStart.has(index)) _reasoningStart.set(index, Date.now())
+  _ensurePending(index)
+  _pendingStream!.reasoning = reasoning
+}
+
+/**
+ * 把"原始正文"落到消息上（P6.4）
+ * 切分文本思考 → 显示态正则 → segments；流式与最终收尾共用，保证两条路径一致。
+ */
+function _applyMessageText(index: number, rawText: string, opts: { streaming?: boolean } = {}) {
+  const m = runtimeStore.messages[index]
+  if (!m || m.role !== 'assistant') return
+  const split = splitReasoning(rawText, _reasoningCfg.value)
+  m.content = split.content
+  // 流式期间补齐未闭合的成对 Markdown（P2.3 / B6），并走显示态正则（P4.6 / C1）
+  m.segments = _segmentsFor(split.content, index, { streaming: !!opts.streaming })
+  // 文本思考只在"上游没有给原生思考"时才用来填充，避免覆盖更权威的 reasoning_content
+  if (split.reasoning && !m.reasoning) m.reasoning = split.reasoning
+  if (m.reasoning) m.reasoningDisplay = _reasoningFor(m.reasoning, index)
+}
+
+/** 真正写进 store：就地修改消息对象，父组件不会因为每个 chunk 而整体重渲染 */
+function _flushStreamContent() {
+  if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null }
+  const pending = _pendingStream
+  _pendingStream = null
+  if (!pending) return
+  const m = runtimeStore.messages[pending.index]
+  if (!m || m.role !== 'assistant') return
+
+  if (typeof pending.content === 'string') {
+    _applyMessageText(pending.index, pending.content, { streaming: true })
+    if (Array.isArray(m.swipes)) m.swipes[m.swipe_id || 0] = m.content
+  }
+  if (typeof pending.reasoning === 'string') {
+    // 上游原生思考（reasoning_content）优先
+    m.reasoning = pending.reasoning
+    m.reasoningDisplay = _reasoningFor(pending.reasoning, pending.index)
+  }
+  m.isStreaming = true
+}
+
+/**
+ * 显示态管线（P4.1 / P4.6 / D5 三态分离）
+ *
+ * 渲染管线顺序：**原文 → markdownOnly 正则（显示态）→ BlockParser → 渲染节点**。
+ *
+ * 改造前的问题：输出侧正则只在"生成结束后"跑一次，而且**从不传 isMarkdown**，
+ * 于是勾了「仅 Markdown」的脚本 100% 不生效，流式期间显示的也是未过正则的原文
+ * （结束时整段跳变）。对齐酒馆后，显示态正则在**每一帧**都对累积文本跑一遍
+ * （referencecode/public/script.js:1809-1813 + :3656），所以流式期间看到的就是最终样式。
+ *
+ * @param text 原始文本（消息 content）
+ * @param index 该消息在完整数组中的下标（用于判断角色与 depth）
+ * @param opts.streaming 是否流式中间帧：会先补齐未闭合的成对 Markdown
+ */
+const STREAM_REGEX_MAX_CHARS = 20000
+
+function _segmentsFor(
+  text: string,
+  index: number,
+  opts: { streaming?: boolean; role?: string; total?: number } = {}
+): RenderNode[] {
+  const raw = opts.streaming ? balanceIncompleteMarkdown(text || '') : (text || '')
+  try {
+    const preset = _resolvePreset()
+    const scripts = ((preset?.regexScripts as RegexScript[]) || [])
+    if (scripts.length) {
+      const role = opts.role || runtimeStore.messages[index]?.role
+      const placement = (role === 'user' ? 1 : 0) as any
+      const total = typeof opts.total === 'number' ? opts.total : runtimeStore.messages.length
+      // 流式期间对超长文本跳过正则：个别脚本可能有灾难性回溯，
+      // 每 33ms 跑一次会把主线程卡死（P4.6 的限流措施之一）。
+      if (!(opts.streaming && raw.length > STREAM_REGEX_MAX_CHARS)) {
+        const display = applyRegexScripts(raw, scripts, placement, { isMarkdown: true, depth: Math.max(0, total - 1 - index) })
+        return parseBlocks(display)
+      }
+    }
+  } catch (e) {
+    console.warn('[chat] 显示态正则执行失败，回退为原文渲染:', e)
+  }
+  return parseBlocks(raw)
+}
+
+/** 文本思考解析配置（P6.4）：onLoad 时从本地读取，设置页改完回来重新读 */
+const _reasoningCfg = ref<ReasoningSplitConfig>({ enabled: false, prefix: ' thinking', suffix: '' })
+/** 思考开始时间（按消息下标记录，用于"已思考 N 秒"；不持久化） */
+const _reasoningStart = new Map<number, number>()
+
+/**
+ * 收尾一条 AI 消息（P6.2 / P6.4）
+ * 统一处理：文本思考切分 → 显示态正则 → segments → swipes → 思考结束标记与耗时。
+ * 流式结束、停止生成、续写收尾都走这里，避免三条路径行为不一致。
+ */
+function _finalizeMessage(index: number, finalText: string) {
+  _applyMessageText(index, finalText)
+  const m = runtimeStore.messages[index]
+  if (!m) return
+  const swipes = [...((m.swipes as string[]) || [''])]
+  swipes[m.swipe_id || 0] = m.content
+  const startedAt = _reasoningStart.get(index)
+  const next = [...runtimeStore.messages]
+  next[index] = {
+    ...m,
+    content: m.content,
+    segments: m.segments,
+    isStreaming: false,
+    reasoning: m.reasoning,
+    reasoningDisplay: m.reasoningDisplay,
+    reasoningDone: !!m.reasoning,
+    reasoningDurationMs: startedAt ? Date.now() - startedAt : undefined,
+    swipes
+  }
+  runtimeStore.setMessages(next)
+  _reasoningStart.delete(index)
+}
+
+/**
+ * 思考内容的"显示态"（P6.5 / D17）
+ * 与正文同理：把切出来的思考也交给 **placement=REASONING（内部编号 3）** 的正则处理，
+ * 这样用户可以单独控制思考的显示（例如隐藏、替换标记）。
+ */
+function _reasoningFor(text: string, index: number): string {
+  try {
+    const preset = _resolvePreset()
+    const scripts = ((preset?.regexScripts as RegexScript[]) || [])
+    if (!scripts.length || !text) return text
+    const depth = Math.max(0, runtimeStore.messages.length - 1 - index)
+    return applyRegexScripts(text, scripts, 3 as any, { isMarkdown: true, depth })
+  } catch (e) {
+    console.warn('[chat] 思考内容正则执行失败，回退原文:', e)
+    return text
+  }
+}
+
+/** 丢弃未冲刷的缓冲区（结束/停止/出错时调用，避免过期增量覆盖最终文本） */
+function _cancelStreamContent() {
+  if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null }
+  _pendingStream = null
+}
+
+/**
+ * 上下文构成快照的处理（P3.3 / P3.4）
+ * · 存一份供「设置 → 上下文详情」查看（IndexedDB，最近 20 次）
+ * · 强制项自己就超预算时给出明确提示（否则用户只会看到"模型失忆"）
+ */
+function _handlePromptInfo(info: PromptInfo) {
+  const chatId = sessionCardId.value || activeCard.value?.id || 'unknown'
+  savePromptInfo(chatId, info)
+  if (info.overflowMandatory) {
+    notifyError(
+      '上下文超预算：历史已被省略',
+      '请调大预设的「上下文长度」或减小「最大回复长度」',
+      { dedupeKey: 'prompt-overflow', duration: 4500 }
+    )
+  }
+}
 
 // 本次会话绑定的资源 id（来自过渡页 new-conversation.vue 传入的路由参数）
 const sessionCardId = ref('')
@@ -249,6 +468,13 @@ onLoad((options: any) => {
   pluginStore.load()
   noteStore.load()
 
+  // 自定义 CSS（P4.3 / D2）：注入系统默认样式（台词 .say 等）与用户样式。
+  // 必须在这里调用 —— 否则正则产出的 class 没有外观，台词会失去金色斜体。
+  initCustomCss()
+
+  // 文本思考解析配置（P6.4）：设置页可能刚改过，每次进聊天页重读
+  _reasoningCfg.value = loadReasoningConfig()
+
   sessionCardId.value = options?.cardId || characterCardStore.activeCardId || ''
   sessionPresetId.value = options?.presetId || ''
   sessionRegexPresetId.value = options?.regexPresetId || ''
@@ -268,14 +494,46 @@ onLoad((options: any) => {
   }
 })
 
-function _loadConversation(cardId: string) {
-  const record = conversationManager.get(cardId)
+/**
+ * 读档时重建派生数据（P1.4 / A4 的配套）
+ * 存档里不再保存 segments，只存 content；这里按 content 现算一次，
+ * 保证富文本（台词/卡片/代码块）渲染不丢。
+ *
+ * 注意走的是 `_segmentsFor`（显示态管线），因此 P4.1 之后：
+ * markdownOnly 正则同样会在读档时生效。role/total 由调用方显式传入 ——
+ * 此刻消息还没进 store，读不到 runtimeStore.messages。
+ */
+function _rehydrateMessage(m: any, index: number, total: number): any {
+  if (!m || typeof m !== 'object') return m
+  if (m.role !== 'assistant') return m
+  const out = { ...m }
+  if (!Array.isArray(out.segments) || out.segments.length === 0) {
+    out.segments = _segmentsFor(out.content || '', index, { role: out.role, total })
+  }
+  // 思考的"显示态"是派生数据，不入档；读档时按原文重算（P6.5）
+  if (out.reasoning) out.reasoningDisplay = _reasoningFor(out.reasoning, index)
+  return out
+}
+
+function _rehydrateMessages(msgs: any[]): any[] {
+  if (!Array.isArray(msgs)) return []
+  const total = msgs.length
+  return msgs.map((m, i) => _rehydrateMessage(m, i, total))
+}
+
+async function _loadConversation(cardId: string) {
+  // P5.2：存档已迁到 IndexedDB（异步）。必须先 await init()：
+  // 它负责读取列表缓存并执行 v1→v2 老档迁移。
+  await conversationManager.init()
+  const record = await conversationManager.load(cardId)
   if (record && Array.isArray(record.messages) && record.messages.length > 0) {
-    runtimeStore.setMessages(record.messages)
-    runtimeStore.localVariables = record.localVariables || {}
+    // 先恢复会话资源绑定，再重建消息：_segmentsFor 依赖 sessionPresetId/sessionRegexPresetId
+    // 选出的正侧脚本（否则会用错预设的正则去渲染历史消息）。
     if (record.presetId) sessionPresetId.value = record.presetId
     if (record.regexPresetId) sessionRegexPresetId.value = record.regexPresetId
     if (record.personaId) sessionPersonaId.value = record.personaId
+    runtimeStore.setMessages(_rehydrateMessages(record.messages))
+    runtimeStore.localVariables = record.localVariables || {}
     if (record.worldInfoState) worldInfoState.value = record.worldInfoState
     if (record.trpgState) trpgState.value = record.trpgState
   } else {
@@ -297,7 +555,8 @@ function _startFresh() {
     const rawGreetings = [rawFirstMes, ...((card as any)?.alternate_greetings || [])]
     const processedGreetings = rawGreetings.map(g => substituteVariables(g, vars))
     const processedFirstMes = processedGreetings[0]
-    const segments = parseBlocks(processedFirstMes)
+    // 开场白同样走显示态管线（P4.1）：台词等 markdownOnly 样式在开场白上也应生效
+    const segments = _segmentsFor(processedFirstMes, 0, { role: 'assistant', total: 1 })
     runtimeStore.appendMessage({
       role: 'assistant',
       content: processedFirstMes,
@@ -343,10 +602,11 @@ function _mergeRegexScripts(preset: Preset): Preset {
   const globalScripts = regexPresetStore.globalScripts as RegexScript[]
 
   let sessionScripts: RegexScript[] = []
-  if (sessionRegexPresetId.value) {
-    const regexPreset = regexPresetStore.get(sessionRegexPresetId.value)
-    if (regexPreset) sessionScripts = regexPreset.scripts as RegexScript[]
-  }
+  // D15：用户没有选择其他正侧文件时，**默认使用「系统正侧」**（代码内置的台词识别等）；
+  // 一旦用户选了别的文件，就用那份文件**替换**系统正侧（不叠加）。
+  const sessionRegexId = sessionRegexPresetId.value || SYSTEM_REGEX_PRESET_ID
+  const regexPreset = regexPresetStore.get(sessionRegexId)
+  if (regexPreset) sessionScripts = regexPreset.scripts as RegexScript[]
 
   const card = activeCard.value as any
   const scopedScripts: RegexScript[] = (card?.extensions?.allowScopedRegex && Array.isArray(card?.extensions?.regex_scripts))
@@ -362,24 +622,60 @@ function _mergeRegexScripts(preset: Preset): Preset {
   return { ...preset, regexScripts: merged }
 }
 
-function _persistConversation() {
+const PERSIST_DEBOUNCE_MS = 500
+let _persistTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 存档（D12）
+ *
+ * 两点与改造前不同：
+ *  1. **防抖**：以前每次消息变更都同步序列化整份存档，流式/快速滑动时高频写盘；
+ *     现在默认延迟 500ms 合并，离开页面时用 _flushPersist() 兜底立即写入。
+ *  2. **失败可见**：save() 返回 false（最常见原因是本地存储配额超限）时必须提示用户，
+ *     以前它被静默吞掉 —— 表现为"聊了半天，重进发现内容没保存"。
+ */
+function _persistConversation(opts: { immediate?: boolean } = {}) {
   const card = activeCard.value
   if (!card) return
-  conversationManager.save({
-    cardId: card.id,
-    cardName: card.name,
-    presetId: sessionPresetId.value,
-    regexPresetId: sessionRegexPresetId.value,
-    personaId: sessionPersonaId.value,
-    messages: runtimeStore.messages,
-    localVariables: runtimeStore.localVariables,
-    worldInfoState: worldInfoState.value,
-    trpgState: trpgState.value
-  })
+  const doSave = () => {
+    _persistTimer = null
+    // P5.2：save 现在写 IndexedDB，是异步的（不再阻塞主线程）。
+    // 失败（配额/权限/关库）必须让用户看见 —— D12。
+    Promise.resolve(conversationManager.save({
+      cardId: card.id,
+      cardName: card.name,
+      presetId: sessionPresetId.value,
+      regexPresetId: sessionRegexPresetId.value,
+      personaId: sessionPersonaId.value,
+      messages: runtimeStore.messages,
+      localVariables: runtimeStore.localVariables,
+      worldInfoState: worldInfoState.value,
+      trpgState: trpgState.value
+    })).then((ok: any) => {
+      if (ok === false) notifyStorageFailure('保存对话')
+    }).catch((e: any) => {
+      console.error('[chat.vue] 保存对话异常:', e)
+      notifyStorageFailure('保存对话', e)
+    })
+  }
+  if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null }
+  if (opts.immediate) doSave()
+  else _persistTimer = setTimeout(doSave, PERSIST_DEBOUNCE_MS)
+}
+
+/** 立即落盘：离开页面 / 页面卸载 / 关键操作后调用，避免防抖窗口内丢写 */
+function _flushPersist() {
+  if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null }
+  _persistConversation({ immediate: true })
 }
 
 onUnmounted(() => {
   processor.abort()
+  _cancelStreamContent()
+  _flushPersist()
+  // #ifdef H5
+  try { window.removeEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
+  // #endif
 })
 
 function onInput(e: any) {
@@ -402,13 +698,44 @@ function goBack() {
   uni.navigateBack()
 }
 
-/** 确保 sessionPresetId 指向一个真实存在于 presetStore 里的预设，没有就创建一个空预设并持久化 */
+/**
+ * 把「系统预设」另存为一份用户预设（D19）
+ *
+ * 系统预设是**代码内置、不落盘**的：直接编辑它等于"改了但下次启动就恢复原样"，
+ * 用户会以为改动丢失。所以一旦要编辑（点设置键），先复制一份带新 id 的用户预设，
+ * 之后所有编辑都落在这份副本上。
+ */
+function _forkSystemPreset(): string | null {
+  const src = presetStore.get(SYSTEM_PRESET_ID)
+  if (!src) return null
+  const id = 'preset_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6)
+  const copy: Preset = {
+    ...src,
+    id,
+    name: (src.name || '系统预设') + ' 副本'
+  }
+  presetStore.save(copy)
+  sessionPresetId.value = id
+  _persistConversation({ immediate: true })
+  return id
+}
+
+/** 确保 sessionPresetId 指向一个真实存在于 presetStore 里的预设，没有就创建一个并持久化 */
 function _ensureSessionPresetId(): string {
   if (sessionPresetId.value && presetStore.get(sessionPresetId.value)) {
+    // 系统预设不可直接编辑 → 先另存为副本（见 _forkSystemPreset）
+    if (sessionPresetId.value === SYSTEM_PRESET_ID) {
+      const forked = _forkSystemPreset()
+      if (forked) return forked
+    }
     return sessionPresetId.value
   }
   if (presetStore.activePreset) {
     sessionPresetId.value = presetStore.activePreset.id
+    if (sessionPresetId.value === SYSTEM_PRESET_ID) {
+      const forked = _forkSystemPreset()
+      if (forked) return forked
+    }
     _persistConversation()
     return sessionPresetId.value
   }
@@ -421,9 +748,28 @@ function _ensureSessionPresetId(): string {
   return fresh.id
 }
 
+/**
+ * 停止生成（P1.3 / A3）
+ *
+ * MessageProcessor 被 abort 后会在 `if (this.aborted) return` 处直接返回，
+ * 于是 onComplete **永远不会触发** —— 正在流式的那条消息就会一直停留在
+ * `isStreaming: true`：光标 ▋ 一直闪、swipe 切换箭头被 `!item.isStreaming` 挡住。
+ * 所以这里要主动给这条消息"收尾"（对齐酒馆 stopGeneration 后仍走完 finalize）。
+ */
 function handleStop() {
   processor.abort()
   runtimeStore.setLoading(false)
+  // 先把最后一帧增量写进去（停止时不该丢掉最后 ~33ms 的文字），再收尾
+  _flushStreamContent()
+
+  const msgs = runtimeStore.messages
+  const idx = msgs.length - 1
+  const last = msgs[idx]
+  if (!last || last.role !== 'assistant' || !last.isStreaming) return
+
+  // 统一收尾（P6.2 / P6.4）：即使中途停止，也要把已流出的思考标记为"已结束"并算耗时
+  _finalizeMessage(idx, (last.content as string) || '')
+  _persistConversation({ immediate: true })
 }
 
 /** Continue续写：将最后一条AI消息作为前缀继续生成（对齐酒馆 type='continue'） */
@@ -462,24 +808,30 @@ async function handleContinue() {
     trpgState: trpgState.value,
     detectIntent: activeModules.value.intentDetection ? _handleIntent : undefined,
     continuePrefix: lastAiMsg.content || '', // Continue特有：原AI消息作为前缀
+    onPromptInfo: _handlePromptInfo,
     onChunk: (chunk: string) => {
-      const m = runtimeStore.messages[aiIndex]
-      if (!m || m.role !== 'assistant') return
-      m.content = (m.content || '') + chunk
-      m.swipes[m.swipe_id || 0] = m.content
-      _persistConversation()
-    }
+      // onChunk 语义 = "本次新生成内容的累积文本"（不含 continuePrefix），
+      // 所以这里算出完整内容 = 前缀 + 新生成部分；具体写入由 30fps 节流统一完成（P2.1）。
+      // 流式期间**不写盘**（P1.2 / A2）：结束时统一落盘一次。
+      _queueStreamContent(aiIndex, (lastAiMsg.content || '') + chunk)
+    },
+    // 思考走独立通道（P6.1）：不混进正文，也不进存档/上下文
+    onReasoning: (r: string) => _queueStreamReasoning(aiIndex, r)
   })
+
+  // 收尾前先丢弃未冲刷的缓冲，避免过期增量覆盖最终文本
+  _cancelStreamContent()
 
   const m = runtimeStore.messages[aiIndex]
   if (m && m.role === 'assistant') {
-    m.isStreaming = false
-    m.segments = parseBlock(m.content)
-    runtimeStore.forceUpdate()
+    // 修：原来这里调用的是不存在的 parseBlock()，紧接着又调用不存在的
+    // runtimeStore.forceUpdate() —— 连续两次抛错，导致后面的 setLoading(false)
+    // 与落盘都不执行（续写结束后按钮卡在"停止"、内容不保存）。P1.1 / A1
+    _finalizeMessage(aiIndex, (m.content as string) || '')
   }
 
   runtimeStore.setLoading(false)
-  _persistConversation()
+  _persistConversation({ immediate: true })
 }
 
 async function handleSend() {
@@ -535,25 +887,34 @@ async function sendUserMessage(text: string) {
     onIntent: _handleIntent,
     lorebookEntries: character ? characterCardStore.getLorebook(character.id) : [],
     worldInfoSessionState: worldInfoState.value,
+    onPromptInfo: _handlePromptInfo,
     onChunk: (partial) => {
-      const msgs = [...runtimeStore.messages]
-      // 样式即时固化：每个 chunk 都重新解析为 RenderNode，而不是等流式结束再统一渲染，
-      // 避免先显示纯文本、结束后再跳变为富文本渲染造成的布局抖动
-      msgs[aiIndex] = { ...msgs[aiIndex], content: partial, isStreaming: true, segments: parseBlocks(partial) }
-      runtimeStore.setMessages(msgs)
+      // 节流到约 30fps（P2.1 / B1）：真正的写入在 _flushStreamContent 里完成
+      _queueStreamContent(aiIndex, partial)
     },
+    // 思考走独立通道（P6.1 / D17）
+    onReasoning: (r: string) => _queueStreamReasoning(aiIndex, r),
     onComplete: (finalText, segments, wiState) => {
-      const msgs = [...runtimeStore.messages]
-      const prev = msgs[aiIndex]
-      const swipes = [...(prev.swipes || [''])]
-      swipes[prev.swipe_id || 0] = finalText
-      msgs[aiIndex] = { ...prev, content: finalText, isStreaming: false, segments, swipes }
-      runtimeStore.setMessages(msgs)
+      _cancelStreamContent()
+      // 统一收尾：文本思考切分 + 显示态正则 + swipes + 思考耗时（P6.2 / P6.4）
+      _finalizeMessage(aiIndex, finalText)
       runtimeStore.setLoading(false)
       worldInfoState.value = wiState
       _persistConversation()
     },
     onError: (err) => {
+      _cancelStreamContent()
+      // 登录态失效：App 层已经在把登录页推上来了，这里**不要**再往对话里写错误文案 ——
+      // 否则用户重新登录回来会看到一条 "[调试信息] HTTP 401: ..." 的 AI 消息，
+      // 正是"用户以为系统出问题"的场景。
+      // 用户自己那条消息保留，只把这个空的 AI 占位消息去掉；登录回来直接重发即可。
+      if (err && err.sessionExpired) {
+        const list = [...runtimeStore.messages]
+        list.splice(aiIndex, 1)
+        runtimeStore.setMessages(list)
+        runtimeStore.setLoading(false)
+        return
+      }
       // 把真实错误名称/消息打全，避免只留一句"抱歉，发生了错误，请重试。"看不出根因
       console.error('[chat.vue] 发送失败 - Name:', err?.name)
       console.error('[chat.vue] 发送失败 - Message:', err?.message)
@@ -581,7 +942,7 @@ function onSwipePrev(idx: number) {
   if (!msg.swipes || (msg.swipe_id || 0) <= 0) return
   const newId = (msg.swipe_id || 0) - 1
   const newContent = msg.swipes[newId]
-  msgs[idx] = { ...msg, swipe_id: newId, content: newContent, segments: parseBlocks(newContent) }
+  msgs[idx] = { ...msg, swipe_id: newId, content: newContent, segments: _segmentsFor(newContent, idx) }
   runtimeStore.setMessages(msgs)
   _persistConversation()
 }
@@ -593,7 +954,7 @@ function onSwipeNext(idx: number) {
   if ((msg.swipe_id || 0) < msg.swipes.length - 1) {
     const newId = (msg.swipe_id || 0) + 1
     const newContent = msg.swipes[newId]
-    msgs[idx] = { ...msg, swipe_id: newId, content: newContent, segments: parseBlocks(newContent) }
+    msgs[idx] = { ...msg, swipe_id: newId, content: newContent, segments: _segmentsFor(newContent, idx) }
     runtimeStore.setMessages(msgs)
     _persistConversation()
   } else {
@@ -632,26 +993,33 @@ async function regenerateSwipe(messageIndex: number) {
     onIntent: _handleIntent,
     lorebookEntries: character ? characterCardStore.getLorebook(character.id) : [],
     worldInfoSessionState: worldInfoState.value,
+    onPromptInfo: _handlePromptInfo,
     onChunk: (partial) => {
-      const m2 = [...runtimeStore.messages]
-      m2[messageIndex] = { ...m2[messageIndex], content: partial, isStreaming: true, segments: parseBlocks(partial) }
-      runtimeStore.setMessages(m2)
+      // 节流到约 30fps（P2.1 / B1）
+      _queueStreamContent(messageIndex, partial)
     },
+    // 思考走独立通道（P6.1 / D17）
+    onReasoning: (r: string) => _queueStreamReasoning(messageIndex, r),
     onComplete: (finalText, segments, wiState) => {
-      const m2 = [...runtimeStore.messages]
-      const prev = m2[messageIndex]
-      const swipes = [...(prev.swipes || [''])]
-      swipes[prev.swipe_id || 0] = finalText
-      m2[messageIndex] = { ...prev, content: finalText, isStreaming: false, segments, swipes }
-      runtimeStore.setMessages(m2)
+      _cancelStreamContent()
+      // 统一收尾（P6.2 / P6.4）：与发送路径同一套逻辑
+      _finalizeMessage(messageIndex, finalText)
       runtimeStore.setLoading(false)
       worldInfoState.value = wiState
       _persistConversation()
     },
     onError: (err) => {
+      _cancelStreamContent()
       console.error('[chat.vue] regenerateSwipe 发送失败 - Name:', err?.name)
       console.error('[chat.vue] regenerateSwipe 发送失败 - Message:', err?.message)
       console.error('[chat.vue] regenerateSwipe 发送失败 - Stack:', err?.stack)
+      // 登录态失效：把这条消息恢复到"重新生成之前"的状态（去掉刚压入的空 swipe、
+      // 还原 content 与 swipe_id），避免用户登录回来看到一个卡住的空白气泡
+      if (err && err.sessionExpired) {
+        const list = [...runtimeStore.messages]
+        if (list[messageIndex]) list[messageIndex] = { ...msg, isStreaming: false }
+        runtimeStore.setMessages(list)
+      }
       runtimeStore.setLoading(false)
     }
   })
@@ -715,8 +1083,9 @@ function deleteMessage(idx: number) {
 }
 
 function _emptyPreset(): Preset {
-  // 兜底返回内置默认预设（对齐酒馆 chatCompletionDefaultPrompts），而非空预设
-  return createDefaultPreset()
+  // 兜底返回**系统预设**（D19：代码内置、默认选中、流式默认开），而非空预设。
+  // 对齐酒馆 chatCompletionDefaultPrompts 的语义：没有任何预设可用时也要有一份能用的提示词。
+  return createSystemPreset()
 }
 </script>
 
@@ -758,53 +1127,27 @@ function _emptyPreset(): Preset {
    paddingTop 由模板里的 :style 动态绑定（导航栏高度），这里不再设 flex/overflow，让内容按实际高度自然撑开页面 */
 .messages-container { padding-bottom: calc(96rpx + 32rpx + env(safe-area-inset-bottom)); box-sizing: border-box; }
 .messages-wrapper { padding: 14px 14px 10px; min-height: 100%; display: flex; flex-direction: column; gap: 14px; }
-.message-wrapper { }
-.message-system { display: flex; justify-content: center; }
-.system-content { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 6px 12px; max-width: 260px; }
-.system-content text { font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); letter-spacing: .06em; line-height: 1.5; }
+/* 消息气泡相关样式已随模板抽到 components/render/MessageItem.vue（P2.4）：
+   scoped 样式不跨组件生效，所以它们必须跟模板一起搬走，这里不再保留。 */
 
-.message-ai { display: flex; align-items: flex-start; gap: 9px; }
-.message-ai .avatar {
-  width: 32px; height: 32px; border-radius: 10px; flex: none; overflow: hidden;
-  background: linear-gradient(160deg, oklch(68% 0.16 40), oklch(46% 0.12 20));
-  border: 1px solid oklch(80% 0.1 45 / 0.5);
-  display: flex; align-items: center; justify-content: center;
+/* 渲染窗口的"显示更早消息"入口（P2.6 / C2） */
+.show-more-row { display: flex; justify-content: center; padding: 2px 0 6px; }
+.show-more-text {
+  font-family: var(--font-body); font-size: 11px; color: var(--accent);
+  background: var(--accent-soft);
+  border: 1px solid color-mix(in oklch, var(--accent) 30%, transparent);
+  border-radius: 999px; padding: 5px 14px;
 }
-.avatar-img { width: 100%; height: 100%; }
-.avatar-text { font-family: var(--font-serif); font-size: 12px; font-weight: 900; color: #1b0b05; }
-/* AI 消息：头像左置；ai-bubble-col 占满剩余宽度，泡泡本身按内容宽度收缩 */
-.ai-bubble-col { display: flex; flex-direction: column; gap: 6px; flex: 1; min-width: 0; }
-/* 泡泡宽度跟随文字内容（不再占满整行）；远端留白交给下方两侧各自的上限控制 */
-.bubble { width: fit-content; background: var(--surface); border: 1px solid var(--border); border-radius: 15px; border-top-left-radius: 5px; padding: 11px 13px; }
-/* 两端镜像、远端各留16px：
-   - AI 泡泡在 ai-bubble-col 内，列右缘即消息行右缘，上限 calc(100% - 16px)
-     → 最宽时右端距行右缘正好 16px（= 消息宽 - 头像32 - 间距9 - 16）
-   - 用户泡泡所在行右端含头像32px+间距9px，上限 calc(100% - 57px)（57=16+9+32）
-     → 最宽时左端距行左缘也正好 16px；两侧最大像素宽度相同（消息宽-57px），完全镜像 */
-.message-ai .bubble { max-width: calc(100% - 16px); }
-.message-user .bubble { max-width: calc(100% - 57px); }
-.swipe-row { display: flex; align-items: center; justify-content: center; gap: 8px; margin-top: 2px; }
-.swipe-arrow { font-family: var(--font-mono); font-size: 15px; color: var(--accent); font-weight: 700; padding: 0 4px; }
-.swipe-arrow-disabled { color: var(--faint); opacity: .4; }
-.swipe-count { font-family: var(--font-mono); font-size: 9.5px; color: var(--faint); letter-spacing: .04em; }
 
-/* 用户消息：普通 row + justify-content:flex-end，avatar 作为行内最后一个子元素，
-   右边缘始终贴行右缘（= 屏幕右缘 14px），与左侧 AI 头像（14px）镜像对称 */
-.message-user { display: flex; align-items: flex-start; justify-content: flex-end; flex-direction: row; gap: 9px; }
-.message-user .bubble {
-  background: linear-gradient(135deg, oklch(78% 0.12 84 / 0.9), oklch(66% 0.14 74 / 0.9));
-  color: #1c1204; font-weight: 500;
-  border-radius: 15px; border-top-right-radius: 5px; border: none;
+/* 生成期间关闭上下两条固定栏的毛玻璃（P2.5 / B5）：
+   backdrop-filter 会在"它背后的内容每次变化"时重算整块模糊，流式输出时等于每秒几十次，
+   低配设备上很吃性能。生成期间换成接近实色的背景，视觉差异很小但省掉大量合成开销。 */
+.is-streaming .custom-navbar,
+.is-streaming .input-container {
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  background: oklch(18% 0.013 70 / 0.98);
 }
-.message-user .avatar {
-  width: 32px; height: 32px; border-radius: 10px; flex: none; overflow: hidden;
-  background: var(--raised); border: 1px solid var(--border-strong);
-  display: flex; align-items: center; justify-content: center;
-}
-.message-user .avatar-text { font-family: var(--font-serif); font-size: 12px; font-weight: 900; color: var(--fg-soft); }
-.message-text { font-family: var(--font-body); font-size: 13px; color: inherit; line-height: 1.65; }
-.stream-cursor { display: inline-block; color: var(--accent); animation: blink 900ms step-end infinite; }
-@keyframes blink { 0%,100%{opacity:1} 50%{opacity:0} }
 
 .loading-indicator { display: flex; align-items: center; justify-content: center; padding: 16px; }
 .loading-dots { display: flex; gap: 5px; }

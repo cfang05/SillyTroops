@@ -370,16 +370,18 @@ uni-app {
   --t-emerald: oklch(74% 0.13 158);
   --t-rose: oklch(72% 0.12 15);
 
-  /* 字体栈：全部走系统字体，不加载任何 Web 字体（原因见上方注释）。
-     拉丁展示字体 Cinzel / 等宽 JetBrains Mono 仍保留在栈首，本机装了就用，
-     没装就直接落到后面的系统字体，不会产生网络请求。 */
-  --font-display: 'Cinzel', 'Songti SC', 'SimSun', Georgia, 'Times New Roman', serif;
-  --font-serif: 'Songti SC', 'Noto Serif SC', 'SimSun', Georgia, serif;
-  --font-body: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
-               'Hiragino Sans GB', 'Noto Sans SC', 'Source Han Sans SC', system-ui,
-               'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
-  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'JetBrains Mono',
-               'Liberation Mono', monospace;
+  /* 字体栈：**与 brand-spec §2 / §6 完全一致**，只是不再用 @import 去加载 Web 字体
+     （那是首屏被卡 9s+ 的根因，见上方注释）。
+
+     ⚠️ 不要把这些"设计字体"往后挪。曾经把它们排到系统字体之后（比如把
+     'Noto Sans SC' 放到 'Microsoft YaHei' 后面），结果凡是本机装了 Noto 的用户
+     （实测本机就有 NotoSansSC-VF.ttf / NotoSerifSC-VF.ttf）正文会静默变成微软雅黑，
+     和设计稿不一致。这些字体**在本机装了就用**，没装自然落到后面的系统字体，
+     既不会产生网络请求，也不会有副作用 —— 所以"设计字体在前、系统字体兜底"才是对的顺序。 */
+  --font-display: 'Cinzel', 'Noto Serif SC', 'Songti SC', serif;
+  --font-serif: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
+  --font-body: 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
 }
 
 /* 全局样式 */

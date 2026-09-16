@@ -20,6 +20,7 @@ import { substituteVariables, setTrpgContext } from './VariableEngine'
 import { DEBUG_ENABLED } from './DebugLogger'
 import { scan as scanWorldInfo, createEmptySessionState, type WorldInfoSessionState, type WorldInfoBucket } from './WorldInfoEngine'
 import { applyRegexScripts } from './RegexScriptEngine'
+import { estimateTokenCount } from './tokenizer'
 
 export interface ChatHistoryItem {
   role: 'user' | 'assistant'
@@ -50,9 +51,59 @@ export interface BuiltMessage {
   content: string
 }
 
+/** 上下文构成里的一个"段"（P3.3：供分项面板展示） */
+export interface PromptSection {
+  /** 段名（面板上一行一项） */
+  name: string
+  /** 该段的估算 token 数（启发式估算，见 tokenizer.ts） */
+  tokens: number
+  /** 该段包含的消息条数（非消息类段落为 0，例如"回复预留"） */
+  messages: number
+  /**
+   * main  = 参与分区求和（各段之和 ≈ 本次 prompt 用量 + 预留）
+   * detail = 「其中」类子项，只说明占比来源，**不参与求和**（否则重复计数）
+   */
+  kind?: 'main' | 'detail'
+}
+
+/**
+ * 本次请求的上下文构成快照（P3.3 / D14 分项面板的数据源）
+ *
+ * 注意：token 数是**本地启发式估算**，而统计口径（监控页）用的是上游返回的真实 usage
+ * —— 两者定位不同：这里用于"发送前的预算与裁剪"以及给用户看构成占比（D13）。
+ */
+export interface PromptInfo {
+  /** 模型上下文窗口上限（预设 maxContext） */
+  maxContext: number
+  /** 为回复预留的 token（预设 maxTokens） */
+  reservedResponse: number
+  /** 安全余量（估算误差兜底） */
+  safetyMargin: number
+  /** 可用于 prompt 的预算 = maxContext − reservedResponse − safetyMargin */
+  budget: number
+  /** 裁剪后的实际估算用量（不含回复预留） */
+  used: number
+  /** 各段构成 */
+  sections: PromptSection[]
+  /** 进入上下文的历史条数 */
+  historyKept: number
+  /** 历史总条数 */
+  historyTotal: number
+  /** 被省略（最旧）的条数 */
+  historyDropped: number
+  /** 连强制项（系统提示 + 本次用户消息）都放不下：需要用户调小预设或换更大的上下文 */
+  overflowMandatory: boolean
+  /** 本次实际发送的完整内容（供"查看原始 prompt"与相邻两次 diff） */
+  rawPrompt: string
+  /** 生成时间戳 */
+  createdAt: number
+}
+
 export interface BuildMessagesResult {
   messages: BuiltMessage[]
   worldInfoState: WorldInfoSessionState
+  /** 上下文构成快照（P3.3） */
+  promptInfo: PromptInfo
 }
 
 /** 运行时由系统填充的 marker 提示词 identifier */
@@ -66,6 +117,28 @@ const MARKER_IDS = [
   'worldInfoAfter',
   'trpgStatus'
 ] as const
+
+/**
+ * prompt 态正则（P4.1 / D5 三态分离）
+ *
+ * 对每条历史消息按 placement（用户输入=1 / AI 输出=0）配 `isPrompt: true` 跑一遍脚本，
+ * 返回**新对象数组**（副本）→ 只影响本次请求，**不改存档**。
+ * depth 对齐酒馆语义：距末尾的层数（最后一条为 0）。
+ */
+function _applyPromptRegex(history: BuiltMessage[], preset: Preset, vars: Record<string, string>): BuiltMessage[] {
+  const scripts = preset.regexScripts || []
+  if (!scripts.length || !history.length) return history
+  const total = history.length
+  return history.map((m, i) => {
+    const placement = (m.role === 'user' ? 1 : 0) as any
+    const content = applyRegexScripts(m.content, scripts, placement, {
+      vars,
+      isPrompt: true,
+      depth: total - i - 1
+    })
+    return content === m.content ? m : { ...m, content }
+  })
+}
 
 /**
  * 构建最终发送给 LLM 的 messages 数组
@@ -187,11 +260,13 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
 
   // depth_prompt（角色注，extensions.depth_prompt）按 depth+role 注入历史深处
   const depthPrompt = character?.data?.extensions?.depth_prompt
+  let depthPromptText = ''
   if (depthPrompt && typeof depthPrompt.prompt === 'string' && depthPrompt.prompt.trim()) {
     const resolvedDepthPrompt = substituteVariables(depthPrompt.prompt, vars)
     if (resolvedDepthPrompt.trim()) {
       const role = depthPrompt.role === 'user' || depthPrompt.role === 'assistant' ? depthPrompt.role : 'system'
       absoluteItems.push({ role, depth: typeof depthPrompt.depth === 'number' ? depthPrompt.depth : 4, content: resolvedDepthPrompt })
+      depthPromptText = resolvedDepthPrompt // P3.3：分项统计用
     }
   }
 
@@ -213,22 +288,131 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   const result: BuiltMessage[] = [...systemBlock]
 
   let history = _applyNamesBehavior(chatHistory, character, preset)
+
+  // ══════════ prompt 态正则（P4.1 / D5 三态分离）══════════
+  // 对齐酒馆 script.js:4445 —— 历史消息进 prompt 前，逐条按 `{ isPrompt: true }` 跑一遍正则：
+  //   · 只有勾了「仅 Prompt」的脚本会在这里生效（第三分支被 isPrompt 挡住）；
+  //   · 结果只进本次请求的副本，**不影响存档**（下面 map 出的是新对象）。
+  // 改造前这一步完全没有，导致"仅 Prompt"的脚本永远不会执行。
+  history = _applyPromptRegex(history, preset, vars)
+
   history = _insertAbsoluteItems(history, absoluteItems, vars)
   // atDepth 世界书条目内容同样走 WORLD_INFO 正则后，按 depth+role 注入历史深处
   // 修复：传入每个条目自己的 depth（供 minDepth/maxDepth 过滤）
-  history = _insertAtDepthEntries(
-    history,
-    buckets.atDepth.map(e => ({ ...e, content: wiRegex(e.content, e.depth) }))
-  )
+  const atDepthEntries = buckets.atDepth.map(e => ({ ...e, content: wiRegex(e.content, e.depth) }))
+  history = _insertAtDepthEntries(history, atDepthEntries)
   // IN_CHAT 作者注：按 depth+role 注入历史深处
   if (noteInChat && noteText && ctx.authorsNote) {
     history = _insertNoteInChat(history, noteText, ctx.authorsNote.depth, ctx.authorsNote.role)
   }
-  result.push(...history)
+
+  // ═══════════════════════════════════════════════════════════
+  // 上下文裁剪（P3.1 / P3.2 / D10）
+  //
+  // 预算 = maxContext − 回复预留(maxTokens) − 安全余量
+  //   · maxContext 在改造前**只喂给世界书预算**，历史是"有多少发多少"——
+  //     长对话必然超窗口，或被上游静默截断（这是本轮修的最关键一处）。
+  //   · 安全余量用于吸收本地估算误差（token 计数是启发式估算，见 D13）。
+  //
+  // 裁剪规则：**从最新一条往旧累加，装不下即停** → 保留一段"连续的最新后缀"。
+  //   · 刻意**不保护开场白**（D10，与酒馆一致：反向遍历使 chat[0] 最先被丢）。
+  //   · 被丢掉的消息只是"不进这次请求"，存档与页面显示都不受影响。
+  // ═══════════════════════════════════════════════════════════
+  const genParams: any = preset.generationParams || {}
+  const maxContext = (typeof genParams.maxContext === 'number' && genParams.maxContext > 0) ? genParams.maxContext : 4096
+  const reservedResponse = (typeof genParams.maxTokens === 'number' && genParams.maxTokens > 0) ? genParams.maxTokens : 2000
+  const safetyMargin = Math.min(512, Math.max(96, Math.round(maxContext * 0.02)))
+  const budget = Math.max(0, maxContext - reservedResponse - safetyMargin)
+
+  const tokensOf = (msgs: BuiltMessage[]) => msgs.reduce((n, m) => n + estimateTokenCount(m.content || ''), 0)
+  const systemTokens = tokensOf(systemBlock)
+
+  const tailUserRaw = (userMessage && (result.length === 0 || result[result.length - 1].content !== userMessage)) ? userMessage : ''
+  // 本次用户消息同样走 prompt 态正则（P4.1）：只影响这次请求，存档里仍是用户原文
+  const tailUser = tailUserRaw
+    ? (_applyPromptRegex([{ role: 'user', content: tailUserRaw }], preset, vars)[0]?.content || tailUserRaw)
+    : ''
+  const userTokens = tailUser ? estimateTokenCount(tailUser) : 0
+
+  // 强制项：系统提示块（含世界书/作者注等已解析内容）+ 本次用户消息
+  const mandatoryTokens = systemTokens + userTokens
+  const overflowMandatory = mandatoryTokens > budget
+  const historyBudget = Math.max(0, budget - mandatoryTokens)
+
+  let historyKept: BuiltMessage[] = []
+  let historyDropped = history.length
+  if (!overflowMandatory) {
+    let acc = 0
+    let startIdx = history.length
+    for (let i = history.length - 1; i >= 0; i--) {
+      const t = estimateTokenCount(history[i].content || '')
+      if (acc + t > historyBudget) break
+      acc += t
+      startIdx = i
+    }
+    historyKept = history.slice(startIdx)
+    historyDropped = startIdx
+  }
+
+  if (DEBUG_ENABLED && (historyDropped > 0 || overflowMandatory)) {
+    console.warn(
+      `[PromptBuilder] 上下文裁剪: 预算=${budget}(= ${maxContext} − ${reservedResponse} − ${safetyMargin})` +
+      `, 强制项=${mandatoryTokens}, 历史保留=${historyKept.length}/${history.length}, 省略=${historyDropped}` +
+      (overflowMandatory ? ' ⚠️ 强制项自身已超预算' : '')
+    )
+  }
+
+  result.push(...historyKept)
 
   const lastMsg = result[result.length - 1]
-  if (!lastMsg || lastMsg.content !== userMessage) {
-    result.push({ role: 'user', content: userMessage })
+  // 续写（D16）：userMessage 为空时**不要**推入空的 user 消息。
+  // 空消息会被部分服务端直接拒绝；即使接受，模型也只看到"一句空话"，无从判断该接着写什么。
+  // 续写的"接着写"语义改由 MessageProcessor 追加一条 assistant prefill 消息来实现。
+  if (tailUser && (!lastMsg || lastMsg.content !== tailUser)) {
+    result.push({ role: 'user', content: tailUser })
+  }
+
+  // ══════════ 上下文构成快照（P3.3）══════════
+  const historyKeptTokens = tokensOf(historyKept)
+  const keptTexts = new Set(historyKept.map(m => m.content))
+  const sumKeptFrom = (texts: string[]) =>
+    texts.filter(t => keptTexts.has(t)).reduce((n, t) => n + estimateTokenCount(t), 0)
+  const wiFrontTokens = estimateTokenCount(markerContents.worldInfoBefore) + estimateTokenCount(markerContents.worldInfoAfter)
+  const atDepthTokensKept = sumKeptFrom(atDepthEntries.map(e => e.content))
+  const depthPromptKept = depthPromptText ? sumKeptFrom([depthPromptText]) : 0
+  const noteTokens = noteText ? estimateTokenCount(noteText) : 0
+  const noteTokensKept = noteInChat && noteText ? sumKeptFrom([noteText]) : noteTokens
+
+  // 用带显式返回类型的构造器，避免 TS 把 kind 字面量推断成 string（P3.3）
+  const mkSection = (name: string, tokens: number, messages: number, kind: 'main' | 'detail' = 'main'): PromptSection =>
+    ({ name, tokens, messages, kind })
+
+  const sections: PromptSection[] = [
+    mkSection('系统提示词', systemTokens, systemBlock.length),
+    mkSection('聊天历史', historyKeptTokens, historyKept.length),
+    ...(tailUser ? [mkSection('本次用户消息', userTokens, 1)] : []),
+    mkSection('回复预留', reservedResponse, 0),
+    mkSection('安全余量', safetyMargin, 0),
+    // 「其中」类子项：说明占比来源，**不参与上面的分区求和**
+    mkSection('其中·世界书（前/后）', wiFrontTokens, 0, 'detail'),
+    mkSection('其中·世界书（深度注入）', atDepthTokensKept, 0, 'detail'),
+    mkSection('其中·作者注', noteTokensKept, 0, 'detail'),
+    mkSection('其中·角色深度提示', depthPromptKept, 0, 'detail')
+  ].filter(s => s.kind === 'main' || s.tokens > 0)
+
+  const promptInfo: PromptInfo = {
+    maxContext,
+    reservedResponse,
+    safetyMargin,
+    budget,
+    used: systemTokens + historyKeptTokens + userTokens,
+    sections,
+    historyKept: historyKept.length,
+    historyTotal: history.length,
+    historyDropped,
+    overflowMandatory,
+    rawPrompt: result.map(m => `### ${m.role}\n${m.content}`).join('\n\n'),
+    createdAt: Date.now()
   }
 
   if (DEBUG_ENABLED) {
@@ -238,7 +422,7 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     })
   }
 
-  return { messages: result, worldInfoState: scanResult.newSessionState }
+  return { messages: result, worldInfoState: scanResult.newSessionState, promptInfo }
 }
 
 // ─────────────────────────────────────────────────────────────

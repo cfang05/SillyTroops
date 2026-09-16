@@ -10,11 +10,26 @@
 // 所有键通过 scopedKey() 按当前用户 ID 隔离（u_{userId}_ 前缀）。
 
 import { scopedKey } from '../account/userScope.js';
+import { createCachedStore } from '../storage/cachedStore';
 
 function _cardKey(id) { return scopedKey('char_card_' + id); }
 function _listKey() { return scopedKey('char_card_list'); }
 function _activeKey() { return scopedKey('active_char_card'); }
 function _lorebookKey(id) { return scopedKey('char_card_lorebook_' + id); }
+
+/**
+ * P5.3：角色卡 / 世界书 / 激活卡改存 **IndexedDB**（内存缓存 + 异步落盘）。
+ *
+ * 对外 API 与调用点**完全不变**（仍然同步）：
+ *   · 迁移完成前读操作自动回落到本地存储，因此不存在"还没读完就拿到 null"的竞态；
+ *   · 迁移完成后本地存储里的副本会被清掉，把 5MB 配额腾出来（角色卡带头像 base64 是主要占用者）。
+ */
+const _store = createCachedStore({
+  name: 'characterCard',
+  match: function (k) {
+    return k.indexOf(scopedKey('char_card')) === 0 || k === scopedKey('active_char_card');
+  }
+});
 
 function _genId() {
   return 'card_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -22,7 +37,7 @@ function _genId() {
 
 function _getList() {
   try {
-    var list = uni.getStorageSync(_listKey());
+    var list = _store.get(_listKey());
     return Array.isArray(list) ? list : [];
   } catch (e) {
     return [];
@@ -31,7 +46,7 @@ function _getList() {
 
 function _saveList(list) {
   try {
-    uni.setStorageSync(_listKey(), list);
+    _store.set(_listKey(), list);
     return true;
   } catch (e) {
     console.error('[CharacterCardManager] 保存列表失败:', e);
@@ -41,11 +56,14 @@ function _saveList(list) {
 
 /**
  * 创建/导入角色卡
+ *
+ * P5.3 之后落盘走 IndexedDB（异步）：写失败不再同步抛出，而是由缓存层统一
+ * 打日志 + 弹提示（IndexedDB 配额远大于 localStorage，原先"头像过大写不进去"的
+ * 高频失败场景基本消失）。这里仍做**列表写入失败的回滚**，避免孤儿卡片。
+ *
  * @param {Object} cardData - CharacterV2.data 结构的完整字段
  * @param {Array} [lorebookEntries] - 已标准化的世界书条目
  * @returns {string} cardId
- * @throws {Error} 存储失败时抛出（常见原因：avatar 内嵌图片过大导致超出本地存储配额），
- *                 调用方必须 catch 并向用户反馈"导入失败"，不能静默吞掉后仍报成功
  */
 function createCard(cardData, lorebookEntries) {
   var id = _genId();
@@ -55,12 +73,7 @@ function createCard(cardData, lorebookEntries) {
     updatedAt: Date.now()
   }, cardData);
 
-  try {
-    uni.setStorageSync(_cardKey(id), record);
-  } catch (e) {
-    console.error('[CharacterCardManager] 创建角色卡失败（写入卡片数据）:', e);
-    throw new Error('角色卡保存失败，可能是头像图片过大超出本地存储空间（' + (e && e.message ? e.message : e) + '）');
-  }
+  _store.set(_cardKey(id), record);
 
   try {
     var list = _getList();
@@ -68,17 +81,17 @@ function createCard(cardData, lorebookEntries) {
     var listSaved = _saveList(list);
     if (!listSaved) {
       // 列表写入失败：回滚刚写入的卡片数据，避免出现"能读到卡片但列表里没有"的孤儿记录
-      uni.removeStorageSync(_cardKey(id));
-      throw new Error('角色卡列表保存失败，可能超出本地存储空间');
+      _store.remove(_cardKey(id));
+      throw new Error('角色卡列表保存失败');
     }
 
     if (Array.isArray(lorebookEntries) && lorebookEntries.length > 0) {
-      uni.setStorageSync(_lorebookKey(id), lorebookEntries);
+      _store.set(_lorebookKey(id), lorebookEntries);
     }
   } catch (e) {
     console.error('[CharacterCardManager] 创建角色卡失败:', e);
     // 保证不留下孤儿卡片记录
-    try { uni.removeStorageSync(_cardKey(id)); } catch (e2) { /* ignore */ }
+    try { _store.remove(_cardKey(id)); } catch (e2) { /* ignore */ }
     throw e instanceof Error ? e : new Error('角色卡保存失败：' + e);
   }
 
@@ -88,7 +101,7 @@ function createCard(cardData, lorebookEntries) {
 function getCard(id) {
   if (!id) return null;
   try {
-    var card = uni.getStorageSync(_cardKey(id));
+    var card = _store.get(_cardKey(id));
     return card || null;
   } catch (e) {
     return null;
@@ -127,24 +140,20 @@ function updateCard(id, updates) {
   if (!card) return false;
   var updated = _deepMerge(card, updates);
   updated.updatedAt = Date.now();
-  try {
-    uni.setStorageSync(_cardKey(id), updated);
-    return true;
-  } catch (e) {
-    console.error('[CharacterCardManager] 更新角色卡失败:', e);
-    throw new Error('角色卡保存失败，可能是头像图片过大超出本地存储空间（' + (e && e.message ? e.message : e) + '）');
-  }
+  // P5.3：异步落盘（写失败由缓存层提示），不再同步抛出
+  _store.set(_cardKey(id), updated);
+  return true;
 }
 
 function deleteCard(id) {
   try {
-    uni.removeStorageSync(_cardKey(id));
-    uni.removeStorageSync(_lorebookKey(id));
+    _store.remove(_cardKey(id));
+    _store.remove(_lorebookKey(id));
     var list = _getList().filter(function(cid) { return cid !== id; });
     _saveList(list);
     var activeId = getActiveCard();
     if (activeId === id) {
-      uni.removeStorageSync(_activeKey());
+      _store.remove(_activeKey());
     }
     return true;
   } catch (e) {
@@ -155,7 +164,7 @@ function deleteCard(id) {
 
 function setActiveCard(id) {
   try {
-    uni.setStorageSync(_activeKey(), id);
+    _store.set(_activeKey(), id);
     return true;
   } catch (e) {
     return false;
@@ -164,7 +173,7 @@ function setActiveCard(id) {
 
 function getActiveCard() {
   try {
-    return uni.getStorageSync(_activeKey()) || null;
+    return _store.get(_activeKey()) || null;
   } catch (e) {
     return null;
   }
@@ -173,7 +182,7 @@ function getActiveCard() {
 function getCardLorebook(id) {
   if (!id) return [];
   try {
-    var entries = uni.getStorageSync(_lorebookKey(id));
+    var entries = _store.get(_lorebookKey(id));
     return Array.isArray(entries) ? entries : [];
   } catch (e) {
     return [];
@@ -182,7 +191,7 @@ function getCardLorebook(id) {
 
 function setCardLorebook(id, entries) {
   try {
-    uni.setStorageSync(_lorebookKey(id), Array.isArray(entries) ? entries : []);
+    _store.set(_lorebookKey(id), Array.isArray(entries) ? entries : []);
     return true;
   } catch (e) {
     return false;

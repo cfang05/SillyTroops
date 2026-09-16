@@ -10,12 +10,12 @@ import type { Preset } from '../types/preset'
 import type { CharacterV2, LorebookEntry } from '../types/character'
 import type { ChatMessage } from '../types/message'
 import type { AuthorsNoteConfig } from '../types/note'
-import { buildMessages, type BuildContext } from './PromptBuilder'
+import { buildMessages, type BuildContext, type PromptInfo } from './PromptBuilder'
 import type { WorldInfoSessionState } from './WorldInfoEngine'
 import { applyRegexScripts } from './RegexScriptEngine'
 import { parseBlocks } from './BlockParser'
 import { DEBUG_ENABLED, debugGroup, debugTable, truncate } from './DebugLogger'
-import { countTokens } from './tokenizer'
+import { estimateTokenCount } from './tokenizer'
 import LLMClient from '../utils/llm/client.js'
 // @ts-ignore
 import userManager from '../utils/account/userManager.js'
@@ -44,6 +44,16 @@ export interface SendOptions {
   continuePrefix?: string
   /** 每次模拟输出新增字符时回调，用于 UI 实时更新 */
   onChunk?: (partialText: string) => void
+  /**
+   * 上下文构成快照回调（P3.3：分项面板 / 超预算提示的数据源）
+   * 在**调用 LLM 之前**触发，因此生成失败也能看到本次实际发送的内容。
+   */
+  onPromptInfo?: (info: PromptInfo) => void
+  /**
+   * 思考内容回调（D17 / P6.1）：与正文 onChunk 严格分离。
+   * 流式期间逐段回调累积思考文本；非流式路径在拿到响应后补发一次。
+   */
+  onReasoning?: (reasoningText: string) => void
   /** 全部完成时回调，传入最终文本、解析后的 segments、以及扫描后需要持久化的世界书状态 */
   onComplete?: (finalText: string, segments: ReturnType<typeof parseBlocks>, worldInfoState: WorldInfoSessionState) => void
   /** 出错时回调 */
@@ -85,7 +95,30 @@ export class MessageProcessor {
         trpgState: options.trpgState,
         authorsNote: options.authorsNote
       }
-      const { messages, worldInfoState } = buildMessages(buildCtx)
+      const { messages, worldInfoState, promptInfo } = buildMessages(buildCtx)
+
+      // 上下文构成快照（P3.3）：先交给调用方（分项面板/超预算提示），
+      // 放在 LLM 调用之前，这样即便本次生成失败也能看到"刚才发了什么"。
+      if (options.onPromptInfo) {
+        try {
+          options.onPromptInfo(promptInfo)
+        } catch (e) {
+          console.warn('[MessageProcessor] onPromptInfo 回调失败:', e)
+        }
+      }
+      if (promptInfo.overflowMandatory) {
+        console.warn(
+          `[MessageProcessor] ⚠️ 强制项已超出上下文预算：预算=${promptInfo.budget}，` +
+          `系统提示+本次用户消息已占 ${promptInfo.used}。请调大预设的"上下文长度"或减小"最大回复长度"。`
+        )
+      }
+
+      // 续写（D16）：把被续写的 AI 文本作为**最后一条 assistant 消息**送进去（prefill 方式），
+      // 而不是依赖一条空的 user 消息 —— 部分服务端会直接拒绝空消息，即使接受，模型也从
+      // "一句空话"里无从判断该接着什么写。PromptBuilder 已改为不再推入空 user 消息。
+      if (continuePrefix) {
+        messages.push({ role: 'assistant' as const, content: continuePrefix })
+      }
 
       // ═══════════════════════════════════════════════════════════
       // 埋点 6：完整叙事请求 —— 调用 LLM 之前，打印完整 messages 数组
@@ -116,16 +149,31 @@ export class MessageProcessor {
       // 3. 调用 LLM（stream 开启走 SSE 真流式，H5 端实时回调；否则一次性返回全文）
       this.client = new LLMClient(undefined)
       const streamEnabled = !!preset.generationParams?.stream
+      const { onReasoning } = options
       let rawReply: string
       if (streamEnabled) {
         rawReply = await this.client.generateWithMessagesStream(
           messages,
           preset.generationParams,
-          onChunk ? (partial: string) => { if (!this.aborted) onChunk(partial) } : undefined
+          onChunk ? (partial: string) => { if (!this.aborted) onChunk(partial) } : undefined,
+          // 思考走**独立通道**（P6.1 / D17）：绝不混进 onChunk 的正文流
+          onReasoning ? (text: string) => { if (!this.aborted) onReasoning(text) } : undefined
         )
       } else {
         rawReply = await this.client.generateWithMessages(messages, preset.generationParams)
+        // 非流式（含小程序端）：思考在响应里一次性给出，这里补发一次独立回调
+        if (onReasoning && !this.aborted) {
+          const clientAny: any = this.client
+          const r = clientAny && typeof clientAny.getLastReasoning === 'function' ? clientAny.getLastReasoning() : ''
+          if (r) onReasoning(r)
+        }
       }
+
+      // D19 / P2.8：**是否走打字机**取决于"这次是否真的拿到了增量流式"，而不是预设开关。
+      // 小程序端上游不支持流式（一次返回全文），若按开关判定就会跳过打字机 → 整段一次性蹦出。
+      const clientRef: any = this.client
+      const realStream = typeof clientRef.wasRealStream === 'function' ? !!clientRef.wasRealStream() : streamEnabled
+
       if (this.aborted) return
 
       // 4. 输出侧正则脚本（placement=0；vars 供 substituteRegex 宏替换使用）
@@ -135,26 +183,34 @@ export class MessageProcessor {
       const finalReply = continuePrefix ? (continuePrefix + processedReply) : processedReply
 
       // ═══════════════════════════════════════════════════════════
-      // Token 用量统计（估算值）：把本次请求的输入（messages）+ 输出（最终回复）
-      // 的估算 token 数累加到当前登录用户头上，供测试监控页展示。
-      // 估算口径见 engine/tokenizer.ts：H5 端优先用真实 tiktoken(cl100k_base)，
-      // 未就绪或非 H5 端用启发式估算（中日韩≈1token/字、英文≈1.3token/词）。
-      // 计的是"单次往返全量上下文"，不含多轮回复的历史重放，属于合理近似。
+      // Token 用量统计（D13）
+      // 优先用上游返回的**真实 usage**（由请求里的 stream_options.include_usage 带出）；
+      // 拿不到时退回本地启发式估算。**不再用 tiktoken 重算整段 prompt** —— 那会在
+      // "生成刚结束"这个最敏感的时刻同步阻塞主线程，也是末帧手感发滞的原因。
+      // 注意：上游 usage 只在响应结束时返回，因此它只能用于统计，
+      //       不能用于"发送前裁剪历史"（那必须用本地估算，见 P3）。
       // ═══════════════════════════════════════════════════════════
       try {
-        let promptChars = 0
-        for (const m of messages) {
-          if (m && m.content) promptChars += m.content.length
+        const clientAny: any = this.client
+        const usage = clientAny && typeof clientAny.getLastUsage === 'function' ? clientAny.getLastUsage() : null
+        let promptTokens = 0
+        let completionTokens = 0
+        let fromUpstream = false
+        if (usage && (usage.prompt_tokens || usage.completion_tokens)) {
+          promptTokens = Number(usage.prompt_tokens) || 0
+          completionTokens = Number(usage.completion_tokens) || 0
+          fromUpstream = true
+        } else {
+          promptTokens = estimateTokenCount(messages.map(m => m.content || '').join('\n'))
+          completionTokens = estimateTokenCount(finalReply)
         }
-        const promptTokens = countTokens(messages.map(m => m.content || '').join('\n'))
-        const completionTokens = countTokens(finalReply)
         if (promptTokens > 0 || completionTokens > 0) {
           userManager.recordTokenUsage(promptTokens, completionTokens)
           if (DEBUG_ENABLED) {
-            debugGroup('[TokenUsage] 本次估算用量', () => {
-              console.log('输入字符数(近似):', promptChars)
-              console.log('prompt 估算 tokens:', promptTokens)
-              console.log('completion 估算 tokens:', completionTokens)
+            debugGroup('[TokenUsage] 本次用量', () => {
+              console.log('来源:', fromUpstream ? '上游 usage（真实值）' : '本地启发式估算')
+              console.log('prompt tokens:', promptTokens)
+              console.log('completion tokens:', completionTokens)
             })
           }
         }
@@ -162,13 +218,18 @@ export class MessageProcessor {
         console.warn('[TokenUsage] 统计失败（不影响对话）:', e)
       }
 
-      if (streamEnabled) {
-        // 流式路径已在上面实时回调 onChunk，无需再打字机模拟
+      if (realStream) {
+        // 真流式：内容已在 onChunk 里实时输出，无需再打字机模拟
         const segments = parseBlocks(finalReply)
         if (onComplete) onComplete(finalReply, segments, worldInfoState)
       } else {
         // 5. 打字机模拟输出
-        await this._simulateStream(finalReply, onChunk)
+        //    适用范围（D19）：① 用户关掉了流式；② 小程序端（上游不支持流式）。
+        //
+        // 传的是 **processedReply（本次新生成的部分）**，不是 finalReply：
+        // onChunk 的语义已统一为"本次新生成内容的累积文本"（不含 continuePrefix），
+        // 否则续写时调用方会把自己已有的前缀再接一遍 → 文字滚雪球式重复膨胀。
+        await this._simulateStream(processedReply, onChunk)
         if (this.aborted) return
 
         // 6. 生成渲染节点
@@ -194,33 +255,41 @@ export class MessageProcessor {
     }
   }
 
+  /**
+   * 打字机模拟输出（P2.2 / B3；适用范围见 D19：流式关闭时 + 小程序端）
+   *
+   * 改造前是"每字一个 setTimeout、间隔 60~300ms"，实际只有约 10~12 字/秒，
+   * 一条 300 字的回复要二十多秒才显示完，且延迟随长度线性增长。
+   *
+   * 现在改为**按帧批量推进**（约 30fps，每帧按目标速率吐若干字）；
+   * 标点仍保留短暂停顿，但以"多等几帧"折算，不再叠加长延时。
+   */
   private _simulateStream(fullText: string, onChunk?: (partial: string) => void): Promise<void> {
     return new Promise(resolve => {
       if (!onChunk) { resolve(); return }
-      let charIndex = 0
-      let current = ''
+      const FRAME_MS = 33              // ≈30fps，与流式侧的节流一致
+      const CHARS_PER_SEC = 60         // 目标速率（标点停顿后实测约 45~55 字/秒）
+      const perFrame = Math.max(1, Math.round((CHARS_PER_SEC * FRAME_MS) / 1000))
+      let emitted = 0
       const self = this
-      const typeNext = () => {
-        if (self.aborted || charIndex >= fullText.length) {
+
+      const step = () => {
+        if (self.aborted || emitted >= fullText.length) {
           resolve()
           return
         }
-        const char = fullText.charAt(charIndex)
-        current += char
-        charIndex++
-        onChunk(current)
+        emitted = Math.min(fullText.length, emitted + perFrame)
+        onChunk(fullText.slice(0, emitted))
 
-        let delay = 60
-        if (/[。.！!？?]/.test(char)) delay = 200
-        else if (char === '\n') delay = 300
-        else if (/[，,；;]/.test(char)) delay = 120
-        else if (char === ' ') delay = 30
-        delay += Math.random() * 40 - 20
-        delay = Math.max(40, Math.min(delay, 250))
+        const last = fullText.charAt(emitted - 1)
+        let extraFrames = 0
+        if (/[。.！!？?]/.test(last)) extraFrames = 3
+        else if (last === '\n') extraFrames = 3
+        else if (/[，,；;]/.test(last)) extraFrames = 1
 
-        self.timeoutId = setTimeout(typeNext, delay)
+        self.timeoutId = setTimeout(step, FRAME_MS * (1 + extraFrames))
       }
-      typeNext()
+      step()
     })
   }
 }

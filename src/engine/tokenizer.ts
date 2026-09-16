@@ -38,30 +38,50 @@ export function countTokens(text: string): number {
 }
 
 // ══════════════════════════════════════════════════════════════
-// H5 端自动接入真实 tokenizer（js-tiktoken cl100k_base）
+// 真实 tokenizer（js-tiktoken cl100k_base）—— 默认**不加载**（D13）
+//
+// 改造前这里是模块初始化时就自动 `await import('js-tiktoken/...')`，即每次打开页面
+// 都会下载并初始化一套体积很大的 BPE 词表 —— 而它的唯一用途是"生成结束后把整段 prompt
+// 重算一遍"，这既是末帧卡顿的来源，也让首屏白白多下载一个大包。
+//
+// D13 定下的口径是：**统计用上游 usage（真值）；需要估算的地方用启发式估算（极快）**。
+// 因此这里改为按需启用：确实需要"本地真实计数"时（例如将来的调试面板）再调用
+// enableRealTokenizer()，默认不调用。
 // ══════════════════════════════════════════════════════════════
-// #ifdef H5
-;(async () => {
-  try {
-    const { Tiktoken } = await import('js-tiktoken/lite')
-    const cl100k_base = await import('js-tiktoken/ranks/cl100k_base')
-    const encoder = new Tiktoken(cl100k_base.default as any)
-    
-    setTokenCounter((text: string): number => {
-      if (!text) return 0
-      try {
-        const tokens = encoder.encode(text)
-        return tokens.length
-      } catch (e) {
-        console.warn('[tokenizer] tiktoken 编码失败，回退到启发式估算:', e)
-        return estimateTokenCount(text)
-      }
-    })
-    
-    console.log('[tokenizer] H5 端已接入真实 tiktoken (cl100k_base)')
-  } catch (e) {
-    console.warn('[tokenizer] H5 端 tiktoken 加载失败，保留启发式估算:', e)
-  }
-})()
-// #endif
+let _realTokenizerLoading: Promise<boolean> | null = null
+
+/**
+ * 按需接入真实 tiktoken（cl100k_base）。默认不会被调用。
+ * @returns 是否启用成功（失败时静默保留启发式估算）
+ */
+export function enableRealTokenizer(): Promise<boolean> {
+  if (_realTokenizerLoading) return _realTokenizerLoading
+  // #ifdef H5
+  _realTokenizerLoading = (async () => {
+    try {
+      const { Tiktoken } = await import('js-tiktoken/lite')
+      const cl100k_base = await import('js-tiktoken/ranks/cl100k_base')
+      const encoder = new Tiktoken(cl100k_base.default as any)
+      setTokenCounter((text: string): number => {
+        if (!text) return 0
+        try {
+          return encoder.encode(text).length
+        } catch (e) {
+          console.warn('[tokenizer] tiktoken 编码失败，回退到启发式估算:', e)
+          return estimateTokenCount(text)
+        }
+      })
+      console.log('[tokenizer] 已按需接入真实 tiktoken (cl100k_base)')
+      return true
+    } catch (e) {
+      console.warn('[tokenizer] tiktoken 加载失败，保留启发式估算:', e)
+      return false
+    }
+  })()
+  // #endif
+  // #ifndef H5
+  _realTokenizerLoading = Promise.resolve(false)
+  // #endif
+  return _realTokenizerLoading
+}
 

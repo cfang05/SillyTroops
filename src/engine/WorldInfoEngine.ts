@@ -12,7 +12,7 @@
 
 import type { LorebookEntry } from '../types/character'
 import { isEntryActivated } from './worldInfoMatcher'
-import { countTokens } from './tokenizer'
+import { estimateTokenCount } from './tokenizer'
 
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型定义
@@ -332,7 +332,10 @@ export function scan(input: WorldInfoScanInput): WorldInfoScanResult {
     const newlyActivatedIds: string[] = []
     for (const cand of winners) {
       const { entry, wasSticky } = cand
-      const needTokens = countTokens(entry.content)
+      // 世界书预算只需要"够用的近似值"，用极快的启发式估算即可（D13）。
+      // 原先走 countTokens 会在 H5 端触发 js-tiktoken（模块级自动加载）+ 每条候选词表条目
+      // 都做一次真实编码，属不必要的开销；真实用量已改由上游 usage 提供。
+      const needTokens = estimateTokenCount(entry.content)
       const willFit = !!entry.ignoreBudget || (currentUsed + needTokens <= maxAllowed)
       console.log(`[WI] BUDGET: 当前已用=${currentUsed} tokens, 条目="${entry.id}" 需要=${needTokens}, 结果=${willFit ? '✅注入' : '⏭️溢出跳过'}`)
       if (!willFit) continue

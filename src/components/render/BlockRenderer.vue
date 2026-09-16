@@ -42,6 +42,19 @@
         content="[自定义 HTML 内容，请使用 Web 端查看]"
       />
 
+      <!-- 正则脚本产出的 HTML 片段（P4.2 / D2）：
+           样式出口是「自定义 CSS + class」，正则只负责产出 `<span class="say">…</span>`，
+           这里负责把它真正渲染出来。H5 用净化后的 v-html（class 与全局 CSS 都生效）；
+           其它端降级为纯文本，保证不会显示裸标签。 -->
+      <view v-else-if="node.type === 'html-inline'" class="block-html-inline">
+        <!-- #ifdef H5 -->
+        <view class="block-html-inner" v-html="safeHtml(node.html)"></view>
+        <!-- #endif -->
+        <!-- #ifndef H5 -->
+        <text class="block-html-text">{{ node.text }}</text>
+        <!-- #endif -->
+      </view>
+
       <view v-else-if="node.type === 'code'" class="block-code">
         <text class="block-code-text">{{ node.content }}</text>
       </view>
@@ -99,6 +112,7 @@ import FallbackText from './FallbackText.vue'
 import RichText from './RichText.vue'
 // #ifdef H5
 import HtmlIframe from './HtmlIframe.vue'
+import { sanitizeHtml } from '../../utils/security'
 // #endif
 
 defineProps<{
@@ -120,6 +134,33 @@ function onImageError(src: string) {
 function onBranchSelect(option: string) {
   emit('select', option)
 }
+
+/**
+ * 正则脚本产出的 HTML 片段 → 净化后的 HTML（P4.2）
+ *
+ * 加一层缓存：流式输出时同一段 HTML 会被反复渲染（每帧一次），
+ * 没必要每次都跑一遍 DOMPurify。
+ */
+const _htmlCache = new Map<string, string>()
+function safeHtml(html: string): string {
+  // #ifdef H5
+  const cached = _htmlCache.get(html)
+  if (cached !== undefined) return cached
+  let clean = ''
+  try {
+    clean = sanitizeHtml(html)
+  } catch (e) {
+    console.warn('[BlockRenderer] HTML 片段净化失败，已降级为空:', e)
+    clean = ''
+  }
+  if (_htmlCache.size > 300) _htmlCache.clear()
+  _htmlCache.set(html, clean)
+  return clean
+  // #endif
+  // #ifndef H5
+  return ''
+  // #endif
+}
 </script>
 
 <style scoped>
@@ -128,6 +169,9 @@ function onBranchSelect(option: string) {
   flex-direction: column;
   gap: 4px;
 }
+/* 正则脚本产出的 HTML 片段（P4.2）：本身不带外观，样式由 class + 自定义 CSS 决定 */
+.block-html-inline { display: block; }
+.block-html-text { font-family: var(--font-body); font-size: 13px; color: var(--fg-soft); line-height: 1.6; }
 .block-speech {
   font-family: var(--font-body);
   font-size: 13px;

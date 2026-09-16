@@ -9,7 +9,8 @@
     "build": "npm run build:h5",
     "start": "node server.js",
     "migrate": "node migrate.js",
-    "smoke:accounts": "node scripts/smoke-accounts.js"
+    "smoke:accounts": "node scripts/smoke-accounts.js",
+    "smoke:store": "node scripts/smoke-conversation-store.js"
   },
   "engines": {
     "node": ">=18"

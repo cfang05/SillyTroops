@@ -44,6 +44,9 @@
           <picker :range="regexOptions" range-key="label" @change="onRegexChange">
             <view class="select-value">{{ regexOptions[regexIndex]?.label || '未选择' }}</view>
           </picker>
+          <!-- D15：系统正侧是默认项；一旦选了别的文件，系统正侧**被替换**（不叠加），
+               所以这里明确提示，免得用户奇怪"台词高亮怎么没了"。 -->
+          <text v-if="regexReplacedHint" class="select-hint">已改用你自己的正侧文件：系统正侧（台词识别等）将不再生效。</text>
         </view>
       </scroll-view>
       <view class="footer footer-row">
@@ -62,6 +65,8 @@ import { useRegexPresetStore } from '../../stores/regexPresetStore'
 import { usePersonaStore } from '../../stores/personaStore'
 import { getNavBarHeight } from '../../utils/navbar.js'
 import NavBar from '../../components/common/NavBar.vue'
+import { SYSTEM_PRESET_ID } from '../../adapters/preset/defaultPreset'
+import { SYSTEM_REGEX_PRESET_ID } from '../../engine/systemRegex'
 // @ts-ignore
 import conversationManager from '../../utils/account/conversationManager.js'
 
@@ -89,6 +94,12 @@ const regexOptions = computed(() => [
   ...regexPresetStore.presets.map(p => ({ id: p.id, label: (p as any).fileName || p.name }))
 ])
 
+/** 当前选中的不是系统正侧时给出提示（D15：系统正侧会被替换而非叠加） */
+const regexReplacedHint = computed(() => {
+  const id = regexOptions.value[regexIndex.value]?.id || ''
+  return !!id && id !== SYSTEM_REGEX_PRESET_ID
+})
+
 onMounted(() => {
   // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）。
   // 本页初始化写在 onMounted 里，守卫放这里第一行，保证未登录时不会白跑下面的 store 加载。
@@ -98,6 +109,15 @@ onMounted(() => {
   presetStore.load()
   regexPresetStore.load()
   personaStore.load()
+
+  // D19：「系统预设」默认选中（用户没有特意选择其他预设时就走它，流式默认开）。
+  // 注意要在 presetStore.load() 之后取下标——系统预设是 load() 里植入并排在最前的。
+  const sysIdx = presetOptions.value.findIndex(o => o.id === SYSTEM_PRESET_ID)
+  if (sysIdx >= 0) presetIndex.value = sysIdx
+
+  // D15：「系统正侧」同样默认选中
+  const sysRegexIdx = regexOptions.value.findIndex(o => o.id === SYSTEM_REGEX_PRESET_ID)
+  if (sysRegexIdx >= 0) regexIndex.value = sysRegexIdx
 })
 
 function onPresetChange(e: any) { presetIndex.value = Number(e.detail.value) }
@@ -108,13 +128,15 @@ function goStep2() {
   step.value = 2
 }
 
-function onStartChat() {
+async function onStartChat() {
   const cardId = selectedCardId.value
   const presetId = presetOptions.value[presetIndex.value]?.id || ''
   const regexPresetId = regexOptions.value[regexIndex.value]?.id || ''
   // Persona 不在本页选择，统一使用当前出场角色（personaStore.activePersonaId）
   const personaId = personaStore.activePersonaId || ''
 
+  // P5.2：对话存档已迁到 IndexedDB（异步）。先 init 一次，has()/clear() 才准确。
+  await conversationManager.init()
   const hasExisting = conversationManager.has(cardId)
   if (hasExisting) {
     uni.showModal({
@@ -122,8 +144,10 @@ function onStartChat() {
       content: '开始新对话将清空原有记录，是否继续？',
       success: (res: any) => {
         if (res.confirm) {
-          conversationManager.clear(cardId)
-          _navigateToChat(cardId, presetId, regexPresetId, personaId)
+          // 清空是异步的：**等清空完成再进聊天页**，否则聊天页可能读到还没删掉的旧档
+          Promise.resolve(conversationManager.clear(cardId)).then(() => {
+            _navigateToChat(cardId, presetId, regexPresetId, personaId)
+          })
         }
       }
     })
@@ -198,5 +222,7 @@ function _navigateToChat(cardId: string, presetId: string, regexPresetId: string
 .summary-desc { display: block; font-size: 21rpx; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .select-block { margin-bottom: 22rpx; }
 .select-label { display: block; font-size: 22rpx; color: var(--fg-soft); margin-bottom: 10rpx; }
+/* D15 提示：换了正侧文件后系统正侧不再生效 */
+.select-hint { display: block; margin-top: 10rpx; font-size: 19rpx; color: var(--t-gold); line-height: 1.5; }
 .select-value { padding: 20rpx; background: var(--surface); border: 1rpx solid var(--border); border-radius: 16rpx; font-size: 24rpx; color: var(--accent); font-weight: 600; }
 </style>

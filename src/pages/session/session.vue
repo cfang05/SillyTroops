@@ -72,11 +72,13 @@ onMounted(() => {
 })
 
 
-function _refresh() {
+async function _refresh() {
   cardStore.loadAll()
   presetStore.load()
   regexPresetStore.load()
   personaStore.load()
+  // P5.2：对话列表改为从 IndexedDB 读取（getList 走内存缓存，需先 init 一次）
+  await conversationManager.init()
   conversations.value = conversationManager.getList()
   cardCount.value = cardStore.cards.length
   presetCount.value = presetStore.presets.length
@@ -127,9 +129,11 @@ function onDeleteConversation(cardId: string) {
     content: '仅删除对话记录，不影响角色卡本身，是否继续？',
     success: (res: any) => {
       if (res.confirm) {
-        conversationManager.remove(cardId)
-        _refresh()
-        uni.showToast({ title: '已删除', icon: 'none' })
+        // P5.2：删除是异步的（IndexedDB），删完再刷新列表
+        Promise.resolve(conversationManager.remove(cardId)).then(() => {
+          _refresh()
+          uni.showToast({ title: '已删除', icon: 'none' })
+        })
       }
     }
   })

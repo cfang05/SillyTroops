@@ -9,6 +9,51 @@ import { parseInline, hasInlineMarkdown, detectBlockMarkdown, hasImageMarkdown, 
 const OPEN_QUOTES = ['\u201c', '\u2018', '"']
 const CLOSE_QUOTES = ['\u201d', '\u2019', '"']
 
+// ─────────────────────────────────────────────────────────────
+// 正则脚本产出的 HTML 片段（P4.2 / D2）
+//
+// 为什么需要：样式出口走「自定义 CSS + class」（D2），也就是正则把台词包成
+// `<span class="say">…</span>`，由 CSS 决定外观。渲染层必须认得这种片段，
+// 否则它只会以字面文本显示出来。
+//
+// 只认这几个安全标签（与 utils/security.ts 的 DOMPurify 白名单一致），
+// 且只支持**不嵌套**的同名标签配对；嵌套时外层匹配不上 → 退化成普通文字，不会误吞内容。
+// ─────────────────────────────────────────────────────────────
+const HTML_FRAGMENT_RE = /<(span|div|font|b|i|u|s|em|strong|mark)\b[^>]*>[\s\S]*?<\/\1>/gi
+
+export interface HtmlFragmentSplit {
+  html?: string
+  text?: string
+}
+
+/** 该行是否含可识别的 HTML 片段 */
+export function hasHtmlFragment(text: string): boolean {
+  if (!text || text.indexOf('<') === -1) return false
+  HTML_FRAGMENT_RE.lastIndex = 0
+  return HTML_FRAGMENT_RE.test(text)
+}
+
+/** 去掉标签取纯文本（供非 H5 端与净化失效时的降级显示） */
+function stripTags(html: string): string {
+  return html.replace(/<[^>]*>/g, '').trim()
+}
+
+/** 把一行里混排的 HTML 片段拆成"文字段 / HTML 段"的顺序列表 */
+export function splitHtmlFragments(line: string): HtmlFragmentSplit[] {
+  if (!hasHtmlFragment(line)) return [{ text: line }]
+  const parts: HtmlFragmentSplit[] = []
+  let lastIndex = 0
+  HTML_FRAGMENT_RE.lastIndex = 0
+  let m: RegExpExecArray | null
+  while ((m = HTML_FRAGMENT_RE.exec(line)) !== null) {
+    if (m.index > lastIndex) parts.push({ text: line.slice(lastIndex, m.index) })
+    parts.push({ html: m[0], text: stripTags(m[0]) })
+    lastIndex = HTML_FRAGMENT_RE.lastIndex
+  }
+  if (lastIndex < line.length) parts.push({ text: line.slice(lastIndex) })
+  return parts.filter(p => (p.html ? true : !!(p.text && p.text.trim())))
+}
+
 /**
  * 提取并移除文本中的特殊标签块，返回 { cleanedText, blocks }
  * 特殊标签统一在narrative解析之前提取，避免干扰引号扫描
@@ -203,6 +248,21 @@ function splitProseAndBlocks(text: string): RenderNode[] {
   }
 
   for (const line of text.split('\n')) {
+    // 正则脚本产出的 HTML 片段（P4.2）：优先于块级 Markdown 识别。
+    // 每个片段渲染为一个独立的块 —— 与现有"台词独占一行"的表现一致；
+    // 片段之间的文字继续走叙事解析。
+    if (hasHtmlFragment(line)) {
+      flushProse()
+      for (const part of splitHtmlFragments(line)) {
+        if (part.html) {
+          nodes.push({ type: 'html-inline', html: part.html, text: part.text || '' })
+        } else if (part.text) {
+          proseBuf.push(part.text)
+        }
+      }
+      continue
+    }
+
     const block = detectBlockMarkdown(line)
     if (block) {
       flushProse()
@@ -255,4 +315,30 @@ export function parseBlocks(text: string): RenderNode[] {
 
   const result = [...narrativeNodes, ...blocks]
   return result.length > 0 ? result : [{ type: 'narrative', text }]
+}
+
+/**
+ * 补齐流式过程中"未闭合"的成对 Markdown 符号（P2.3 / B6）
+ *
+ * 背景（对齐酒馆 `script.js:3608-3614` 的 charsToBalance）：
+ * `**粗体**`、```` ```代码块``` ```` 这类语法是**成对**的，流到一半必然是奇数个，
+ * 渲染器会把后半段整段当成斜体/代码块渲染，下一个 token 到达时又跳回来 ——
+ * 这是流式输出里最刺眼的一处抖动。
+ *
+ * 这里临时补一个闭合符号（代码围栏还会补换行让围栏生效）。
+ * **只在流式中间帧使用**：最终渲染必须传原始文本，否则会把多余字符带进
+ * 存档、复制与下一轮上下文。
+ */
+export function balanceIncompleteMarkdown(text: string): string {
+  if (!text) return text
+  const count = (s: string, token: string) => s.split(token).length - 1
+  const isOdd = (n: number) => n % 2 === 1
+  const trimEnd = (s: string) => s.replace(/\s+$/, '')
+  // 顺序有讲究：代码围栏优先级最高——补上围栏后，内部的 ** / ~~ 都成了代码内容，不必再管
+  if (isOdd(count(text, '```'))) return trimEnd(text) + '\n```'
+  if (isOdd(count(text, '~~~'))) return trimEnd(text) + '\n~~~'
+  if (isOdd(count(text, '**'))) return trimEnd(text) + '**'
+  if (isOdd(count(text, '__'))) return trimEnd(text) + '__'
+  if (isOdd(count(text, '~~'))) return trimEnd(text) + '~~'
+  return text
 }

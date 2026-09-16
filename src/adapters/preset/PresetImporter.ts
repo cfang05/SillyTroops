@@ -81,16 +81,27 @@ export function importRegexScripts(json: any[]): Preset['regexScripts'] {
     const mapped = rawPlacement
       .map((p: number) => ST_TO_INTERNAL_PLACEMENT[p])
       .filter((p: number | undefined): p is number => p !== undefined)
+
+    // 酒馆把 MD_DISPLAY(0) 废弃后，用「同时勾选 markdownOnly + promptOnly」表达"既改显示又改出站 prompt、
+    // 但不改存档"（referencecode/public/scripts/extensions/regex/index.js 的迁移逻辑）。
+    // 这里跟着做同样的事，否则只勾了"仅显示"的脚本会被静默丢掉。
+    const hadMdDisplay = rawPlacement.includes(0)
+    const markdownOnly = !!s.markdownOnly || hadMdDisplay
+    const promptOnly = !!s.promptOnly || hadMdDisplay
+
     return {
       id: s.id || _generateId(),
       scriptName: s.scriptName || s.script_name || '未命名脚本',
       findRegex: s.findRegex || s.find_regex || '',
       replaceString: s.replaceString || s.replace_string || '',
       trimStrings: Array.isArray(s.trimStrings) ? s.trimStrings : (Array.isArray(s.trim_strings) ? s.trim_strings : []),
-      placement: (mapped.length > 0 ? mapped : [0]) as any,
+      // 修：以前 mapped 为空时会回落到 [0]（= 本项目的 AI 输出），把一个"本该不生效"的脚本
+      // 静默变成"改写 AI 回复"的脚本 —— 既意外又会污染存档。现在为空就保持为空：
+      // applyRegexScripts 的 placement.includes() 永远匹配不上，脚本不生效（且在编辑页可见"未选择生效位置"）。
+      placement: (mapped.length > 0 ? mapped : (hadMdDisplay ? [0] : [])) as any,
       disabled: !!s.disabled,
-      markdownOnly: !!s.markdownOnly,
-      promptOnly: !!s.promptOnly,
+      markdownOnly,
+      promptOnly,
       runOnEdit: !!s.runOnEdit,
       minDepth: typeof s.minDepth === 'number' ? s.minDepth : undefined,
       maxDepth: typeof s.maxDepth === 'number' ? s.maxDepth : undefined,

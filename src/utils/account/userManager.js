@@ -926,6 +926,11 @@ export default {
   verifySession: verifySession,
   clearSession: clearSession,
   onSessionExpired: onSessionExpired,
+  // 供**不经过 _request()** 的请求方在拿到 401 时调用。
+  // 目前只有 utils/llm/client.js（它用自己的 fetch/uni.request 打对话接口），
+  // 那里如果不接上，服务端吊销登录态时用户会看到裸露的 "HTTP 401" 而不是
+  // 统一的"登录状态过期，请重新登录"。行为与 _request 内部的集中处理完全一致。
+  handleUnauthorized: _handleUnauthorized,
   getUserById: getUserById,
   updateProfile: updateProfile,
   isAdmin: isAdmin,

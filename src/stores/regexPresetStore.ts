@@ -3,10 +3,11 @@
 // 每个"正侧文件"是一组正则脚本（RegexScript[]），可在新建对话时选用
 
 import { defineStore } from 'pinia'
-import storage from '../utils/storage.js'
 // @ts-ignore
 import { scopedKey } from '../utils/account/userScope.js'
+import { createCachedStore } from '../utils/storage/cachedStore'
 import type { RegexScript } from '../types/script'
+import { createSystemRegexScripts, SYSTEM_REGEX_PRESET_ID } from '../engine/systemRegex'
 
 export interface RegexPreset {
   id: string
@@ -24,7 +25,11 @@ export interface RegexPreset {
 
 function STORAGE_KEY() { return scopedKey('regex_presets') }
 
-let _builtinRegexLoadPromise: Promise<void> | null = null
+/** P5.3：正侧文件改存 IndexedDB（同步 API 不变） */
+const _store = createCachedStore({
+  name: 'regexPreset',
+  match: (k: string) => k === STORAGE_KEY()
+})
 
 export const useRegexPresetStore = defineStore('regexPreset', {
   state: () => ({
@@ -40,13 +45,22 @@ export const useRegexPresetStore = defineStore('regexPreset', {
   actions: {
     load() {
       try {
-        this.presets = storage.get(STORAGE_KEY()) || []
+        this.presets = _store.get(STORAGE_KEY()) || []
       } catch (e) {
         this.presets = []
       }
-      
-      // 自动加载内置正侧（如果尚未导入），全局单例保证不会并发重复导入
-      this._loadBuiltinRegex()
+
+      // 「系统正侧」（D15）：代码内置、默认选中、用户另选则替换、**不落盘**。
+      // 与「系统预设」一样：每次启动重新植入，并先清掉历史上可能被持久化的同名项。
+      this.presets = this.presets.filter(p => p && p.id !== SYSTEM_REGEX_PRESET_ID)
+      this.presets.unshift({
+        id: SYSTEM_REGEX_PRESET_ID,
+        name: '系统正侧',
+        scripts: createSystemRegexScripts(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+        enabledGlobal: false
+      })
     },
 
     get(id: string): RegexPreset | null {
@@ -77,58 +91,19 @@ export const useRegexPresetStore = defineStore('regexPreset', {
     },
 
     remove(id: string) {
+      // 系统正侧不可删除（D15）
+      if (id === SYSTEM_REGEX_PRESET_ID) return
       this.presets = this.presets.filter(p => p.id !== id)
       this._persist()
     },
 
     _persist() {
       try {
-        storage.set(STORAGE_KEY(), this.presets)
+        // 系统正侧不落盘（D15）
+        _store.set(STORAGE_KEY(), this.presets.filter(p => p && p.id !== SYSTEM_REGEX_PRESET_ID))
       } catch (e) {
         console.warn('[regexPresetStore] 持久化失败:', e)
       }
-    },
-
-    /** 自动加载内置正侧（仅H5端；用全局单例 Promise 确保多页面并发调用时只真正执行一次） */
-    _loadBuiltinRegex(): Promise<void> {
-      if (_builtinRegexLoadPromise) return _builtinRegexLoadPromise
-
-      _builtinRegexLoadPromise = (async () => {
-        const hasBuiltin = this.presets.some(p => p.id && p.id.startsWith('builtin_regex_'))
-        if (hasBuiltin) return
-
-        // #ifdef H5
-        try {
-          const { loadBuiltinRegexPresets } = await import('../services/builtinAssets')
-          const results = await loadBuiltinRegexPresets()
-
-          for (const item of results) {
-            if (!item.scripts || item.error) {
-              console.warn(`[regexPresetStore] 内置正侧 ${item.name} 加载失败:`, item.error)
-              continue
-            }
-            const preset: RegexPreset = {
-              id: 'builtin_regex_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
-              name: '[内置] ' + item.name,
-              scripts: item.scripts,
-              createdAt: Date.now(),
-              updatedAt: Date.now(),
-              enabledGlobal: false
-            }
-            this.presets.push(preset)
-          }
-
-          if (results.some(r => !r.error)) {
-            this._persist()
-            console.log('[regexPresetStore] 内置正侧已自动加载')
-          }
-        } catch (e) {
-          console.warn('[regexPresetStore] 内置正侧加载失败:', e)
-        }
-        // #endif
-      })()
-
-      return _builtinRegexLoadPromise
     }
   }
 })

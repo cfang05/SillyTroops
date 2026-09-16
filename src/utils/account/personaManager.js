@@ -13,6 +13,7 @@
 'use strict';
 
 import { scopedKey } from './userScope.js';
+import { createCachedStore } from '../storage/cachedStore';
 
 function _genId() {
   return 'persona_' + Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
@@ -21,9 +22,15 @@ function _genId() {
 function _listKey() { return scopedKey('personas'); }
 function _activeKey() { return scopedKey('active_persona_id'); }
 
+/** P5.3：Persona（含头像 base64）改存 IndexedDB；对外同步 API 不变 */
+const _store = createCachedStore({
+  name: 'persona',
+  match: function (k) { return k === _listKey() || k === _activeKey(); }
+});
+
 function getAll() {
   try {
-    var list = uni.getStorageSync(_listKey());
+    var list = _store.get(_listKey());
     return Array.isArray(list) ? list : [];
   } catch (e) {
     return [];
@@ -32,7 +39,7 @@ function getAll() {
 
 function _saveAll(list) {
   try {
-    uni.setStorageSync(_listKey(), list);
+    _store.set(_listKey(), list);
     return true;
   } catch (e) {
     console.error('[PersonaManager] 保存失败:', e);
@@ -99,9 +106,9 @@ function remove(id) {
     // 删除当前出场后，回退到列表第一个（若有）
     try {
       if (list.length > 0) {
-        uni.setStorageSync(_activeKey(), list[0].id);
+        _store.set(_activeKey(), list[0].id);
       } else {
-        uni.removeStorageSync(_activeKey());
+        _store.remove(_activeKey());
       }
     } catch (e) { /* ignore */ }
   }
@@ -110,7 +117,7 @@ function remove(id) {
 
 function setActive(id) {
   try {
-    uni.setStorageSync(_activeKey(), id);
+    _store.set(_activeKey(), id);
     return true;
   } catch (e) {
     return false;
@@ -119,7 +126,7 @@ function setActive(id) {
 
 function getActiveId() {
   try {
-    return uni.getStorageSync(_activeKey()) || null;
+    return _store.get(_activeKey()) || null;
   } catch (e) {
     return null;
   }

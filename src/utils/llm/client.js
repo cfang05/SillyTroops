@@ -34,6 +34,33 @@ const TEST_API_CONFIG_PATH = '/api/test-api/config';
 let _testApiConfigCache = null;
 
 /**
+ * 业务请求拿到 401 = 服务端判定登录态失效，构造统一形态的错误。
+ *
+ * 为什么要在本文件单独做一次：userManager 里那套集中 401 处理只覆盖走 `_request()`
+ * 的接口（/api/auth/*、/api/stats/*）；对话请求走的是本文件自己的 fetch / uni.request，
+ * 不经过它。不在这里接上的话，服务端吊销登录态（管理员改密码、账号被删）且用户正卡在
+ * 一次对话请求里时，用户会看到一句裸露的 "HTTP 401: ..."，而登录态既没清、也不会跳登录页
+ * —— 正是我们要消灭的"用户不知道发生了什么"。
+ *
+ * 做三件事，与 `_request` 的处理保持一致：
+ *   1. 打上 `sessionExpired` 标记，调用方据此不再显示报错（页面已经被登录页盖住了）；
+ *   2. 通知 App 层走统一的「清登录态 → 跳登录页 → 提示 → 登录后回原处」流程；
+ *   3. 错误照常抛出，不改动既有控制流。
+ *
+ * @param {number} status HTTP 状态码
+ * @param {string} [message] 服务端返回的错误文案
+ * @returns {Error}
+ */
+function _httpError(status, message) {
+  const err = new Error(`HTTP ${status}: ${message || '请求失败'}`);
+  if (status === 401) {
+    err.sessionExpired = true;
+    try { userManager.handleUnauthorized(); } catch (e) { /* 通知失败不影响抛错 */ }
+  }
+  return err;
+}
+
+/**
  * 读取内置测试通道的公开配置（用于设置页显示与可用性判断）
  * @param {boolean} [force] 忽略缓存强制刷新
  * @returns {Promise<{enabled:boolean, label:string, model:string}>}
@@ -75,16 +102,36 @@ function _isDeepSeekLike(endpoint, model) {
 }
 
 /**
+ * 是否允许模型输出思考内容（D17 / P6.6）
+ *
+ * 默认关闭：思考会明显增加 token 消耗与首字延迟（DeepSeek V4 思考模式默认 reasoning_effort=high）。
+ * 用户在「设置 → 思考内容」里开启后，上游把推理放进 reasoning_content，
+ * 由 client 的独立通道回调（P6.1），既不进正文也不进存档上下文。
+ */
+function _thinkingEnabled() {
+  try {
+    const v = storage.get(scopedKey('ai_thinking_enabled'));
+    return v === true || v === 'true' || v === 1;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
  * 从 OpenAI 兼容的非流式响应 message 中取正文：
- * 优先 message.content；若为空（例如 DeepSeek 思考模式下推理把预算耗尽），
+ * 优先 message.content；若为空（例如思考模式把预算耗尽、正文一个字都没剩下），
  * 退而取 message.reasoning_content，避免把一次可用的响应误判为"格式异常"。
+ * 注意：这只是**空正文的最后兜底**，正常情况下思考由 reasoning_content 单独承载（P6.1）。
  */
 function _pickAssistantText(message) {
   if (!message || typeof message !== 'object') return '';
   const content = message.content;
   if (typeof content === 'string' && content.trim()) return content;
   const reasoning = message.reasoning_content;
-  if (typeof reasoning === 'string' && reasoning.trim()) return reasoning;
+  if (typeof reasoning === 'string' && reasoning.trim()) {
+    console.warn('[LLMClient] 正文为空，临时用 reasoning_content 兜底显示');
+    return reasoning;
+  }
   return '';
 }
 
@@ -131,12 +178,53 @@ class LLMClient {
     this.maxRetries = options.maxRetries || 3;
     this.baseDelay = options.baseDelay || 1000;
     this.forbiddenWords = options.forbiddenWords || [];
-    
+
+    /** 最近一次调用拿到的上游 usage（D13 的统计来源；拿不到则为 null） */
+    this._lastUsage = null;
+
+    /**
+     * 最近一次调用**是否真的拿到了增量流式**（D19 / P2.8）
+     * 用途：决定要不要走打字机。小程序端上游不支持流式（一次性返回全文），
+     * 若仍按"预设开了流式"判定，就会跳过打字机 → 整段一次性蹦出来。
+     */
+    this._lastWasRealStream = false;
+
+    /** 最近一次调用的思考内容（D17 / P6.1），与正文严格分离 */
+    this._lastReasoning = '';
+
     console.log('[LLMClient] 初始化完成', {
       maxRetries: this.maxRetries,
       baseDelay: this.baseDelay,
       forbiddenWordsCount: this.forbiddenWords.length
     });
+  }
+
+  /**
+   * 读取最近一次调用的上游 token 用量（D13）
+   *
+   * 来源：流式请求里的 `stream_options: { include_usage: true }` 会在**最后一个数据块**
+   * 带上 `usage`；非流式响应则在 body 根部的 `usage`。
+   * 注意它**只在响应结束时才有**，因此只能用于统计展示，不能用于"发送前裁剪历史"。
+   *
+   * @returns {{prompt_tokens?: number, completion_tokens?: number, total_tokens?: number}|null}
+   */
+  getLastUsage() {
+    return this._lastUsage || null;
+  }
+
+  /** 最近一次调用是否为真流式（增量到达） */
+  wasRealStream() {
+    return !!this._lastWasRealStream;
+  }
+
+  /**
+   * 读取最近一次调用的**思考内容**（D17 / P6.1）
+   *
+   * 流式期间由 onReasoning 回调实时给出；非流式（含小程序端一次性返回）用这里读。
+   * 关键：思考**只走这条通道**，绝不混进正文 content —— 否则会被写进存档并回灌上下文。
+   */
+  getLastReasoning() {
+    return this._lastReasoning || '';
   }
 
   /**
@@ -183,6 +271,9 @@ class LLMClient {
 
       } catch (error) {
         lastError = error;
+        // 登录态失效不是"重试就能好"的错误：直接抛出原错误（保留 sessionExpired 标记），
+        // 交给 App 层去跳登录页。否则会拿已失效的 token 再打两次、还拖慢提示出现。
+        if (error && error.sessionExpired) throw error;
         console.warn(`[LLMClient] 第 ${attempt} 次尝试失败:`, error.message);
 
         // 如果不是最后一次，执行指数退避
@@ -231,6 +322,9 @@ class LLMClient {
 
       } catch (error) {
         lastError = error;
+        // 登录态失效不是"重试就能好"的错误：直接抛出原错误（保留 sessionExpired 标记），
+        // 交给 App 层去跳登录页。否则会拿已失效的 token 再打两次、还拖慢提示出现。
+        if (error && error.sessionExpired) throw error;
         console.warn(`[LLMClient] 第 ${attempt} 次尝试失败:`, error.message);
 
         // 如果不是最后一次，执行指数退避
@@ -268,6 +362,11 @@ class LLMClient {
       throw new Error('[LLMClient] generateWithMessages: messages 不能为空');
     }
 
+    // 每次调用前清空上一次的状态，避免拿到过期数字（D13 / D17 / D19）
+    this._lastUsage = null;
+    this._lastWasRealStream = false;
+    this._lastReasoning = '';
+
     console.log('[LLMClient] generateWithMessages', {
       messageCount: messages.length,
       roles: messages.map(function(m) { return m.role; }).join(','),
@@ -287,6 +386,8 @@ class LLMClient {
 
       } catch (error) {
         lastError = error;
+        // 登录态失效不重试（理由同上）
+        if (error && error.sessionExpired) throw error;
         console.warn(`[LLMClient] generateWithMessages 第 ${attempt} 次失败:`, error.message);
 
         if (attempt < this.maxRetries) {
@@ -304,13 +405,20 @@ class LLMClient {
    * H5 端走 fetch + ReadableStream 解析 SSE；小程序端 uni.request 无流式能力，退回一次性返回。
    * @param {Array} messages - 消息数组
    * @param {object} [genParams] - 生成参数（stream 会被强制置 true）
-   * @param {(partialText: string) => void} [onChunk] - 每收到一个增量即回调累积全文
-   * @returns {Promise<string>} 最终完整回复
+   * @param {(partialText: string) => void} [onChunk] - 每收到一个正文增量即回调累积全文
+   * @param {(reasoningText: string) => void} [onReasoning] - 思考增量的独立通道（D17 / P6.1）
+   * @returns {Promise<string>} 最终完整回复（**只有正文**，不含思考）
    */
-  async generateWithMessagesStream(messages, genParams, onChunk) {
+  async generateWithMessagesStream(messages, genParams, onChunk, onReasoning) {
     if (!Array.isArray(messages) || messages.length === 0) {
       throw new Error('[LLMClient] generateWithMessagesStream: messages 不能为空');
     }
+
+    // 每次调用前清空上一次的 usage / 真流式标记 / 思考内容，避免拿到过期状态（D13 / D19 / D17）
+    this._lastUsage = null;
+    this._lastWasRealStream = false;
+    this._lastReasoning = '';
+
     const userConfig = storage.get(scopedKey('ai_model_settings')) || storage.get(STORAGE_KEYS.LLM_CONFIG) || {};
     // 测试权限以服务器为权威：发请求前异步核对，admin 在别处关闭权限后下一次请求即被拦截
     const isTestAccount = await userManager.isTestAccountChecked();
@@ -326,7 +434,7 @@ class LLMClient {
       throw new Error('小程序端不支持内置测试 API，请在「设置」页填写自己的 API Key');
       // #endif
       // #ifndef MP-WEIXIN
-      return await this._streamTestApi(messages, genParams, onChunk);
+      return await this._streamTestApi(messages, genParams, onChunk, onReasoning);
       // #endif
     }
 
@@ -342,7 +450,10 @@ class LLMClient {
     } else {
       full = await this._callCloudAI(modelName, messages);
     }
-    if (onChunk) onChunk(full);
+    // 小程序端拿不到增量（uni.request 不支持流式），**不要**在这里回调 onChunk：
+    // 交给 MessageProcessor 的打字机逐帧展示（D19），否则内容会整段一次性蹦出来。
+    // 标记为非真流式，让上层据此选择打字机路径。
+    this._lastWasRealStream = false;
     return full;
     // #endif
 
@@ -352,11 +463,11 @@ class LLMClient {
     if (!apiKey) {
       // 测试账号兜底：未配置 Key 时走内置测试通道（Key 与模型都在服务端）
       if (isTestAccount) {
-        return await this._streamTestApi(messages, genParams, onChunk);
+        return await this._streamTestApi(messages, genParams, onChunk, onReasoning);
       }
       throw new Error('未配置 API Key，请在「设置」页填写 API Key 后再对话');
     }
-    return await this._streamWithFetch(endpoint, apiKey, modelName, messages, genParams, onChunk);
+    return await this._streamWithFetch(endpoint, apiKey, modelName, messages, genParams, onChunk, onReasoning);
     // #endif
   }
 
@@ -375,7 +486,7 @@ class LLMClient {
    * @private
    */
   // #ifndef MP-WEIXIN
-  async _streamWithFetch(endpoint, apiKey, model, messages, genParams, onChunk) {
+  async _streamWithFetch(endpoint, apiKey, model, messages, genParams, onChunk, onReasoning) {
     // H5 环境：将所有请求改为相对路径 /api，由后端代理转发
     let url = '/api/chat/completions';
 
@@ -385,7 +496,11 @@ class LLMClient {
       messages: messages,
       temperature: typeof params.temperature === 'number' ? params.temperature : 0.7,
       max_tokens: typeof params.maxTokens === 'number' ? params.maxTokens : 2000,
-      stream: true
+      stream: true,
+      // 让上游在**最后一个数据块**里带上真实 usage（D13：统计改用真值，
+      // 从而可以删掉"生成结束后再用 tiktoken 重算整段 prompt"的同步卡顿）。
+      // 少数第三方兼容端点不认识该字段，见下方 400 重试兜底。
+      stream_options: { include_usage: true }
     };
     if (typeof params.topP === 'number') requestBody.top_p = params.topP;
     if (typeof params.presencePenalty === 'number') requestBody.presence_penalty = params.presencePenalty;
@@ -393,10 +508,11 @@ class LLMClient {
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
     if (typeof params.n === 'number' && params.n > 1) requestBody.n = params.n;
-    // DeepSeek V4：thinking 默认 enabled（思考模式会吞掉正文，content 可能为空），
-    // 显式关闭思考模式，让回复正文直接进 content（详见 _isDeepSeekLike 注释）。
+    // DeepSeek V4：thinking 默认 enabled（思考模式会让正文之前的推理进入 reasoning_content，
+    // 且 max_tokens 可能被推理吃光导致 content 为空）。是否开启由用户决定（D17 / P6.6）：
+    // 默认关闭 —— 开思考会增加 token 消耗与首字延迟。
     if (_isDeepSeekLike(endpoint, model)) {
-      requestBody.thinking = { type: 'disabled' };
+      requestBody.thinking = { type: _thinkingEnabled() ? 'enabled' : 'disabled' };
     }
 
     const controller = new AbortController();
@@ -443,12 +559,37 @@ class LLMClient {
 
     if (!resp.ok) {
       const errText = await resp.text().catch(() => '');
+      // 少数第三方 OpenAI 兼容端点不认识 stream_options，会直接返回 400。
+      // 这时自动去掉该字段重试一次（统计退化为本地估算），
+      // 避免"为了拿统计数字反而把对话弄坏"。
+      if (resp.status === 400 && requestBody.stream_options && /stream_options/i.test(errText)) {
+        console.warn('[API Response] 上游拒绝 stream_options，去掉该字段后重试一次');
+        delete requestBody.stream_options;
+        let retryResp;
+        try {
+          retryResp = await fetch(url, {
+            method: 'POST',
+            headers: headers,
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
+          });
+        } catch (error) {
+          this._abortController = null;
+          throw error;
+        }
+        if (!retryResp.ok) {
+          const retryErr = await retryResp.text().catch(() => '');
+          this._abortController = null;
+          throw _httpError(retryResp.status, retryErr);
+        }
+        return await this._consumeSSE(retryResp, onChunk, onReasoning);
+      }
       console.error('[API Response] 非 200 响应，Body preview:', errText.slice(0, 500));
       this._abortController = null;
-      throw new Error(`HTTP ${resp.status}: ${errText || '请求失败'}`);
+      throw _httpError(resp.status, errText);
     }
 
-    return await this._consumeSSE(resp, onChunk);
+    return await this._consumeSSE(resp, onChunk, onReasoning);
   }
 
   /**
@@ -456,7 +597,10 @@ class LLMClient {
    * @private
    */
   // #ifndef MP-WEIXIN
-  async _consumeSSE(resp, onChunk) {
+  async _consumeSSE(resp, onChunk, onReasoning) {
+    // 走到这里说明确实在用 SSE（真流式）通道：onChunk 会被增量驱动（D19 / P2.8）
+    this._lastWasRealStream = true;
+    this._lastReasoning = '';
     const supportsStreamReader = !!(resp.body && typeof resp.body.getReader === 'function');
     console.log('[API Response] 当前环境是否支持 ReadableStream.getReader:', supportsStreamReader);
 
@@ -470,12 +614,18 @@ class LLMClient {
       const rawText = await resp.text();
       console.log('[API Response] Body preview (无流式能力，一次性读取):', rawText.slice(0, 500));
       this._abortController = null;
-      const sseText = this._parseSSEText(rawText, onChunk);
+      const sseText = this._parseSSEText(rawText, onChunk, onReasoning);
       if (sseText) return sseText;
       // 极少数代理/网关会直接把 stream 请求降级为一次性标准 JSON 响应，这里再兜底解析一次
       try {
         const data = JSON.parse(rawText);
-        const content = _pickAssistantText(data?.choices?.[0]?.message);
+        if (data && data.usage) this._lastUsage = data.usage;
+        const msg = data?.choices?.[0]?.message;
+        if (msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content) {
+          this._lastReasoning = msg.reasoning_content;
+          if (onReasoning) onReasoning(this._lastReasoning);
+        }
+        const content = _pickAssistantText(msg);
         if (onChunk) onChunk(content);
         return content;
       } catch (e) {
@@ -515,10 +665,17 @@ class LLMClient {
           }
           try {
             const json = JSON.parse(data);
-            // 兼容思考模式：正文增量在 delta.content，若模型返回了 reasoning_content
-            // 增量（理论上已通过 thinking:disabled 关闭，仅作兜底），也累加进去
-            const delta = json?.choices?.[0]?.delta?.content || json?.choices?.[0]?.delta?.reasoning_content;
-            if (delta) {
+            // ★ 思考与正文**分成两条流**（P6.1 / D17）
+            //   改造前这里写的是 `content || reasoning_content`：思考只有单独到达时会被当成正文
+            //   显示（并写进存档与上下文），两者同时到达时思考又会被静默丢弃。
+            const d = (json && json.choices && json.choices[0] && json.choices[0].delta) || {};
+            const rDelta = d.reasoning_content || d.reasoning;
+            if (typeof rDelta === 'string' && rDelta) {
+              this._lastReasoning += rDelta;
+              if (onReasoning) onReasoning(this._lastReasoning);
+            }
+            const delta = d.content;
+            if (typeof delta === 'string' && delta) {
               fullText += delta;
               if (onChunk) onChunk(fullText);
             }
@@ -568,7 +725,7 @@ class LLMClient {
    * 内置测试通道：流式（模型/Key/目标地址/thinking 全部由服务端决定，此处只带登录 token）
    * @private
    */
-  async _streamTestApi(messages, genParams, onChunk) {
+  async _streamTestApi(messages, genParams, onChunk, onReasoning) {
     const token = userManager.getAuthToken();
     if (!token) throw new Error('登录状态无效，请重新登录后再使用内置测试 API');
 
@@ -578,7 +735,10 @@ class LLMClient {
 
     const requestBody = Object.assign({
       messages: messages,
-      stream: true
+      stream: true,
+      // 同用户自配 Key 通道：让上游在最后一个数据块带回真实 usage（D13）。
+      // 服务端需在 PASSTHROUGH_PARAMS 白名单里放行该字段，否则会被丢掉。
+      stream_options: { include_usage: true }
     }, this._collectSamplingParams(genParams));
 
     const controller = new AbortController();
@@ -615,10 +775,10 @@ class LLMClient {
         const parsed = JSON.parse(errText);
         message = parsed.error || parsed.detail || errText;
       } catch (e) { /* 保持原文 */ }
-      throw new Error(`HTTP ${resp.status}: ${message || '请求失败'}`);
+      throw _httpError(resp.status, message);
     }
 
-    return await this._consumeSSE(resp, onChunk);
+    return await this._consumeSSE(resp, onChunk, onReasoning);
   }
 
   /**
@@ -652,9 +812,15 @@ class LLMClient {
 
     if (!resp.ok) {
       const message = (data && (data.error || data.detail)) || text || '请求失败';
-      throw new Error(`HTTP ${resp.status}: ${message}`);
+      throw _httpError(resp.status, message);
     }
-    const content = _pickAssistantText(data?.choices?.[0]?.message);
+    const msg = data?.choices?.[0]?.message;
+    // 非流式响应同样带 usage / 思考（D13 / D17）
+    if (data && data.usage) this._lastUsage = data.usage;
+    if (msg && typeof msg.reasoning_content === 'string' && msg.reasoning_content) {
+      this._lastReasoning = msg.reasoning_content;
+    }
+    const content = _pickAssistantText(msg);
     if (!content) throw new Error('API 返回格式异常（正文为空）');
     return content;
   }
@@ -664,7 +830,7 @@ class LLMClient {
    * 手动解析一段完整的 SSE 文本（用于 fetch 不支持 ReadableStream.getReader 的手机浏览器兜底）
    * @private
    */
-  _parseSSEText(rawText, onChunk) {
+  _parseSSEText(rawText, onChunk, onReasoning) {
     if (!rawText || rawText.indexOf('data:') === -1) return '';
     let fullText = '';
     const lines = rawText.split('\n');
@@ -675,8 +841,17 @@ class LLMClient {
       if (data === '[DONE]') break;
       try {
         const json = JSON.parse(data);
-        const delta = json?.choices?.[0]?.delta?.content || json?.choices?.[0]?.delta?.reasoning_content;
-        if (delta) {
+        // 上游真实用量（D13）：兜底解析路径同样要认最后一个数据块里的 usage
+        if (json && json.usage) this._lastUsage = json.usage;
+        // 思考与正文分流（P6.1 / D17）
+        const d = (json && json.choices && json.choices[0] && json.choices[0].delta) || {};
+        const rDelta = d.reasoning_content || d.reasoning;
+        if (typeof rDelta === 'string' && rDelta) {
+          this._lastReasoning += rDelta;
+          if (onReasoning) onReasoning(this._lastReasoning);
+        }
+        const delta = d.content;
+        if (typeof delta === 'string' && delta) {
           fullText += delta;
           if (onChunk) onChunk(fullText);
         }
@@ -793,10 +968,9 @@ class LLMClient {
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
     if (typeof params.n === 'number' && params.n > 1) requestBody.n = params.n;
-    // DeepSeek V4：thinking 默认 enabled（思考模式让 content 为空、文本全在 reasoning_content），
-    // 显式关闭思考模式，正文直接进 content（详见 _isDeepSeekLike 注释）。
+    // DeepSeek V4：thinking 是否开启由用户决定（D17 / P6.6），默认关闭
     if (_isDeepSeekLike(endpoint, model)) {
-      requestBody.thinking = { type: 'disabled' };
+      requestBody.thinking = { type: _thinkingEnabled() ? 'enabled' : 'disabled' };
     }
     // 注意：预设里的 stream 开关目前不会转发给真实请求。当前 uni.request 调用方式期望一次性
     // 返回完整 JSON（res.data.choices[0].message.content），不具备解析 SSE 分块响应的能力；
@@ -858,6 +1032,11 @@ class LLMClient {
 
           if (res.statusCode === 200) {
             const message = data?.choices?.[0]?.message;
+            // 非流式响应同样带 usage / 思考（D13 / D17）
+            if (data && data.usage) this._lastUsage = data.usage;
+            if (message && typeof message.reasoning_content === 'string' && message.reasoning_content) {
+              this._lastReasoning = message.reasoning_content;
+            }
             const content = _pickAssistantText(message);
             if (content) {
               resolve(content);
@@ -870,7 +1049,7 @@ class LLMClient {
             }
           } else {
             const errMsg = (typeof data === 'object' ? data?.error?.message : null) || preview || '请求失败';
-            reject(new Error(`HTTP ${res.statusCode}: ${errMsg}`));
+            reject(_httpError(res.statusCode, errMsg));
           }
         },
         fail: (error) => {

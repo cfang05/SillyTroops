@@ -35,10 +35,6 @@
 
       <button class="btn-primary" :loading="submitting" :disabled="submitting" @tap="onSubmit">{{ isRegisterMode ? '注册并登录' : '登录' }}</button>
 
-      <view class="hint-box" v-if="!isRegisterMode">
-        <text class="hint-text"><text class="hint-b">提示：</text>账号保存在服务器（密码加密存储）。新注册的账号默认为测试账号，可直接使用内置测试 API，也可以在设置页填写自己的 API Key。</text>
-      </view>
-
       <view class="switch-mode" @tap="toggleMode">
         <text class="switch-text">{{ isRegisterMode ? '已有账号？去登录' : '没有账号？去注册' }}</text>
       </view>
@@ -233,10 +229,6 @@ function _afterLoginSuccess() {
   font-size: 27rpx; font-weight: 700; letter-spacing: .02em;
   box-shadow: 0 24rpx 52rpx -20rpx oklch(75% 0.14 80 / 0.6), inset 0 2rpx 0 oklch(100% 0 0 / 0.4);
 }
-
-.hint-box { margin-top: 28rpx; padding: 22rpx 24rpx; border-radius: 24rpx; background: color-mix(in oklch, var(--t-gold) 10%, transparent); border: 1rpx solid color-mix(in oklch, var(--t-gold) 30%, transparent); }
-.hint-text { font-size: 20rpx; line-height: 1.55; color: color-mix(in oklch, var(--t-gold) 78%, var(--fg-soft)); }
-.hint-b { font-weight: 700; }
 
 .switch-mode { text-align: center; margin-top: 28rpx; }
 .switch-text { font-size: 23rpx; color: var(--accent); font-weight: 600; }
