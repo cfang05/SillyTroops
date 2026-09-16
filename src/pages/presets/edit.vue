@@ -388,6 +388,8 @@ const form = reactive<Preset>({
 // onLoad 是 uni-app 官方组合式 API，跨 H5/小程序统一从页面路由参数中取值，
 // 比手动解析 window.location.search 更可靠（H5 端可能是 hash 路由，search 里拿不到参数）
 onLoad((options: any) => {
+  // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）
+  if (!getApp().checkUserLogin()) return
   navBarHeight.value = getNavBarHeight().navBarHeight
   presetStore.load()
   fromChat.value = options?.fromChat === '1'

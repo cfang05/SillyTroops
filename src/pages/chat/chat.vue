@@ -239,6 +239,8 @@ const canSend = computed(() => !runtimeStore.isLoading && inputValue.value.trim(
 
 // onLoad 是 uni-app 官方组合式 API，跨 H5/小程序统一从页面路由参数中取值
 onLoad((options: any) => {
+  // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）
+  if (!getApp().checkUserLogin()) return
   characterCardStore.loadAll()
   presetStore.load()
   regexPresetStore.load()

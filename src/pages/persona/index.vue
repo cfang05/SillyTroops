@@ -81,6 +81,9 @@ const userMacroLabel = '{{user}}'
 const personaMacroLabel = '{{persona}}'
 
 onMounted(() => {
+  // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）。
+  // 本页初始化写在 onMounted 里，守卫放这里第一行，保证未登录时不会白跑下面的 store 加载。
+  if (!getApp().checkUserLogin()) return
   personaStore.load()
   navBarHeight.value = getNavBarHeight().navBarHeight
 })

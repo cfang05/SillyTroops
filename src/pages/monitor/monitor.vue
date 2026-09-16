@@ -142,6 +142,8 @@ export default {
     }
   },
   onLoad() {
+    // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）
+    if (!getApp().checkUserLogin()) return
     this.statusBarHeight = getNavBarHeight()
     // #ifdef H5
     this.statusBarHeight = 0

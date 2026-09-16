@@ -123,6 +123,8 @@ export default {
   },
 
   onLoad(options) {
+    // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）
+    if (!getApp().checkUserLogin()) return
     this.navBarHeight = getNavBarHeight().navBarHeight
     this.loadCollections()
   },

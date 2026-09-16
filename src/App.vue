@@ -11,9 +11,30 @@ export default {
 
   onLaunch() {
     console.log('🎮 无限旅团启动 v0.1')
+    // ⚠️ 下面调用的 loadOpenid / checkLoginStatus 等**必须声明在 methods 里**，
+    // 不能写成根级自定义选项。Vue 3 只会把 data / props / computed / methods /
+    // setup 代理到 this 上，根级自定义选项取不到。这几个函数以前都写在根级，
+    // 导致这里第一行 this.loadOpenid() 就抛
+    //   TypeError: this.loadOpenid is not a function
+    // 而 onLaunch 是直线代码，异常把后面的 checkUserLogin()、
+    // startActivityTracking()、以及 H5 的三个兜底 heartbeat 监听器全部静默截断
+    // —— 活跃时长统计因此一直是坏的（已实测确认）。
     userManager.ensureAdminSeed()
     this.loadOpenid()
-    this.checkUserLogin()
+    // ⚠️ 这里刻意**不调用** this.checkUserLogin()。
+    // 入口页 pages/brand/brand 是面向未登录访客的品牌落地页（点击才去登录），
+    // 在 onLaunch 里无条件跳转会让落地页根本看不到（brand-spec §7）。
+    // 需要登录的页面请在自己的生命周期里调用 getApp().checkUserLogin()。
+    // （uni-app 的 H5 构建会自动为 getApp 注入 import，见
+    //   @dcloudio/uni-h5-vite/dist/plugins/inject.js 的 getApp 映射；
+    //   它不是 window 上的全局函数，所以在浏览器控制台里直接敲 getApp 是 undefined。）
+    //
+    // 注册会话失效的统一出口：页面守卫、按天核验、以及任意业务接口的 401
+    // 最后都汇聚到 handleSessionExpired()，行为完全一致。
+    this._sessionExpiredHandling = false
+    userManager.onSessionExpired(() => { this.handleSessionExpired('expired', 'back') })
+    // 按天核验（内部 3 天节流）。**不 await**：不阻塞首屏，结果回来再决定要不要打扰用户。
+    this.verifySessionInBackground()
     // 活跃时长统计：只在用户真正有交互（点击/按键/触摸/滚动）时计时，
     // 挂机超过 5 分钟不计；由 userManager 内部每 30 秒结算并上报一次。
     userManager.startActivityTracking()
@@ -37,6 +58,16 @@ export default {
 
   onShow() {
     this.checkLoginStatus()
+    // 回到前台先做**本地**检查（0 请求）：覆盖"标签页挂了很久、期间没有任何页面跳转"
+    // 的情况 —— 这种场景页面守卫不会触发，只能靠这里。
+    // 只在「本地有 token 但已过期」时才主动跳登录页；压根没有 token 的未登录访客
+    // 不做打断（他可能只是在看品牌落地页，等点进需要登录的页面时守卫自然会处理）。
+    if (userManager.hasExpiredSession()) {
+      this.handleSessionExpired('expired', 'back')
+    } else {
+      // 再做按天权威核验（内部 3 天节流，与 onLaunch 那次并发去重）
+      this.verifySessionInBackground()
+    }
     // 回到前台视为重新活跃（后台期间不计入活跃时长）
     try { userManager.markActivity() } catch (e) { /* ignore */ }
   },
@@ -46,71 +77,230 @@ export default {
     userManager.heartbeat()
   },
 
-  // 检查本地账号系统的登录态；未登录则跳转登录页（首次启动/退出登录后）
-  checkUserLogin() {
-    try {
-      const uid = userManager.getCurrentUserId()
-      if (!uid) {
-        uni.reLaunch({ url: '/pages/login/login' })
+  // ⚠️ 下面这些是「实例方法」，必须放在 methods 里。
+  // 写在根级（和 onLaunch 平级）的话，Vue 3 不会把它们代理到 this 上，
+  // this.xxx() 会直接抛 "is not a function" —— 这正是之前活跃时长统计
+  // 完全不工作的原因。onLaunch / onShow / onHide 是 uni-app 的 App 级
+  // 生命周期钩子，必须留在根级，不要一起挪进来。
+  methods: {
+    /**
+     * 页面守卫：需要登录的页面在自己的生命周期里（`onLoad` / `onMounted`）第一行调用。
+     *
+     * 判定是**纯本地**的（token 存在 + 读 token 里的 exp 判断未过期），
+     * 0 网络请求、0 延迟，所以每次进页面调用都不心疼。
+     * 服务端侧的失效（管理员改密码、账号被删）由 verifySession() 按天核验兜住。
+     *
+     * ⚠️ 只用于「需要登录的页面」，不要放进 App 的 onLaunch：
+     * 入口页 pages/brand/brand 是面向未登录访客的品牌落地页（brand-spec §7）。
+     * 登录页也不做这个检查（它正是跳转目的地，检查会造成互相跳转）。
+     *
+     * 页面里的用法：`if (!getApp().checkUserLogin()) return`
+     * （H5 构建会自动注入 getApp 的 import，它不是 window 全局函数）
+     *
+     * @returns {boolean} 有有效登录态返回 true；否则发起「去登录」并返回 false
+     */
+    checkUserLogin() {
+      try {
+        if (userManager.hasValidSession()) return true
+        // 「有 token 但过期了」= 登录状态过期；「压根没 token」= 尚未登录。
+        // 两者文案不同，别对从没登录过的人说"已过期"。
+        const reason = userManager.hasExpiredSession() ? 'expired' : 'login-required'
+        // mode='replace'：守卫跑在页面的 onLoad 里，而 onLoad 已经提前 return，
+        // 该页面不会被完整初始化，所以登录后要整页**重建**（reLaunch 到 redirect），
+        // 不能用 navigateBack 返回 —— 那样会得到一个"框架在、数据没加载"的半残页面。
+        this.handleSessionExpired(reason, 'replace', this.currentRoutePath())
+        return false
+      } catch (e) {
+        console.error('检查用户登录态失败:', e)
+        return false
       }
-    } catch (e) { console.error('检查用户登录态失败:', e) }
-  },
+    },
 
-  // 加载本地 openid
-  loadOpenid() {
-    try {
-      const openid = uni.getStorageSync('openid')
-      if (openid) this.globalData.openid = openid
-    } catch (e) { console.error('加载 openid 失败:', e) }
-  },
+    /**
+     * 会话失效的唯一出口。页面守卫、按天核验、业务接口 401 都汇聚到这里。
+     *
+     * @param {'expired'|'login-required'} reason 决定登录页显示的提示文案
+     * @param {'replace'|'back'} mode
+     *        - 'replace'：调用方是页面的 onLoad 守卫（用户正在*进入*一个新页面，
+     *          该页 onLoad 已提前 return 未完成初始化）→ 登录后 reLaunch 到 redirect 重建该页
+     *        - 'back'   ：调用方是 App 层检查或 401 处理（用户*已经在*某个页面上，
+     *          可能有没提交的输入）→ 用 navigateTo 压栈 + 登录后 navigateBack 返回，
+     *          页面实例还在，输入框内容天然保留
+     * @param {string} [redirect] mode='replace' 时的目标页面（含 query）
+     */
+    handleSessionExpired(reason, mode, redirect) {
+      try {
+        // 已经有人在处理了（并发 401 会来一串），或用户已经在登录页 —— 都不重复跳
+        if (this._sessionExpiredHandling) return
+        if (this.isOnLoginPage()) return
+        // 公开页面不主动打断：用户可能只是在看品牌落地页，
+        // 等他点进任何需要登录的页面时，页面守卫自然会处理
+        if (mode !== 'replace' && this.isOnPublicPage()) return
 
-  // 检查登录状态
-  checkLoginStatus() {
-    return !!this.globalData.openid
-  },
+        this._sessionExpiredHandling = true
+        userManager.clearSession()
 
-  // 登录（微信云开发环境下用 wx.cloud；H5/其他平台使用本地存储模拟）
-  async login() {
-    // #ifdef MP-WEIXIN
-    return new Promise((resolve, reject) => {
-      uni.cloud && uni.cloud.callFunction({
-        name: 'login',
-        success: res => {
-          if (res.result && res.result.openid) {
-            const openid = res.result.openid
-            this.globalData.openid = openid
-            try { uni.setStorageSync('openid', openid) } catch (e) {}
-            this.initAccount(openid)
-            resolve(openid)
-          } else {
-            reject(new Error('登录返回数据异常'))
-          }
-        },
-        fail: err => reject(err)
+        // mode='replace' 时**必须**带 redirect：否则登录页会走 navigateBack 分支，
+        // 而那条路径回的是"onLoad 已提前 return、没初始化完"的半残页面。
+        // 所以取不到当前路由时退化成回首页，宁可去首页也不能回半残页面。
+        let target = ''
+        if (mode === 'replace') {
+          target = (redirect && redirect.indexOf('/pages/') === 0) ? redirect : '/pages/index/index'
+        }
+
+        let url = '/pages/login/login?reason=' + encodeURIComponent(reason || 'expired')
+        if (target) url += '&redirect=' + encodeURIComponent(target)
+        // back=1 显式告诉登录页"登录成功后 navigateBack 回原页面（输入保留）"。
+        // 不用"reason 是否为空"来判断：品牌页点击也会带 reason=expired，
+        // 但那个场景登录后该去首页，不是回品牌页。
+        if (mode === 'back') url += '&back=1'
+
+        const done = () => {
+          // 延迟复位去重标志：complete 会紧接着 success 触发，此时登录页可能还没
+          // 真正成为栈顶（isOnLoginPage() 还返回 false），并发来的第二个 401
+          // 会再压一个登录页。等 2 秒后登录页必然已经就位，后续调用由
+          // isOnLoginPage() 拦住。
+          setTimeout(() => { this._sessionExpiredHandling = false }, 2000)
+        }
+        uni.navigateTo({
+          url,
+          // navigateTo 失败（页面栈满 / 路由尚未就绪）时兜底：整页重置到登录页。
+          // 这条路径上原始页面栈会丢，所以带上 redirect 让登录后还能回到目标页。
+          fail: () => {
+            uni.reLaunch({ url, complete: done })
+          },
+          complete: done
+        })
+      } catch (e) {
+        this._sessionExpiredHandling = false
+        console.error('处理登录态失效失败:', e)
+      }
+    },
+
+    /** 按天核验登录态（不阻塞首屏；节流与并发去重都在 userManager 里） */
+    verifySessionInBackground() {
+      userManager.verifySession().then((state) => {
+        if (state === 'invalid') {
+          // 'unknown'（断网 / 503 / 500）什么都不做：不能因为服务端暂时不可用就把人登出
+          this.handleSessionExpired('expired', 'back')
+        }
+      }).catch(() => { /* verifySession 内部已兜底，这里不会抛 */ })
+    },
+
+    /**
+     * 当前页面路径（含 query），供 mode='replace' 时登录后重建该页。
+     *
+     * onLoad 阶段取是安全的：uni-app H5 的 initPage() 先把页面注册进
+     * currentPagesMap、setup() 里先赋 vm.route / vm.options，之后才调 onLoad。
+     * 取不到时返回空串，调用方会退化成登录后去首页（绝不会回半残页面）。
+     *
+     * 用 `typeof getCurrentPages` 而不是直接调用：uni-app 的 H5 构建会把
+     * getCurrentPages 自动注入成 import（见 @dcloudio/uni-h5-vite 的 inject 配置），
+     * 万一某个构建路径没注入，`typeof 未声明标识符` 是安全的（返回 'undefined' 而不抛错），
+     * 直接调用则会 ReferenceError 把整个守卫打挂。
+     */
+    currentRoutePath() {
+      try {
+        if (typeof getCurrentPages !== 'function') return ''
+        const pages = getCurrentPages()
+        if (!pages || !pages.length) return ''
+        const cur = pages[pages.length - 1]
+        const route = '/' + String((cur && cur.route) || '').replace(/^\//, '')
+        if (route === '/') return ''
+        const opts = (cur && cur.options) || {}
+        const parts = []
+        Object.keys(opts).forEach((k) => {
+          const v = opts[k]
+          if (v === undefined || v === null) return
+          parts.push(encodeURIComponent(k) + '=' + encodeURIComponent(v))
+        })
+        return parts.length ? route + '?' + parts.join('&') : route
+      } catch (e) {
+        return ''
+      }
+    },
+
+    /** 当前栈顶是不是登录页 */
+    isOnLoginPage() {
+      return this._currentRouteName().indexOf('pages/login/login') !== -1
+    },
+
+    /** 当前栈顶是不是公开页面（未登录访客可以看的页面） */
+    isOnPublicPage() {
+      const route = this._currentRouteName()
+      return route === 'pages/brand/brand'
+    },
+
+    _currentRouteName() {
+      try {
+        if (typeof getCurrentPages !== 'function') return ''
+        const pages = getCurrentPages()
+        if (!pages || !pages.length) return ''
+        const cur = pages[pages.length - 1]
+        return String((cur && cur.route) || '')
+      } catch (e) {
+        return ''
+      }
+    },
+
+    // 加载本地 openid
+    loadOpenid() {
+      try {
+        const openid = uni.getStorageSync('openid')
+        if (openid) this.globalData.openid = openid
+      } catch (e) { console.error('加载 openid 失败:', e) }
+    },
+
+    // 检查登录状态
+    checkLoginStatus() {
+      return !!this.globalData.openid
+    },
+
+    // 登录（微信云开发环境下用 wx.cloud；H5/其他平台使用本地存储模拟）
+    // ⚠️ 目前全项目没有调用点：实际的登录走 stores/userStore.ts → userManager.login。
+    // 保留在这里是为了 App 级 API 完整，如需使用请从页面里取 App 实例调用。
+    async login() {
+      // #ifdef MP-WEIXIN
+      return new Promise((resolve, reject) => {
+        uni.cloud && uni.cloud.callFunction({
+          name: 'login',
+          success: res => {
+            if (res.result && res.result.openid) {
+              const openid = res.result.openid
+              this.globalData.openid = openid
+              try { uni.setStorageSync('openid', openid) } catch (e) {}
+              this.initAccount(openid)
+              resolve(openid)
+            } else {
+              reject(new Error('登录返回数据异常'))
+            }
+          },
+          fail: err => reject(err)
+        })
       })
-    })
-    // #endif
-    // #ifndef MP-WEIXIN
-    // H5 环境用本地存储模拟登录
-    const mockOpenid = 'mock_openid_' + Date.now()
-    this.globalData.openid = mockOpenid
-    try { uni.setStorageSync('openid', mockOpenid) } catch (e) {}
-    return Promise.resolve(mockOpenid)
-    // #endif
-  },
+      // #endif
+      // #ifndef MP-WEIXIN
+      // H5 环境用本地存储模拟登录
+      const mockOpenid = 'mock_openid_' + Date.now()
+      this.globalData.openid = mockOpenid
+      try { uni.setStorageSync('openid', mockOpenid) } catch (e) {}
+      return Promise.resolve(mockOpenid)
+      // #endif
+    },
 
-  // 初始化账号数据
-  async initAccount(openid) {
-    try {
-      await accountManager.initAccount(openid)
-    } catch (e) { console.error('账号初始化失败:', e) }
-  },
+    // 初始化账号数据（同样目前没有调用点）
+    async initAccount(openid) {
+      try {
+        await accountManager.initAccount(openid)
+      } catch (e) { console.error('账号初始化失败:', e) }
+    },
 
-  // 退出登录
-  logout() {
-    this.globalData.openid = null
-    try { uni.removeStorageSync('openid') } catch (e) {}
-    uni.showToast({ title: '已退出登录', icon: 'success', duration: 2000 })
+    // 退出登录（同样目前没有调用点：退出走 stores/userStore.ts → userManager.logout）
+    logout() {
+      this.globalData.openid = null
+      try { uni.removeStorageSync('openid') } catch (e) {}
+      uni.showToast({ title: '已退出登录', icon: 'success', duration: 2000 })
+    }
   }
 }
 </script>
@@ -121,7 +311,16 @@ export default {
    H5 编译目标下 CSS 自定义属性可全局生效，各页面 <style scoped>
    直接使用 var(--xxx) 即可，不需要重复声明。
    ============================================================ */
-@import url('https://fonts.googleapis.com/css2?family=Cinzel:wght@600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Noto+Sans+SC:wght@400;500;700;900&family=Noto+Serif+SC:wght@600;700;900&display=swap');
+
+/* ⚠️ 不要在这里加 Google Fonts 的 @import。
+   历史问题：这里曾有一行指向 fonts.googleapis.com 的 css2 外部 @import
+   （Cinzel / JetBrains Mono / Noto Sans SC / Noto Serif SC）。
+   外部 @import 会被 Vite 原样保留在 CSS 产物最顶部，是**渲染阻塞**资源：浏览器必须先把
+   它解析完才肯绘制首屏。而 fonts.googleapis.com / fonts.gstatic.com 在部分网络环境
+   （实测本机 DNS 直接超时）根本连不通，首帧因此被卡住 9s+，是 brand 页「loading 慢」
+   的首要原因。即使能连通，Noto Sans/Serif SC 这类 CJK 网页字体也要按 unicode-range
+   拉几十个分片，得不偿失。
+   现在统一改用系统字体栈（见下方 --font-*），零额外网络请求。 */
 
 /* 全局盒模型重置：所有元素统一用 border-box（width/height 包含 padding+border）。
    项目内大量页面给 width:100% 的输入框/容器额外加了 padding，若采用浏览器默认的
@@ -171,10 +370,16 @@ uni-app {
   --t-emerald: oklch(74% 0.13 158);
   --t-rose: oklch(72% 0.12 15);
 
-  --font-display: 'Cinzel', 'Noto Serif SC', 'Songti SC', serif;
-  --font-serif: 'Noto Serif SC', 'Songti SC', 'SimSun', serif;
-  --font-body: 'Noto Sans SC', -apple-system, 'PingFang SC', 'Microsoft YaHei', system-ui, sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  /* 字体栈：全部走系统字体，不加载任何 Web 字体（原因见上方注释）。
+     拉丁展示字体 Cinzel / 等宽 JetBrains Mono 仍保留在栈首，本机装了就用，
+     没装就直接落到后面的系统字体，不会产生网络请求。 */
+  --font-display: 'Cinzel', 'Songti SC', 'SimSun', Georgia, 'Times New Roman', serif;
+  --font-serif: 'Songti SC', 'Noto Serif SC', 'SimSun', Georgia, serif;
+  --font-body: -apple-system, BlinkMacSystemFont, 'PingFang SC', 'Microsoft YaHei',
+               'Hiragino Sans GB', 'Noto Sans SC', 'Source Han Sans SC', system-ui,
+               'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, Consolas, 'JetBrains Mono',
+               'Liberation Mono', monospace;
 }
 
 /* 全局样式 */

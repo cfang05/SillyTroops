@@ -5,6 +5,10 @@
   "versionName": "1.0.0",
   "versionCode": "100",
   "transformPx": false,
+  "//uniStatistics": "默认是「不配置就开启」。本项目的 appid 还是占位符 __UNI__XXXXXXX，上报的 ProjectId/TopicId 是 DCloud 自动分配的，数据归不到本项目名下；同时它会把设备指纹、逐页路由、JS 错误堆栈一起上报，所以显式关掉。将来若配置了真实 appid 并想用 DCloud 统计后台，把 enable 改回 true 即可。",
+  "uniStatistics": {
+    "enable": false
+  },
   "app-plus": {
     "usingComponents": true,
     "nvueStyleCompiler": "uni-app",

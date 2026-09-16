@@ -3,7 +3,7 @@
   <view class="index-container" :style="{ paddingTop: statusBarHeight + 'px' }">
     <view class="greet-row">
       <view class="greet">
-        <view class="home-crest"><image src="/static/images/dragon-logo.png" mode="aspectFill"></image></view>
+        <view class="home-crest"><image src="/static/images/dragon-logo.webp" mode="aspectFill"></image></view>
         <view class="greet-text">
           <text class="greet-title">早上好，{{ userName }}</text>
           <text class="greet-mono">无限旅团 · 你的专属奇幻世界</text>
@@ -114,6 +114,8 @@ export default {
     }
   },
   onLoad() {
+    // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）
+    if (!getApp().checkUserLogin()) return
     this.statusBarHeight = getNavBarHeight()
     // #ifdef H5
     this.statusBarHeight = 0

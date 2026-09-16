@@ -1,8 +1,15 @@
 <template>
   <view class="login-container" :style="{ paddingTop: (statusBarHeight + 60) + 'px' }">
 
+    <!-- 常驻提示条：登录态过期 / 需要登录时告诉用户「为什么会被带到这里」。
+         用常驻提示而不是 toast —— toast 两秒就消失，用户很可能正在看别处、
+         回头发现自己在登录页却不知道为什么，这正是要避免的。 -->
+    <view class="login-notice" v-if="notice">
+      <text class="login-notice-text">{{ notice }}</text>
+    </view>
+
     <view class="auth-head">
-      <view class="auth-crest"><image src="/static/images/dragon-logo.png" mode="aspectFill"></image></view>
+      <view class="auth-crest"><image src="/static/images/dragon-logo.webp" mode="aspectFill"></image></view>
       <text class="app-title">无限旅团</text>
       <text class="app-sub">{{ isRegisterMode ? '创建新账号，开启专属冒险' : '登录你的账号，继续冒险' }}</text>
     </view>
@@ -41,13 +48,15 @@
 
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
+import { onLoad } from '@dcloudio/uni-app'
 import { useUserStore } from '../../stores/userStore'
 import { getNavBarHeight } from '../../utils/navbar.js'
 
 const userStore = useUserStore()
 
-// 登录页由 reLaunch 进入，没有可返回的页面栈，不需要导航栏返回键，
-// 但仍需给顶部状态栏留出安全间距（navigationStyle:"custom" 后系统不再自动预留）
+// 登录页不再只由 reLaunch 进入：登录态过期时是 navigateTo 压栈进来的，
+// 登录后要 navigateBack 回到用户原来的页面，所以这里不能省返回处理。
+// 顶部仍要给状态栏留安全间距（navigationStyle:"custom" 后系统不再自动预留）
 const statusBarHeight = ref(0)
 onMounted(() => {
   statusBarHeight.value = getNavBarHeight().statusBarHeight
@@ -58,6 +67,39 @@ const submitting = ref(false)
 const username = ref('')
 const password = ref('')
 const nickname = ref('')
+
+// ── 来源与去向 ────────────────────────────────────────────────
+// ⚠️ 登录页**刻意不做任何登录态检查**：既不做"未登录就跳走"的守卫，也不做
+// "已登录就跳首页"的自动跳转。它是所有跳转的目的地，自身一旦含登录态判断，
+// 只要本地登录态清理不干净（storage 异常、清理漏项……），登录页就会把自己弹走，
+// 导致**用户永远登不进来** —— 这比"已登录用户多点一次"严重得多。
+// "已登录的用户不该看到登录表单"放在品牌页的点击处处理（见 brand.vue 的 handleTap）。
+//
+// 登录成功后的去向由两个参数决定，显式且互斥：
+//   redirect 有值 → 守卫在页面 onLoad 里触发的 → reLaunch(redirect) 重建目标页
+//   back=1        → App 层检查 / 业务接口 401 触发的 → navigateBack 回原页面（输入保留）
+//   两者都没有     → 用户自己点进来的（品牌页 / 直接输 URL）→ 去首页
+const reason = ref('')
+const redirect = ref('')
+const back = ref('')
+const notice = ref('')
+
+onLoad((options: any) => {
+  reason.value = String(options?.reason || '')
+  back.value = String(options?.back || '')
+
+  const rawRedirect = String(options?.redirect || '')
+  // decodeURIComponent 遇到非法转义（例如手改 URL 造成的孤立 %）会抛 URIError，
+  // 兜住它，否则整个登录页会因为一个坏参数白屏
+  try {
+    redirect.value = rawRedirect ? decodeURIComponent(rawRedirect) : ''
+  } catch (e) {
+    redirect.value = ''
+  }
+
+  if (reason.value === 'expired') notice.value = '登录状态过期，请重新登录'
+  else if (reason.value === 'login-required') notice.value = '请先登录后继续'
+})
 
 function toggleMode() {
   isRegisterMode.value = !isRegisterMode.value
@@ -104,6 +146,25 @@ async function onSubmit() {
 function _afterLoginSuccess() {
   uni.showToast({ title: '登录成功', icon: 'success' })
   setTimeout(() => {
+    // 分三种去向，判据是 redirect 而不是 reason：
+    //
+    // 1) 带 redirect = 页面守卫在 onLoad 里触发的（用户正在*进入*一个新页面，
+    //    而该页 onLoad 已经提前 return、没完成初始化）。必须整页**重建**目标页，
+    //    用 navigateBack 会返回一个"框架在、数据没加载"的半残页面。
+    if (redirect.value && redirect.value.indexOf('/pages/') === 0) {
+      uni.reLaunch({ url: redirect.value })
+      return
+    }
+    // 2) back=1 = App 层检查或业务接口 401 触发的（用户*已经在*某个页面上，
+    //    可能有没提交的输入）。用 navigateBack 回到原页面 —— 页面实例还在栈里、
+    //    onLoad 不会重跑，所以聊天框里打了一半的消息之类会原封不动保留。
+    if (back.value === '1') {
+      uni.navigateBack({
+        fail: () => { uni.reLaunch({ url: '/pages/index/index' }) }
+      })
+      return
+    }
+    // 3) 用户自己点进来的（品牌页点击 / 直接输 URL）
     uni.reLaunch({ url: '/pages/index/index' })
   }, 800)
 }
@@ -111,6 +172,18 @@ function _afterLoginSuccess() {
 
 <style scoped>
 .login-container { min-height: 100vh; background: var(--bg-deep); display: flex; flex-direction: column; padding: 88rpx 48rpx; }
+
+/* 提示条：金色（--accent-soft）而非红色 —— 登录过期是"需要重新确认身份"，
+   不是错误，用红色会让用户以为系统出问题了 */
+.login-notice {
+  padding: 22rpx 28rpx;
+  margin-bottom: 32rpx;
+  border-radius: 24rpx;
+  background: var(--accent-soft);
+  border: 1rpx solid oklch(81% 0.13 84 / 0.45);
+  text-align: center;
+}
+.login-notice-text { font-size: 24rpx; line-height: 1.6; color: var(--accent); font-weight: 600; }
 
 .auth-head { display: flex; flex-direction: column; align-items: center; text-align: center; margin-bottom: 40rpx; }
 .auth-crest {

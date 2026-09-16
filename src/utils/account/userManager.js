@@ -37,6 +37,21 @@ var IDLE_MS = 5 * 60 * 1000;    // 超过 5 分钟无操作即视为空闲，不
 var FLUSH_MS = 30 * 1000;       // 每 30 秒结算并上报一次
 var MAX_PENDING_MS = 10 * 60 * 1000;
 
+// ── 登录态核验 ───────────────────────────────────────────────
+// 服务端权威核验的间隔：3 天。token 本身有效期 7 天（服务端 TOKEN_TTL_DAYS），
+// 3 天意味着每张 token 生命周期内约核验 2 次，管理员重置密码这类服务端侧吊销
+// 最长 3 天内被发现。
+//
+// ⚠️ 这**不是**页面守卫的频率。页面守卫用 hasValidSession()，是纯本地判断
+// （0 网络请求、0 延迟），每次进入/回到页面都会跑；只有这里的权威核验才是按天的。
+var SESSION_VERIFY_KEY = 'sillytroops_session_verified_at';
+var SESSION_VERIFY_INTERVAL_MS = 3 * 24 * 60 * 60 * 1000;
+
+// 这几个接口返回 401 表达的是「用户名或密码错误」，而不是「登录态失效」，
+// 必须从全局 401 处理里排除。另外 login() 正靠捕获 401 去走老账号自动认领
+// （见 _tryClaimLegacyAccount），被全局处理接管会直接打断登录/认领流程。
+var AUTH_ENTRY_ENDPOINTS = ['/api/auth/login', '/api/auth/register', '/api/auth/claim'];
+
 // 已取消的测试账号（老本地数据里可能还有，统一清理，不再重建）
 var REMOVED_TEST_USERNAMES = ['test01', 'test02', 'test03', 'test04', 'test05'];
 
@@ -107,8 +122,17 @@ function _request(path, options) {
         if (res.statusCode >= 200 && res.statusCode < 300) {
           resolve(data || {});
         } else {
+          // 业务接口返回 401 = 服务端判定登录态失效：统一清本地登录态并通知上层
+          // 跳登录页，而不是让各个调用点各自弹一句"请求失败"。
+          // 登录入口接口（login/register/claim）的 401 是"密码错误"，必须排除。
+          if (res.statusCode === 401 && !_isAuthEntryEndpoint(path)) {
+            _handleUnauthorized();
+          }
           var err = new Error((data && (data.error || data.detail)) || ('HTTP ' + res.statusCode));
           err.status = res.statusCode;
+          // 打标：调用点可以用它把"登录态失效"和"业务失败"区分开，
+          // 避免在登录页已经弹出的同时再弹一句"加载失败"。
+          if (res.statusCode === 401 && !_isAuthEntryEndpoint(path)) err.sessionExpired = true;
           reject(err);
         }
       },
@@ -132,6 +156,163 @@ function _clearSession() {
   _remove(AUTH_TOKEN_KEY);
   _remove(PROFILE_KEY);
   _remove(CURRENT_USER_KEY);
+}
+
+// ── 登录态：本地判断（同步、零请求） ──────────────────────────
+/**
+ * 从 token 的 payload 里解出 exp（毫秒时间戳）。
+ *
+ * token 结构见服务端 auth.js：`base64url(JSON payload) + '.' + HMAC 签名`，
+ * payload = { sub, username, ver, iat, exp }。payload **只是编码、没有加密**，
+ * 所以客户端不需要任何密钥就能读出 exp —— 这是"本地判断是否过期"能成立的前提。
+ *
+ * 只抠 exp（ASCII 数字），不整体 JSON.parse：atob 返回的是 latin1 字符串，
+ * payload 里的中文 username 会被弄乱导致 JSON 非法，而 exp 不受影响。
+ *
+ * @returns {number} 毫秒时间戳；解析失败（含环境没有 atob）返回 0
+ */
+function _readTokenExp(token) {
+  try {
+    var t = String(token || '');
+    var dot = t.lastIndexOf('.');
+    if (dot <= 0) return 0;
+    var b64 = t.slice(0, dot).replace(/-/g, '+').replace(/_/g, '/');
+    while (b64.length % 4) b64 += '=';
+    var m = /"exp"\s*:\s*(\d+)/.exec(atob(b64));
+    return m ? Number(m[1]) : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+/**
+ * 本地登录态判断：token 存在、可解析、且未过期。
+ *
+ * **纯同步、零网络请求**，可以放心在每个页面进入时调用（页面守卫就用它）。
+ * 它能精确抓到「从没登录 / 已退出 / 自然过期」（exp 就在 token 里，客户端精确已知），
+ * 但抓不到服务端侧的失效（管理员改密码、账号被删、签名密钥更换）—— 那些归
+ * verifySession() 按天核验。
+ *
+ * 解不出 exp 时返回 true（放行给服务端裁决）：鉴权判断的降级方向必须是"放过"，
+ * 不能是"一律拒绝"，否则小程序这类没有 atob 的环境会把所有用户踢去登录页。
+ */
+function hasValidSession() {
+  var token = _getToken();
+  if (!token) return false;
+  var exp = _readTokenExp(token);
+  if (!exp) return true;
+  return Date.now() < exp;
+}
+
+/**
+ * 本地有 token 但**已过期**。
+ *
+ * 用来区分两种"没有有效登录态"，它们的处理方式不同：
+ *   - 从没登录过 / 已主动退出（压根没有 token）→ 不要在公开页面（品牌落地页）主动打断用户
+ *   - 登录过但过期了（有 token、exp 已过）→ 这正是"登录状态过期"，该主动引导重新登录
+ */
+function hasExpiredSession() {
+  var token = _getToken();
+  if (!token) return false;
+  var exp = _readTokenExp(token);
+  if (!exp) return false;
+  return Date.now() >= exp;
+}
+
+/** 清空本地登录态（token / 用户缓存 / 当前用户 id / 核验时间戳） */
+function clearSession() {
+  _clearSession();
+  _remove(SESSION_VERIFY_KEY);
+}
+
+// ── 会话失效通知（App.vue 注册一次，统一跳登录页） ────────────
+var _sessionExpiredHandlers = [];
+
+/** 注册会话失效回调。App.vue 在 onLaunch 里注册。 */
+function onSessionExpired(handler) {
+  if (typeof handler === 'function' && _sessionExpiredHandlers.indexOf(handler) === -1) {
+    _sessionExpiredHandlers.push(handler);
+  }
+}
+
+function _notifySessionExpired() {
+  for (var i = 0; i < _sessionExpiredHandlers.length; i++) {
+    try { _sessionExpiredHandlers[i](); } catch (e) { /* 回调异常不影响请求结果 */ }
+  }
+}
+
+function _isAuthEntryEndpoint(path) {
+  var p = String(path || '');
+  for (var i = 0; i < AUTH_ENTRY_ENDPOINTS.length; i++) {
+    if (p.indexOf(AUTH_ENTRY_ENDPOINTS[i]) === 0) return true;
+  }
+  return false;
+}
+
+/**
+ * 任意业务接口返回 401 时的统一处理。
+ *
+ * 页面守卫和按天核验都覆盖不到的时刻由这里兜住：并发窗口、客户端时钟偏差、
+ * 管理员刚重置完密码。它的目的**不是**"报告一次失败"，而是把 401 转换成与守卫
+ * 完全相同的那个体面流程（清登录态 → 跳登录页 → 提示 → 登录后回原处），
+ * 用户不会看到"保存失败"这种不明所以的报错。
+ */
+function _handleUnauthorized() {
+  _clearSession();
+  _remove(SESSION_VERIFY_KEY);
+  _notifySessionExpired();
+}
+
+// ── 登录态：服务端权威核验（按天节流） ────────────────────────
+var _verifyPromise = null;
+
+/**
+ * 向服务端核验当前登录态。四态返回：
+ *
+ *   'anonymous' 本地没有 token（未登录访客）→ 不请求、不跳转
+ *   'ok'        服务端认可
+ *   'invalid'   服务端明确判定失效（401）→ 上层应走过期流程
+ *   'unknown'   网络不通 / 503（数据库未配置）/ 500 → **什么都不做**：
+ *               保留登录态，且不更新时间戳，下次进前台再试
+ *
+ * 必须是四态而不是布尔值：把"服务端说失效"和"网络不通"混成一个 false，
+ * 一定会出现"地铁里断网 → 被登出还提示登录过期"这种事。
+ * 服务端侧配合得很好 —— requireAuth 把数据库问题归为 503/500，
+ * 绝不会伪装成 401（见 server.js 的 _ensureDbOr503 / requireAuth）。
+ *
+ * @param {boolean} [force] 跳过节流，强制核验
+ * @returns {Promise<'anonymous'|'ok'|'invalid'|'unknown'>}
+ */
+function verifySession(force) {
+  var token = _getToken();
+  if (!token) return Promise.resolve('anonymous');
+
+  if (!force) {
+    var last = Number(_get(SESSION_VERIFY_KEY, 0)) || 0;
+    if (last && (Date.now() - last) < SESSION_VERIFY_INTERVAL_MS) {
+      return Promise.resolve('ok');
+    }
+  }
+  // 并发去重：冷启动时 onLaunch 和紧随其后的 onShow 会各调一次，只发一个请求
+  if (_verifyPromise) return _verifyPromise;
+
+  _verifyPromise = _request('/api/auth/me').then(function (data) {
+    _refreshProfile(data && data.user);
+    _set(SESSION_VERIFY_KEY, Date.now());
+    return 'ok';
+  }).catch(function (e) {
+    if (e && e.status === 401) {
+      _clearSession();
+      _remove(SESSION_VERIFY_KEY);
+      return 'invalid';
+    }
+    return 'unknown';
+  }).then(function (state) {
+    _verifyPromise = null;
+    return state;
+  });
+
+  return _verifyPromise;
 }
 
 function _sanitize(user) {
@@ -739,6 +920,12 @@ export default {
   recordTokenUsage: recordTokenUsage,
   getCurrentUserId: getCurrentUserId,
   getCurrentUser: getCurrentUser,
+  // 登录态（页面守卫 / 按天核验 / 过期流程都用这几个）
+  hasValidSession: hasValidSession,
+  hasExpiredSession: hasExpiredSession,
+  verifySession: verifySession,
+  clearSession: clearSession,
+  onSessionExpired: onSessionExpired,
   getUserById: getUserById,
   updateProfile: updateProfile,
   isAdmin: isAdmin,

@@ -91,6 +91,8 @@ const form = reactive<RegexPreset>({
 })
 
 onLoad((options: any) => {
+  // 需要登录：未登录会被 reLaunch 到登录页（守卫实现在 App.vue 的 checkUserLogin）
+  if (!getApp().checkUserLogin()) return
   navBarHeight.value = getNavBarHeight().navBarHeight
   regexPresetStore.load()
   const id = options?.id
