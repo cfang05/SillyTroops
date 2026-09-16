@@ -47,13 +47,28 @@ export function notifyError(title: string, detail?: string, opts: NotifyOptions 
 }
 
 /**
- * 本地存储写入失败的统一提示（配额超限是最常见原因）
- * @param op 操作描述，例如 '保存对话存档'
+ * 存储写入失败的统一提示
+ *
+ * 分类给出可操作的原因（实测中出现过把 IndexedDB 的 DataCloneError 说成"本地存储写入失败"
+ * 的情况，会把人引到错误的方向去清理数据）：
+ *   · 配额类 → 本地存储空间可能已满
+ *   · 数据库类（IndexedDB 事务/克隆失败）→ 数据库写入被拒绝
+ *   · 其它 → 存储写入失败
+ *
+ * @param op 操作描述，例如 '保存对话'
  */
 export function notifyStorageFailure(op: string, error?: any): void {
-  const reason = (error && (error.errMsg || error.message)) || String(error || '未知原因')
-  const quotaHint = /quota|exceed|storage|空间|full/i.test(reason) ? '本地存储空间可能已满' : '本地存储写入失败'
-  notifyError(`${op}失败：${quotaHint}`, '请到「设置」清理数据或先导出备份', { dedupeKey: 'storage-failure' })
+  const reason = (error && (error.errMsg || error.message || error.name)) || String(error || '未知原因')
+  let hint = '存储写入失败'
+  let advice = '如果反复出现，请到「设置」导出备份后清理数据'
+  if (/quota|exceed|空间|full|Storage full/i.test(reason)) {
+    hint = '本地存储空间可能已满'
+    advice = '请到「设置」清理数据或先导出备份'
+  } else if (/clone|cloned|IDBObjectStore|IndexedDB|transaction|DataClone/i.test(reason)) {
+    hint = '数据库写入被拒绝'
+    advice = '数据已保存在内存中，请重试；若持续失败请导出备份后重启应用'
+  }
+  notifyError(`${op}失败：${hint}`, advice, { dedupeKey: 'storage-failure', duration: 5000 })
 }
 
 /** 清空去重记录（测试用） */

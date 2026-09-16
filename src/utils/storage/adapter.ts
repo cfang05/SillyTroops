@@ -97,6 +97,21 @@ export class LocalStorageAdapter implements StorageAdapter {
 // ─────────────────────────────────────────────────────────────
 const IDB_STORE = 'kv'
 
+/**
+ * 转成可结构化克隆的纯数据（见 `set` 里的说明）
+ * JSON 往返对"我们存的所有东西"（消息、角色卡、预设、Persona）都是无损的。
+ */
+function _toPlainValue(value: any): any {
+  if (value === undefined) return null
+  if (value === null || typeof value !== 'object') return value
+  try {
+    return JSON.parse(JSON.stringify(value))
+  } catch (e) {
+    console.warn('[IndexedDbAdapter] 值无法 JSON 序列化，尝试直接写入:', e)
+    return value
+  }
+}
+
 export class IndexedDbAdapter implements StorageAdapter {
   readonly name: string
   private readonly dbName: string
@@ -146,7 +161,14 @@ export class IndexedDbAdapter implements StorageAdapter {
   }
 
   async set(key: string, value: any): Promise<void> {
-    await this._tx('readwrite', s => s.put(value, key))
+    // ⚠️ 必须先把值转换成"可结构化克隆"的纯数据，否则会直接失败。
+    //
+    // 真实故障（用户实测）：Pinia/Vue 的响应式对象是 **Proxy**，而 IndexedDB 的 put() 走
+    // 结构化克隆算法，Chrome 对 Proxy 会抛 `DataCloneError: #<Object> could not be cloned`。
+    // 我们把 `runtimeStore.messages`（响应式数组，元素也是代理对象）直接交给 put()，
+    // 于是"每次保存都失败"：读得到旧数据（迁移时写进去的是 JSON 纯对象），却写不进新数据。
+    // JSON 往返既能把代理展开成普通对象/数组，也能顺手剥掉不可克隆的值（函数等）。
+    await this._tx('readwrite', s => s.put(_toPlainValue(value), key))
   }
 
   async remove(key: string): Promise<void> {

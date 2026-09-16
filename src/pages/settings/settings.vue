@@ -127,6 +127,25 @@
         </view>
       </view>
 
+      <!-- 流式输出（本轮新增）：控制"逐字释放"的节奏 -->
+      <view class="section">
+        <text class="section-title">流式输出</text>
+        <text class="section-subtitle">开启平滑输出后，即使模型是真流式，界面也会按下面的速度逐字显示；关掉则完全跟上游速度（高速模型会一屏字瞬间涌出）</text>
+        <view class="switch-item">
+          <text class="switch-label">平滑输出（限制显示速度）</text>
+          <switch :checked="pacingCfg.enabled" @change="onTogglePacing" color="#c9a84a" />
+        </view>
+        <view class="form-item">
+          <text class="label">显示速度（字/秒）</text>
+          <input class="input" type="number" :value="String(pacingCfg.charsPerSec)" @input="onPacingRateInput" />
+        </view>
+        <view class="quick-preset-row">
+          <button class="btn-secondary quick-btn" @tap="onPacingPreset(40)">慢 40</button>
+          <button class="btn-secondary quick-btn" @tap="onPacingPreset(80)">中 80</button>
+          <button class="btn-secondary quick-btn" @tap="onPacingPreset(160)">快 160</button>
+        </view>
+      </view>
+
       <!-- 思考内容（P6.6 / P6.1 / P6.4 / D17） -->
       <view class="section">
         <text class="section-title">思考内容</text>
@@ -257,6 +276,7 @@ import ContextInspector from '../../components/render/ContextInspector.vue'
 import { loadCustomCss, saveCustomCss, initCustomCss } from '../../utils/customCss'
 import { exportBackup, pickBackupFile, restoreBackup } from '../../services/backupService'
 import { loadReasoningConfig, saveReasoningConfig } from '../../engine/ReasoningHandler'
+import { loadPacingConfig, savePacingConfig } from '../../utils/streamPacing'
 
 // LLM 配置改为按当前用户隔离存储（原全局 STORAGE_KEYS.LLM_CONFIG 键名不变，但加上用户前缀）
 function llmConfigKey() {
@@ -287,6 +307,8 @@ export default {
       // 思考内容（P6.6 / P6.4）
       thinkingEnabled: false,
       reasoningCfg: { enabled: false, prefix: ' thinking', suffix: '' },
+      // 流式输出节奏（本轮新增）
+      pacingCfg: { enabled: true, charsPerSec: 80 },
       modelList: [],
       currentModel: '',
       apiKey: '',
@@ -353,12 +375,32 @@ export default {
     // 思考内容（P6.6 / P6.4）
     this.thinkingEnabled = storage.get(scopedKey('ai_thinking_enabled')) === true
     this.reasoningCfg = loadReasoningConfig()
+    // 流式输出节奏（本轮新增）
+    this.pacingCfg = loadPacingConfig()
     // #ifdef MP-WEIXIN
     this.isMpWeixin = true
     // #endif
   },
 
   methods: {
+    /** 平滑输出开关（本轮新增）：真流式下也按速率逐字释放，避免"疯狂涌出" */
+    onTogglePacing(e) {
+      const on = !!(e && e.detail && e.detail.value)
+      this.pacingCfg = { ...this.pacingCfg, enabled: on }
+      savePacingConfig(this.pacingCfg)
+      uni.showToast({ title: on ? '已开启平滑输出' : '已关闭（完全跟上游速度）', icon: 'none', duration: 2500 })
+    },
+    onPacingRateInput(e) {
+      const v = Number(e && e.detail && e.detail.value)
+      this.pacingCfg = { ...this.pacingCfg, charsPerSec: Number.isFinite(v) && v > 0 ? v : 80 }
+      savePacingConfig(this.pacingCfg)
+    },
+    onPacingPreset(rate) {
+      this.pacingCfg = { enabled: true, charsPerSec: rate }
+      savePacingConfig(this.pacingCfg)
+      uni.showToast({ title: `已设为 ${rate} 字/秒`, icon: 'none' })
+    },
+
     /** 启用/关闭模型思考（P6.6）：默认关（省 token、降首字延迟） */
     onToggleThinking(e) {
       const on = !!(e && e.detail && e.detail.value)

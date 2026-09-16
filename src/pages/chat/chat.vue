@@ -141,6 +141,7 @@ import type { PromptInfo } from '../../engine/PromptBuilder'
 import { savePromptInfo } from '../../services/promptInfoStore'
 import { initCustomCss } from '../../utils/customCss'
 import { splitReasoning, loadReasoningConfig, type ReasoningSplitConfig } from '../../engine/ReasoningHandler'
+import { nextShownLength, loadPacingConfig, type StreamPacingConfig } from '../../utils/streamPacing'
 
 const runtimeStore = useRuntimeStore()
 const characterCardStore = useCharacterCardStore()
@@ -235,6 +236,17 @@ const STREAM_FLUSH_MS = 33
 let _pendingStream: { index: number; content?: string; reasoning?: string } | null = null
 let _streamTimer: ReturnType<typeof setTimeout> | null = null
 
+// ── 平滑输出（用户实测反馈：真流式下"疯狂涌出、速度不可控"）────────────────
+// 仍然是真流式（首字延迟不变、不用等全文），但 UI 按设定速率**逐字释放**已到的文本。
+// 关掉 = 完全跟上游速度。实现见 utils/streamPacing.ts（对齐酒馆 smooth_streaming）。
+const _pacing = ref<StreamPacingConfig>({ enabled: true, charsPerSec: 80 })
+/** 每条消息"已经释放到第几个字符"（平滑模式下用来限速） */
+const _streamShown = new Map<number, number>()
+/** 每条消息"上游已到达的最新完整文本"（停止生成时用，避免丢掉还没显示的部分） */
+const _streamTarget = new Map<number, string>()
+/** 待收尾：平滑模式下要等文本释放完再落定，避免最后一帧"啪"地补全 */
+let _pendingFinalize: { index: number; text: string; after?: () => void } | null = null
+
 function _ensurePending(index: number) {
   if (!_pendingStream || _pendingStream.index !== index) _pendingStream = { index }
   _pendingStream.index = index
@@ -243,6 +255,7 @@ function _ensurePending(index: number) {
 
 /** 排入正文增量（调用方负责算出"这条消息此刻应该显示成什么"） */
 function _queueStreamContent(index: number, content: string) {
+  _streamTarget.set(index, content)
   _ensurePending(index)
   _pendingStream!.content = content
 }
@@ -252,6 +265,24 @@ function _queueStreamReasoning(index: number, reasoning: string) {
   if (!_reasoningStart.has(index)) _reasoningStart.set(index, Date.now())
   _ensurePending(index)
   _pendingStream!.reasoning = reasoning
+}
+
+/**
+ * 按平滑配置计算"这一帧应该显示到哪里"，并写进消息
+ * @returns 是否还有未释放的文本（需要继续下一帧）
+ */
+function _applyPacedText(index: number, fullText: string): boolean {
+  const p = _pacing.value
+  if (!p.enabled || !(p.charsPerSec > 0)) {
+    _streamShown.set(index, fullText.length)
+    _applyMessageText(index, fullText, { streaming: true })
+    return false
+  }
+  const shown = _streamShown.get(index) || 0
+  const next = nextShownLength(shown, fullText.length, p.charsPerSec, STREAM_FLUSH_MS)
+  _streamShown.set(index, next)
+  _applyMessageText(index, fullText.slice(0, next), { streaming: true })
+  return next < fullText.length
 }
 
 /**
@@ -275,20 +306,63 @@ function _flushStreamContent() {
   if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null }
   const pending = _pendingStream
   _pendingStream = null
-  if (!pending) return
-  const m = runtimeStore.messages[pending.index]
-  if (!m || m.role !== 'assistant') return
+  let needMore = false
 
-  if (typeof pending.content === 'string') {
-    _applyMessageText(pending.index, pending.content, { streaming: true })
-    if (Array.isArray(m.swipes)) m.swipes[m.swipe_id || 0] = m.content
+  if (pending) {
+    const m = runtimeStore.messages[pending.index]
+    if (m && m.role === 'assistant') {
+      if (typeof pending.content === 'string') {
+        // 平滑模式下这里只释放一部分，剩下的留到后续帧（速度可控）
+        needMore = _applyPacedText(pending.index, pending.content) || needMore
+        if (Array.isArray(m.swipes)) m.swipes[m.swipe_id || 0] = m.content
+      }
+      if (typeof pending.reasoning === 'string') {
+        // 上游原生思考（reasoning_content）优先；思考不参与正文限速，避免拖慢正文
+        m.reasoning = pending.reasoning
+        m.reasoningDisplay = _reasoningFor(pending.reasoning, pending.index)
+      }
+      m.isStreaming = true
+    }
   }
-  if (typeof pending.reasoning === 'string') {
-    // 上游原生思考（reasoning_content）优先
-    m.reasoning = pending.reasoning
-    m.reasoningDisplay = _reasoningFor(pending.reasoning, pending.index)
+
+  // 收尾也要等"未释放的文本"播完，否则最后一帧会突然补全一大段
+  if (_pendingFinalize) {
+    const p = _pendingFinalize
+    const m = runtimeStore.messages[p.index]
+    if (!m || !_applyPacedText(p.index, p.text)) {
+      _pendingFinalize = null
+      _streamShown.delete(p.index)
+      _streamTarget.delete(p.index)
+      _finalizeMessage(p.index, p.text)
+      if (p.after) p.after()
+    } else {
+      m.isStreaming = true
+      needMore = true
+    }
   }
-  m.isStreaming = true
+
+  if (needMore && !_streamTimer) {
+    _streamTimer = setTimeout(_flushStreamContent, STREAM_FLUSH_MS)
+  }
+}
+
+/**
+ * 安排收尾（P6.2 + 平滑输出）
+ * 未开启平滑时立刻收尾（行为与之前一致）；开启时等剩余文本按节奏释放完再收尾。
+ */
+function _scheduleFinalize(index: number, finalText: string, after?: () => void) {
+  _pendingStream = null
+  const p = _pacing.value
+  const shown = _streamShown.get(index) || 0
+  if (!p.enabled || !(p.charsPerSec > 0) || shown >= finalText.length) {
+    _streamShown.delete(index)
+    _streamTarget.delete(index)
+    _finalizeMessage(index, finalText)
+    if (after) after()
+    return
+  }
+  _pendingFinalize = { index, text: finalText, after }
+  if (!_streamTimer) _streamTimer = setTimeout(_flushStreamContent, STREAM_FLUSH_MS)
 }
 
 /**
@@ -344,6 +418,9 @@ const _reasoningStart = new Map<number, number>()
  * 流式结束、停止生成、续写收尾都走这里，避免三条路径行为不一致。
  */
 function _finalizeMessage(index: number, finalText: string) {
+  // 清掉平滑输出的过程状态（已落定，不再需要）
+  _streamShown.delete(index)
+  _streamTarget.delete(index)
   _applyMessageText(index, finalText)
   const m = runtimeStore.messages[index]
   if (!m) return
@@ -388,6 +465,9 @@ function _reasoningFor(text: string, index: number): string {
 function _cancelStreamContent() {
   if (_streamTimer) { clearTimeout(_streamTimer); _streamTimer = null }
   _pendingStream = null
+  _pendingFinalize = null
+  _streamShown.clear()
+  _streamTarget.clear()
 }
 
 /**
@@ -474,6 +554,9 @@ onLoad((options: any) => {
 
   // 文本思考解析配置（P6.4）：设置页可能刚改过，每次进聊天页重读
   _reasoningCfg.value = loadReasoningConfig()
+
+  // 平滑输出节奏（本轮新增）：设置页可能刚改过
+  _pacing.value = loadPacingConfig()
 
   sessionCardId.value = options?.cardId || characterCardStore.activeCardId || ''
   sessionPresetId.value = options?.presetId || ''
@@ -767,8 +850,10 @@ function handleStop() {
   const last = msgs[idx]
   if (!last || last.role !== 'assistant' || !last.isStreaming) return
 
-  // 统一收尾（P6.2 / P6.4）：即使中途停止，也要把已流出的思考标记为"已结束"并算耗时
-  _finalizeMessage(idx, (last.content as string) || '')
+  // 停止时用"上游已到达的完整文本"收尾，避免丢掉还没逐字显示出来的部分（平滑模式）
+  const full = _streamTarget.get(idx) || (last.content as string) || ''
+  _cancelStreamContent()
+  _finalizeMessage(idx, full)
   _persistConversation({ immediate: true })
 }
 
@@ -819,15 +904,18 @@ async function handleContinue() {
     onReasoning: (r: string) => _queueStreamReasoning(aiIndex, r)
   })
 
-  // 收尾前先丢弃未冲刷的缓冲，避免过期增量覆盖最终文本
-  _cancelStreamContent()
-
+  // 收尾前先丢弃未冲刷的缓冲，避免过期增量覆盖最终文本；
+  // 但**用上游已到达的完整文本**收尾（平滑模式下显示是限速的，不能用显示中的截断文本）
   const m = runtimeStore.messages[aiIndex]
   if (m && m.role === 'assistant') {
     // 修：原来这里调用的是不存在的 parseBlock()，紧接着又调用不存在的
     // runtimeStore.forceUpdate() —— 连续两次抛错，导致后面的 setLoading(false)
     // 与落盘都不执行（续写结束后按钮卡在"停止"、内容不保存）。P1.1 / A1
-    _finalizeMessage(aiIndex, (m.content as string) || '')
+    const full = _streamTarget.get(aiIndex) || (m.content as string) || ''
+    _cancelStreamContent()
+    _finalizeMessage(aiIndex, full)
+  } else {
+    _cancelStreamContent()
   }
 
   runtimeStore.setLoading(false)
@@ -895,12 +983,12 @@ async function sendUserMessage(text: string) {
     // 思考走独立通道（P6.1 / D17）
     onReasoning: (r: string) => _queueStreamReasoning(aiIndex, r),
     onComplete: (finalText, segments, wiState) => {
-      _cancelStreamContent()
-      // 统一收尾：文本思考切分 + 显示态正则 + swipes + 思考耗时（P6.2 / P6.4）
-      _finalizeMessage(aiIndex, finalText)
-      runtimeStore.setLoading(false)
-      worldInfoState.value = wiState
-      _persistConversation()
+      // 平滑模式下等剩余文本按节奏释放完再收尾（否则最后一帧会突然补全一大段）
+      _scheduleFinalize(aiIndex, finalText, () => {
+        runtimeStore.setLoading(false)
+        worldInfoState.value = wiState
+        _persistConversation()
+      })
     },
     onError: (err) => {
       _cancelStreamContent()
@@ -1001,12 +1089,12 @@ async function regenerateSwipe(messageIndex: number) {
     // 思考走独立通道（P6.1 / D17）
     onReasoning: (r: string) => _queueStreamReasoning(messageIndex, r),
     onComplete: (finalText, segments, wiState) => {
-      _cancelStreamContent()
-      // 统一收尾（P6.2 / P6.4）：与发送路径同一套逻辑
-      _finalizeMessage(messageIndex, finalText)
-      runtimeStore.setLoading(false)
-      worldInfoState.value = wiState
-      _persistConversation()
+      // 同上：平滑模式下等文本释放完再收尾
+      _scheduleFinalize(messageIndex, finalText, () => {
+        runtimeStore.setLoading(false)
+        worldInfoState.value = wiState
+        _persistConversation()
+      })
     },
     onError: (err) => {
       _cancelStreamContent()

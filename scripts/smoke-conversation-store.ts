@@ -207,6 +207,33 @@ async function checkReasoningSplit() {
   check('模板为空时视为未启用', emptyTmpl.content === '前面。 thinkingx' && emptyTmpl.reasoning === '', emptyTmpl)
 }
 
+// ═══════════════════════════════════════════════════════════
+// 本轮修复：台词必须保留引号 + 平滑输出速率算法
+// ═══════════════════════════════════════════════════════════
+async function checkFixes() {
+  const { applyRegexScripts } = await import('../src/engine/RegexScriptEngine')
+  const { createSystemRegexScripts } = await import('../src/engine/systemRegex')
+  const { nextShownLength, charsPerFrame } = await import('../src/utils/streamPacing')
+
+  console.log('\n[11] 台词引号必须保留（用户实测反馈）')
+  const out = applyRegexScripts('她握紧了刀。“我不会退。”她说。', createSystemRegexScripts(), 0, { isMarkdown: true })
+  check('成对引号被保留', out.includes('<span class="say">“我不会退。”</span>'), out)
+  const outOpen = applyRegexScripts('她说：“我不会退', createSystemRegexScripts(), 0, { isMarkdown: true })
+  check('未闭合时保留开引号', outOpen.includes('<span class="say">“我不会退</span>'), outOpen)
+  const outCorner = applyRegexScripts('「这是一句足够长的台词。」', createSystemRegexScripts(), 0, { isMarkdown: true })
+  check('直角引号也保留', outCorner.includes('<span class="say">「这是一句足够长的台词。」</span>'), outCorner)
+  const shortOut = applyRegexScripts('他说：“好”然后走了。', createSystemRegexScripts(), 0, { isMarkdown: true })
+  check('短引用仍不包装（门槛未被破坏）', !shortOut.includes('class="say"'), shortOut)
+
+  console.log('\n[12] 平滑输出速率算法')
+  check('80 字/秒 @33ms ≈ 每帧 3 字', charsPerFrame(80, 33) === 3, charsPerFrame(80, 33))
+  check('每帧至少 1 字', charsPerFrame(1, 33) === 1, charsPerFrame(1, 33))
+  check('速率非法 = 不限制', charsPerFrame(0, 33) === Number.MAX_SAFE_INTEGER, charsPerFrame(0, 33))
+  check('推进受限速约束', nextShownLength(0, 100, 80, 33) === 3, nextShownLength(0, 100, 80, 33))
+  check('到达末尾即停（不越界）', nextShownLength(99, 100, 80, 33) === 100, nextShownLength(99, 100, 80, 33))
+  check('速率非法时直接放行全文', nextShownLength(0, 100, 0, 33) === 100, nextShownLength(0, 100, 0, 33))
+}
+
 /**
  * 最小 fake IndexedDB —— 只实现本项目 adapter 用到的那一小块 API
  * （open / transaction / objectStore.get|put|delete|getAllKeys / oncomplete）。
@@ -278,6 +305,7 @@ function _installFakeIndexedDB() {
 
 main()
   .then(() => checkReasoningSplit())
+  .then(() => checkFixes())
   .then(() => {
     console.log(`\n最终结果：pass=${pass} fail=${fail}`)
     if (fail > 0) process.exit(1)

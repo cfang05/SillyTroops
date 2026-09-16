@@ -55,12 +55,12 @@ function openRulePattern(openQuote: string, closeQuote: string): string {
   return `${openQuote}([^${closeQuote}]+)$`
 }
 
-function sayRule(id: string, name: string, findRegex: string): RegexScript {
+function sayRule(id: string, name: string, findRegex: string, replaceString: string): RegexScript {
   return {
     id,
     scriptName: name,
     findRegex,
-    replaceString: `<span class="${DIALOGUE_CLASS}">$1</span>`,
+    replaceString,
     trimStrings: [],
     placement: [AI_OUTPUT],
     disabled: false,
@@ -70,6 +70,16 @@ function sayRule(id: string, name: string, findRegex: string): RegexScript {
     runOnEdit: true,
     substituteRegex: 0
   }
+}
+
+/** 成对引号：**保留引号本身**包进 span（引号也一起变金色，见用户反馈） */
+function pairReplace(open: string, close: string): string {
+  return `<span class="${DIALOGUE_CLASS}">${open}$1${close}</span>`
+}
+
+/** 未闭合兜底：只保留已经出现的那一侧引号 */
+function openReplace(open: string): string {
+  return `<span class="${DIALOGUE_CLASS}">${open}$1</span>`
 }
 
 /**
@@ -83,22 +93,26 @@ export function createSystemRegexScripts(): RegexScript[] {
     sayRule(
       'sys_dialogue_cn',
       '台词识别（中文双引号，成对）',
-      `“(${meaningful('”')})”`
+      `“(${meaningful('”')})”`,
+      pairReplace('“', '”')
     ),
     sayRule(
       'sys_dialogue_cn_open',
       '台词识别（中文双引号，未闭合兜底）',
-      openRulePattern('“', '”')
+      openRulePattern('“', '”'),
+      openReplace('“')
     ),
     sayRule(
       'sys_dialogue_corner',
       '台词识别（直角引号，成对）',
-      `「(${meaningful('」')})」`
+      `「(${meaningful('」')})」`,
+      pairReplace('「', '」')
     ),
     sayRule(
       'sys_dialogue_corner_open',
       '台词识别（直角引号，未闭合兜底）',
-      openRulePattern('「', '」')
+      openRulePattern('「', '」'),
+      openReplace('「')
     )
   ]
 }
