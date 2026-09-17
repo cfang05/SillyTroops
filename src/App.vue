@@ -1,6 +1,8 @@
 <script>
 import accountManager from './utils/account/account-manager.js'
 import userManager from './utils/account/userManager.js'
+import conversationManager from './utils/account/conversationManager.js'
+import { migrateForeignUserKeys } from './utils/storage/cachedStore'
 
 export default {
   // uni-app 用 globalData 挂载到 getApp() 上
@@ -21,6 +23,25 @@ export default {
     // —— 活跃时长统计因此一直是坏的（已实测确认）。
     userManager.ensureAdminSeed()
     this.loadOpenid()
+    // ── 全账号旧档一次性迁移（D20）──
+    // 本地存储是**全 origin 共享**的，键名里刻着账号（u_{uid}_…），而 cachedStore/对话的
+    // 常规 hydrate 只扫"当前登录账号"的键 → 同一台设备上其他账号的角色卡/世界书/预设/对话
+    // 会一直躺在 5MB 的本地存储里（既没迁走、也没被导出排除），是这台设备上最脆弱的一份数据。
+    // 这里在启动时（不论谁登录、哪怕是游客态）把它们一并搬进 IndexedDB：写入成功才删本地副本。
+    // 刻意**不 await、也不调 conversationManager.init()** —— 后者会绑定"当前账号"的列表缓存，
+    // 而此刻可能还没登录；迁移本身幂等，失败下次启动会重试，不影响首屏。
+    //
+    // 注意：角色卡/预设那几个 store 是**页面加载时才注册**的（createCachedStore 在模块求值时
+    // 执行），所以启动这一刻 _registry 往往是空的、这次调用可能空转 —— 真正兜住的是
+    // cachedStore 里"每次 hydrate 结束后再扫一次"的钩子（见 _doHydrate 的 ③）。这里保留调用，
+    // 是为了覆盖"启动前已经注册过"的场景（例如小程序端/热重载）。
+    try {
+      migrateForeignUserKeys().catch(e => console.warn('[App] 跨账号迁移（角色卡/预设/Persona）失败:', e))
+      Promise.resolve(conversationManager.migrateForeignLegacy())
+        .catch(e => console.warn('[App] 跨账号迁移（对话存档）失败:', e))
+    } catch (e) {
+      console.warn('[App] 跨账号迁移启动失败:', e)
+    }
     // ⚠️ 这里刻意**不调用** this.checkUserLogin()。
     // 入口页 pages/brand/brand 是面向未登录访客的品牌落地页（点击才去登录），
     // 在 onLaunch 里无条件跳转会让落地页根本看不到（brand-spec §7）。
@@ -143,6 +164,11 @@ export default {
         // mode='replace' 时**必须**带 redirect：否则登录页会走 navigateBack 分支，
         // 而那条路径回的是"onLoad 已提前 return、没初始化完"的半残页面。
         // 所以取不到当前路由时退化成回首页，宁可去首页也不能回半残页面。
+        //
+        // ⚠️ 这里只做"是不是本站页面路径"的一致性检查，**不在这一层解码**：
+        // H5 的 navigateTo 会把它收到的 query 值再编码一层，所以 address bar 上最终是
+        // redirect=%252Fpages%252F…（两层）。"要解几层"这个知识只放在登录页一处
+        // （login.vue 的 onLoad 里反复解码到稳定），否则两边各解一次会互相抵消或重复解。
         let target = ''
         if (mode === 'replace') {
           target = (redirect && redirect.indexOf('/pages/') === 0) ? redirect : '/pages/index/index'
@@ -478,4 +504,20 @@ uni-app {
   max-width: 480px;
   margin: 0 auto;
 }
+
+/* H5：修复 uni-input / uni-textarea 的**真实输入框点不进去**（表现为"这个框没法输入"）。
+   根因：框架注入的全局 `user-select: none` 会被继承到组件内部的真实 <input>/<textarea>，
+   部分移动端浏览器因此无法通过点击聚焦；另外 uni-input 默认行高偏小、点击热区不足。
+   历史处理：login.vue 与 persona/index.vue 各自打过补丁（本项目实测有效），但**其它页面漏了**
+   —— 设置页、角色卡编辑、预设编辑等仍然点不进去。这里做成**全局规则**（框架内部类名稳定：
+   `.uni-input-input` / `.uni-textarea-textarea`），一次覆盖全站，不必逐页重复。
+   仅 H5 需要（小程序端没有这层内部元素）。 */
+/* #ifdef H5 */
+.uni-input-input,
+.uni-textarea-textarea {
+  -webkit-user-select: text !important;
+  user-select: text !important;
+  cursor: text !important;
+}
+/* #endif */
 </style>

@@ -25,7 +25,12 @@ function _activeKey() { return scopedKey('active_persona_id'); }
 /** P5.3：Persona（含头像 base64）改存 IndexedDB；对外同步 API 不变 */
 const _store = createCachedStore({
   name: 'persona',
-  match: function (k) { return k === _listKey() || k === _activeKey(); }
+  match: function (k) { return k === _listKey() || k === _activeKey(); },
+  // D20 跨账号迁移：按"键名里刻着的 uid"认领其他账号遗留的 Persona
+  uidOf: function (k) {
+    var m = k.match(/^u_(.+)_(?:personas|active_persona_id)$/);
+    return m ? m[1] : null;
+  }
 });
 
 function getAll() {

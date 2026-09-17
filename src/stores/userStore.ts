@@ -15,9 +15,17 @@ export interface UserInfo {
   isAdmin: boolean
   isTest: boolean
   createdAt: number
+  // 等级/经验：服务端权威（跨设备同步 + 评论里显示他人等级要用）。
+  // 老服务端不返回时为 undefined，此时以本地 user_level_{id} 缓存为准。
+  level?: number
+  xp?: number
 }
 
 // 等级称号映射表（1-20级）
+//
+// ⚠️ 这张表与 src/pages/cardpool/utils/level-names.js 里的 LEVEL_NAMES **必须一致**：
+// 卡池评论列表用那份（纯展示，不依赖 pinia），这里这份供首页/经验条使用。
+// 改称号时两处一起改。
 const LEVEL_NAMES: Record<number, string> = {
   1: '新手旅人',
   2: '逐光者',
@@ -117,25 +125,56 @@ export const useUserStore = defineStore('user', {
       try {
         const userId = this.currentUser?.id
         if (!userId) return
-        
+
         const key = `user_level_${userId}`
-        const data = storage.get(key)
-        
-        if (data) {
-          this.level = data.level || 1
-          this.xp = data.xp || 0
-        } else {
-          // 首次加载：管理员沿用原有的 15 级，普通账号从 1 级 0 经验开始
-          const isAdmin = !!userManager.isAdmin()
-          this.level = isAdmin ? 15 : 1
-          this.xp = 0
+        const local = storage.get(key)
+        const localLevel = local && Number.isFinite(Number(local.level)) ? Number(local.level) : null
+        const localXp = local && Number.isFinite(Number(local.xp)) ? Number(local.xp) : null
+
+        // 服务端等级是权威（跨设备同步 + 评论里要显示他人等级），本地只是一份缓存。
+        // serverLevel 为 null 表示老服务端没返回该字段 —— 这时完全按本地走，
+        // 不能把它当成 0 级。
+        const serverLevel = this.currentUser && this.currentUser.level !== undefined ? Number(this.currentUser.level) : null
+        const serverXp = this.currentUser && this.currentUser.xp !== undefined ? Number(this.currentUser.xp) : null
+
+        if (serverLevel !== null) {
+          // 服务端已经知道这个账号的等级：以它为准
+          this.level = serverLevel
+          this.xp = serverXp === null ? 0 : serverXp
+          // 本地缓存跟上，离线时用
           this.saveLevelData()
+          return
         }
+
+        if (localLevel !== null) {
+          // 老服务端/首次迁移：本地有等级但服务端还不知道 → 采用本地并推上去
+          this.level = localLevel
+          this.xp = localXp === null ? 0 : localXp
+          this.pushProgression()
+          return
+        }
+
+        // 两边都没有：管理员沿用 15 级，普通账号从 1 级 0 经验开始；建号后立刻同步
+        const isAdmin = !!userManager.isAdmin()
+        this.level = isAdmin ? 15 : 1
+        this.xp = 0
+        this.saveLevelData()
+        this.pushProgression()
       } catch (error) {
         console.error('[UserStore] 加载等级数据失败:', error)
         this.level = 1
         this.xp = 0
       }
+    },
+
+    /**
+     * 把当前等级/经验同步到服务端（异步、失败不影响本地）。
+     * 由 loadLevelData / addXp / 昵称变更后调用。
+     */
+    pushProgression() {
+      if (!this.currentUser) return
+      // 不 await：等级同步是后台动作，不该阻塞页面渲染或升级动画
+      userManager.syncProgression({ level: this.level, xp: this.xp })
     },
 
     /** 保存等级数据到 localStorage */
@@ -176,8 +215,9 @@ export const useUserStore = defineStore('user', {
         console.log(`🎉 升级！当前等级: ${this.level}，称号: ${getLevelName(this.level)}`)
       }
 
-      // 保存到 localStorage
+      // 保存到 localStorage（离线缓存）+ 同步到服务端（评论里要显示等级）
       this.saveLevelData()
+      this.pushProgression()
 
       return levelUps
     }

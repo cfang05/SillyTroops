@@ -16,7 +16,7 @@ const crypto = require('crypto');
 const auth = require('./auth');
 
 /** 账号公开字段（永远不要 SELECT 出 password_hash 给接口层用） */
-const PUBLIC_COLUMNS = 'id, username, nickname, is_admin, is_test, token_version, legacy_local_id, created_at';
+const PUBLIC_COLUMNS = 'id, username, nickname, is_admin, is_test, token_version, legacy_local_id, level, xp, created_at';
 
 /**
  * admin 的固定 id：与迁移前本地账号（sillytroops_users 里的 user_admin）保持一致。
@@ -24,6 +24,31 @@ const PUBLIC_COLUMNS = 'id, username, nickname, is_admin, is_test, token_version
  */
 const ADMIN_USERNAME = 'admin';
 const ADMIN_ID = 'user_admin';
+
+/**
+ * 管理员建号时的初始等级。沿用前端 userStore 的历史行为：
+ * 管理员首次进入是 15 级（'旅团长'），普通账号是 1 级。
+ */
+const ADMIN_INITIAL_LEVEL = 15;
+
+/** 等级区间：前端 LEVEL_NAMES 只定义了 1-20，越界会退化成"不可名状者"，所以夹住 */
+const MIN_LEVEL = 0;
+const MAX_LEVEL = 999;
+const MAX_XP = 1000000000;
+
+/** 夹取等级（接口层兜底，防止客户端算错一个数把全站评论显示弄花） */
+function normalizeLevel(v) {
+  const n = Math.trunc(Number(v));
+  if (!Number.isFinite(n)) return 1;
+  return Math.min(MAX_LEVEL, Math.max(MIN_LEVEL, n));
+}
+
+/** 夹取经验值 */
+function normalizeXp(v) {
+  const n = Math.trunc(Number(v));
+  if (!Number.isFinite(n)) return 0;
+  return Math.min(MAX_XP, Math.max(0, n));
+}
 
 /** 生成与历史格式一致的字符串 id：user_<base36 时间戳><6位随机> */
 function generateUserId() {
@@ -44,7 +69,10 @@ function toPublicUser(row) {
     nickname: row.nickname || '',
     isAdmin: isAdmin,
     isTest: isTest,                  // 数据库里的原始标记（监控页开关用）
-    canUseTestApi: isAdmin || isTest // 「能用内置测试 API」的最终判定
+    canUseTestApi: isAdmin || isTest, // 「能用内置测试 API」的最终判定
+    // 等级与经验：跨设备同步，也是评论里显示"评论者等级"的数据来源
+    level: row.level == null ? 1 : Number(row.level),
+    xp: row.xp == null ? 0 : Number(row.xp)
   };
 }
 
@@ -68,17 +96,19 @@ async function findByLegacyLocalId(pool, legacyLocalId) {
 /**
  * 创建账号
  * @param {object} pool
- * @param {{username:string, password:string, nickname?:string, isAdmin?:boolean, isTest?:boolean, legacyLocalId?:string, id?:string}} data
+ * @param {{username:string, password:string, nickname?:string, isAdmin?:boolean, isTest?:boolean, legacyLocalId?:string, id?:string, level?:number, xp?:number}} data
  */
 async function createAccount(pool, data) {
   const hashed = await auth.hashPassword(data.password);
   const id = data.id || generateUserId();
   const now = new Date();
+  // 没显式给等级时：管理员 15 级（沿用前端历史行为），普通账号 1 级
+  const level = data.level == null ? (data.isAdmin ? ADMIN_INITIAL_LEVEL : 1) : normalizeLevel(data.level);
   const res = await pool.query(
     `INSERT INTO accounts
        (id, username, nickname, password_hash, salt, hash_algo, hash_n, hash_r, hash_p,
-        is_admin, is_test, token_version, legacy_local_id, created_at, updated_at)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14)
+        is_admin, is_test, token_version, legacy_local_id, created_at, updated_at, level, xp)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,0,$12,$13,$14,$15,$16)
      RETURNING *`,
     [
       id,
@@ -95,7 +125,9 @@ async function createAccount(pool, data) {
       data.isTest === undefined ? true : !!data.isTest,
       data.legacyLocalId || null,
       now,
-      now
+      now,
+      level,
+      normalizeXp(data.xp)
     ]
   );
   return res.rows[0];
@@ -108,6 +140,65 @@ async function updateNickname(pool, id, nickname) {
     [id, String(nickname == null ? '' : nickname).slice(0, 40), new Date()]
   );
   return res.rows[0] || null;
+}
+
+/**
+ * 更新等级 / 经验（跨设备同步用）。
+ *
+ * 语义：**客户端推什么就存什么**（不是 GREATEST）。
+ * 因为前端的等级是由 xp 算出来的推导值，用户可能因为规则调整或数据重置而合法降级；
+ * 用 max 会让等级只增不减、永远回不去，属于隐性 bug。
+ *
+ * @param {object} pool
+ * @param {string} id 账号 id
+ * @param {{level?:number, xp?:number}} data 只更新传入的字段
+ */
+async function updateProgression(pool, id, data) {
+  const sets = [];
+  const params = [id];
+  if (data && data.level !== undefined && data.level !== null) {
+    params.push(normalizeLevel(data.level));
+    sets.push('level = $' + params.length);
+  }
+  if (data && data.xp !== undefined && data.xp !== null) {
+    params.push(normalizeXp(data.xp));
+    sets.push('xp = $' + params.length);
+  }
+  if (!sets.length) return findById(pool, id);
+
+  params.push(new Date());
+  const res = await pool.query(
+    'UPDATE accounts SET ' + sets.join(', ') + ', updated_at = $' + params.length + ' WHERE id = $1 RETURNING *',
+    params
+  );
+  return res.rows[0] || null;
+}
+
+/**
+ * 批量取多个账号的等级（评论列表用）。
+ *
+ * 为什么要批量而不是逐条查：一条评论一次查询就是典型的 N+1 —— 一张热门卡 50 条评论
+ * 就是 50 次往返（Neon 上还要算冷启动与连接数）。这里一次 IN 查询拿完。
+ *
+ * @returns {Promise<Record<string, number>>} { userId: level }；查不到的 id 不在结果里
+ */
+async function getLevelsByUserIds(pool, userIds) {
+  const ids = Array.from(new Set((userIds || []).filter((v) => typeof v === 'string' && v)));
+  if (!ids.length) return {};
+  // ⚠️ 这里刻意手写 `IN ($1,$2,…)` 而不是 `= ANY($1)` 或 `ANY($1::text[])`：
+  // pg-mem（本地冒烟测试用的内存版 Postgres）对数组参数的支持不可靠 ——
+  // 两种写法都不报错但**返回空结果**，于是等级全部退回发表时的快照值，
+  // 表现为"实时等级静默失效"（两个坑都实测踩过）。
+  // 显式占位符在真实 PG 与 pg-mem 上行为完全一致。
+  // 上限：一张卡最多 500 条评论（见 cardpool.js 的 MAX_COMMENTS_PER_CARD），
+  // 去重后通常远小于此，SQL 长度无压力。
+  const placeholders = ids.map((_, i) => '$' + (i + 1)).join(', ');
+  const res = await pool.query('SELECT id, level FROM accounts WHERE id IN (' + placeholders + ')', ids);
+  const out = {};
+  for (const row of res.rows) {
+    out[row.id] = row.level == null ? 1 : Number(row.level);
+  }
+  return out;
 }
 
 /** 管理员开关某个账号的测试权限 */
@@ -242,14 +333,15 @@ async function reconcileAdminId(pool) {
       new Date()
     ]);
 
-    // 2) 插入固定 id 的新行（复制原行的密码哈希与权限）
+    // 2) 插入固定 id 的新行（复制原行的密码哈希与权限，等级/经验一并带过去，
+    //    否则管理员迁移后会莫名降到 1 级）
     //    显式 ::timestamptz：INSERT ... SELECT 的参数无法从目标列推断类型（PG 与 pg-mem 行为差异）
     await run(
       `INSERT INTO accounts
          (id, username, nickname, password_hash, salt, hash_algo, hash_n, hash_r, hash_p,
-          is_admin, is_test, token_version, legacy_local_id, created_at, updated_at)
+          is_admin, is_test, token_version, legacy_local_id, created_at, updated_at, level, xp)
        SELECT $1, $2, nickname, password_hash, salt, hash_algo, hash_n, hash_r, hash_p,
-              is_admin, is_test, token_version, legacy_local_id, created_at, $3::timestamptz
+              is_admin, is_test, token_version, legacy_local_id, created_at, $3::timestamptz, level, xp
          FROM accounts WHERE id = $4`,
       [ADMIN_ID, ADMIN_USERNAME, new Date(), admin.id]
     );
@@ -280,6 +372,10 @@ module.exports = {
   PUBLIC_COLUMNS: PUBLIC_COLUMNS,
   ADMIN_USERNAME: ADMIN_USERNAME,
   ADMIN_ID: ADMIN_ID,
+  ADMIN_INITIAL_LEVEL: ADMIN_INITIAL_LEVEL,
+  MAX_LEVEL: MAX_LEVEL,
+  normalizeLevel: normalizeLevel,
+  normalizeXp: normalizeXp,
   generateUserId: generateUserId,
   toPublicUser: toPublicUser,
   findByUsername: findByUsername,
@@ -287,6 +383,8 @@ module.exports = {
   findByLegacyLocalId: findByLegacyLocalId,
   createAccount: createAccount,
   updateNickname: updateNickname,
+  updateProgression: updateProgression,
+  getLevelsByUserIds: getLevelsByUserIds,
   setTestFlag: setTestFlag,
   setPassword: setPassword,
   usernameExists: usernameExists,

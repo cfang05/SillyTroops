@@ -18,12 +18,20 @@ export interface ChatMessage {
   /** 当前显示的是 swipes 中的第几个，默认 0 */
   swipe_id?: number
   /**
-   * 思考内容（D17 / P6.1）：来自上游 `reasoning_content` 独立字段，
-   * 或从正文里按前后缀切分出来的文本思考（P6.4）。
+   * 思考内容（D17 / P6.1）：来自**上游** `reasoning_content` / `reasoning` 独立字段。
    * **绝不参与上下文拼接**（toChatHistory 只取 role/content），也不会被当作正文渲染。
    */
   reasoning?: string
-  /** 思考的"显示态"文本（应用过 REASONING 正则）；与 segments 一样属于派生数据，不入档 */
+  /**
+   * 从**正文**里用定界符切出来的思考（D21 / P6.4）：开关打开时自动识别（硬编码定界符表），
+   * 切出的部分已从 `content` 中删除。它与 `reasoning` 是**并列的两份来源**，
+   * 折叠块里显示的是两者的并集（见 `combineReasoning`）。属于内容，**要入档**。
+   */
+  reasoningFromText?: string
+  /**
+   * 思考的"显示态"文本（应用过 REASONING 正则）= `reasoning` 与 `reasoningFromText` 的并集；
+   * 与 segments 一样属于派生数据，不入档，读档时重算。
+   */
   reasoningDisplay?: string
   /** 思考是否已结束（用于显示"已思考 N 秒"而不是"正在思考"） */
   reasoningDone?: boolean

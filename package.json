@@ -10,12 +10,17 @@
     "start": "node server.js",
     "migrate": "node migrate.js",
     "smoke:accounts": "node scripts/smoke-accounts.js",
-    "smoke:store": "node scripts/smoke-conversation-store.js"
+    "smoke:store": "node scripts/smoke-conversation-store.js",
+    "smoke:cardpool": "node scripts/smoke-cardpool.js",
+    "smoke:cardpool-utils": "node scripts/smoke-cardpool-utils.mjs",
+    "test:e2e-cardpool": "node scripts/e2e-cardpool.mjs",
+    "test:e2e-levels": "node scripts/e2e-cardpool-levels.mjs"
   },
   "engines": {
     "node": ">=18"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "^3.1134.0",
     "dompurify": "^3.1.6",
     "express": "^4.22.2",
     "http-proxy-middleware": "^2.0.10",

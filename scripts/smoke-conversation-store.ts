@@ -30,6 +30,9 @@ function msg(i: number) {
   return { role: i % 2 === 0 ? 'user' : 'assistant', content: '消息' + i, swipes: ['消息' + i], swipe_id: 0 }
 }
 
+/** fake IndexedDB 的句柄（main() 里装上，后续用例共享） */
+let fakeRef: any = null
+
 async function main() {
   console.log('\n[1] 预置一条 v1 老档（250 条消息）+ 旧列表键')
   const legacyMessages = Array.from({ length: 250 }, (_, i) => msg(i))
@@ -121,6 +124,7 @@ async function main() {
   console.log('\n[9] cachedStore：IDB 迁移 + 同步读回退 + 清理本地副本')
 
   const fake = _installFakeIndexedDB()
+  fakeRef = fake
 
   // 注意：要在装 fake 之后再创建 store（适配器是懒创建的）
   const { createCachedStore } = await import('../src/utils/storage/cachedStore')
@@ -177,34 +181,60 @@ async function main() {
 }
 
 // ═══════════════════════════════════════════════════════════
-// P6.4：文本编码思考（COT）的切分
+// P6.4 / D21：正文思考定界符的**自动识别**（用户不再配置前后缀）
 // ═══════════════════════════════════════════════════════════
 async function checkReasoningSplit() {
-  const { splitReasoning } = await import('../src/engine/ReasoningHandler')
+  const { splitReasoning, combineReasoning, defaultReasoningConfig, REASONING_DELIMITERS } =
+    await import('../src/engine/ReasoningHandler')
 
-  console.log('\n[10] splitReasoning：文本思考切分（含流式未闭合）')
-  const on = { enabled: true, prefix: ' thinking', suffix: ' response' }
-  const off = { enabled: false, prefix: ' thinking', suffix: ' response' }
+  console.log('\n[10] 思考解析（D21：只留开关 + 硬编码定界符自动识别）')
+  const on = { enabled: true }
+  const off = { enabled: false }
 
-  const d = splitReasoning('正文。 thinking我在想 response', off)
-  check('未启用时原样返回', d.reasoning === '' && d.content === '正文。 thinking我在想 response', d)
+  // 防回归：旧版本的默认值 suffix 是空串，导致"打开开关却什么都不发生"
+  check('默认配置是关闭的', defaultReasoningConfig().enabled === false)
+  check('硬编码定界符表非空', REASONING_DELIMITERS.length > 0, REASONING_DELIMITERS.length)
 
-  const np = splitReasoning('没有思考的正文', on)
-  check('无前缀时不动', np.reasoning === '' && np.content === '没有思考的正文', np)
+  const d = splitReasoning('正文。<think>我在想</think>', off)
+  check('未启用时原样返回（含定界符）', d.reasoning === '' && d.content === '正文。<think>我在想</think>', d)
 
-  const full = splitReasoning('前面。 thinking推理内容 response后面。', on)
-  check('成对：切出思考', full.reasoning === '推理内容', full)
-  check('成对：正文去掉思考块', full.content === '前面。后面。', full)
-  check('成对：标记为已完成', full.incomplete === false, full)
+  const np = splitReasoning('没有定界符的正文', on)
+  check('无定界符时不动', np.reasoning === '' && np.content === '没有定界符的正文', np)
 
-  // 关键：流式中间态（只有前缀、后缀还没到）
-  const partial = splitReasoning('前面。 thinking推理还在继', on)
+  const full = splitReasoning('前面。<think>推理内容</think>后面。', on)
+  check('自动识别 <think>：切出思考', full.reasoning === '推理内容', full)
+  check('自动识别 <think>：正文去掉整段（含标记）', full.content === '前面。后面。', full)
+  check('已闭合：incomplete = false', full.incomplete === false, full)
+
+  const ana = splitReasoning('<analysis>想了 B</analysis>答案 B', on)
+  check('自动识别 <analysis>（无需配置）', ana.reasoning === '想了 B' && ana.content === '答案 B', ana)
+
+  const cn = splitReasoning('<思考>想了 C</思考>答案 C', on)
+  check('自动识别中文尖括号 <思考>', cn.reasoning === '想了 C' && cn.content === '答案 C', cn)
+
+  const br = splitReasoning('[思考]想了 D[/思考]答案 D', on)
+  check('自动识别方括号 [思考]', br.reasoning === '想了 D' && br.content === '答案 D', br)
+
+  const two = splitReasoning('A<analysis>x</analysis>B<think>y</think>C', on)
+  check('多组同时出现时取开头最早的那组', two.reasoning === 'x' && two.content === 'AB<think>y</think>C', two)
+
+  // 关键：流式中间态（只有开标记、闭标记还没到）
+  const partial = splitReasoning('前面。<think>推理还在继', on)
   check('未闭合：后半段算思考', partial.reasoning === '推理还在继', partial)
-  check('未闭合：正文只保留前缀之前', partial.content === '前面。', partial)
-  check('未闭合：标记 incomplete', partial.incomplete === true, partial)
+  check('未闭合：正文只保留开标记之前', partial.content === '前面。', partial)
+  check('未闭合：incomplete = true', partial.incomplete === true, partial)
 
-  const emptyTmpl = splitReasoning('前面。 thinkingx', { enabled: true, prefix: '', suffix: '' })
-  check('模板为空时视为未启用', emptyTmpl.content === '前面。 thinkingx' && emptyTmpl.reasoning === '', emptyTmpl)
+  // 向后兼容：旧版本存过 { enabled, prefix, suffix }，新代码只认 enabled
+  const legacy = splitReasoning('前面。<think>x</think>后面', { enabled: true, prefix: '', suffix: '' } as any)
+  check('旧配置（带空前后缀）也能自动识别', legacy.reasoning === 'x' && legacy.content === '前面。后面', legacy)
+
+  console.log('\n[10b] 折叠块显示两份思考的并集（combineReasoning）')
+  check('只有上游思考', combineReasoning('原生', '') === '原生')
+  check('只有正文切出的思考', combineReasoning('', '切出') === '切出')
+  check('两份都有 → 都保留（原生在前）', combineReasoning('原生', '切出') === '原生\n\n切出', combineReasoning('原生', '切出'))
+  check('内容完全重复时不显示两遍', combineReasoning('同一段', '同一段') === '同一段')
+  check('一方包含另一方时只留更长的', combineReasoning('原始思考', '原始思考加上更多') === '原始思考加上更多')
+  check('都为空的边界', combineReasoning('', '') === '')
 }
 
 // ═══════════════════════════════════════════════════════════
@@ -232,6 +262,138 @@ async function checkFixes() {
   check('推进受限速约束', nextShownLength(0, 100, 80, 33) === 3, nextShownLength(0, 100, 80, 33))
   check('到达末尾即停（不越界）', nextShownLength(99, 100, 80, 33) === 100, nextShownLength(99, 100, 80, 33))
   check('速率非法时直接放行全文', nextShownLength(0, 100, 0, 33) === 100, nextShownLength(0, 100, 0, 33))
+}
+
+// ═══════════════════════════════════════════════════════════
+// D20：全账号旧档一次性迁移（跨账号迁移）
+//
+// 为什么必须断言：这一步会**按 uid 写到别人名下**，写错了就是账号之间串数据；
+// 而且它同时修了一个"迁移覆盖已有列表"的顺序 bug，都属于"错了就丢档"的级别。
+// 注：此处 conversationManager 的适配器在 main() 早期已绑定为"本地存储"（那时还没装
+// fake IndexedDB），所以这一段的 key 断言看的是本地存储 —— 迁移动用的写入逻辑与
+// IndexedDB 路径完全同一套，介质差异已由 [9] 的 cachedStore 用例覆盖。
+// ═══════════════════════════════════════════════════════════
+async function checkMigration() {
+  // main() 末尾那次"账号切换"触发的 hydrate 是**未被 await 的后台任务**，它的异步尾巴
+  // 会在下面几个 await 之间跑完，并按自己的 match 规则搬走测试夹具（表现为"键莫名被删"）。
+  // 这里先把所有已注册 store 的 hydrate 排干，保证用例之间没有在飞的任务。
+  const cached = await import('../src/utils/storage/cachedStore')
+  for (const s of cached.listCachedStores()) {
+    try { await s.ensureReady() } catch (e) { /* ignore */ }
+  }
+
+  console.log('\n[13] 跨账号迁移：其他账号的 v1 存档搬进它自己的 v2 键')
+  store.set('u_user_other_conversation_list', [
+    { cardId: 'cx', cardName: '他人老档', updatedAt: 99, messageCount: 120, lastMessagePreview: '' }
+  ])
+  store.set('u_user_other_conversation_cx', {
+    cardId: 'cx', cardName: '他人老档', messages: Array.from({ length: 120 }, (_, i) => msg(i)),
+    worldInfoState: { sticky: {}, cooldown: {}, round: 3 }, updatedAt: 99
+  })
+  const listBefore = conversationManager.getList().map(i => i.cardId).join(',')
+  const r = await conversationManager.migrateForeignLegacy()
+  check('迁移计数 = 1', r.migrated === 1 && r.failed === 0, r)
+  check('写到"他人 uid"名下（不是当前账号）', store.has('u_user_other_conv_cx'))
+  check('没有写到当前账号名下', !store.has('u_guest_conv_cx'))
+  check('分页按 100 条切（100 + 20）',
+    (store.get('u_user_other_conv_cx_p0') || []).length === 100 &&
+    (store.get('u_user_other_conv_cx_p1') || []).length === 20,
+    [store.get('u_user_other_conv_cx_p0')?.length, store.get('u_user_other_conv_cx_p1')?.length])
+  check('header 元信息随迁', store.get('u_user_other_conv_cx').worldInfoState.round === 3)
+  check('他人的对话列表已建立', (store.get('u_user_other_conv_list') || [])[0]?.cardId === 'cx',
+    store.get('u_user_other_conv_list'))
+  check('旧数据键已删', !store.has('u_user_other_conversation_cx'))
+  check('旧列表键已删', !store.has('u_user_other_conversation_list'))
+  check('当前账号列表未被污染', conversationManager.getList().map(i => i.cardId).join(',') === listBefore,
+    conversationManager.getList())
+  check('当前账号存档未被改动', store.has('u_guest_conv_c2'))
+
+  console.log('\n[14] 迁移失败必须保留旧档，且不留"半吊子存档"')
+  store.set('u_user_bad_conversation_list', [{ cardId: 'cy', cardName: '待迁', updatedAt: 5, messageCount: 3 }])
+  store.set('u_user_bad_conversation_cy', {
+    cardId: 'cy', cardName: '待迁', messages: [msg(0), msg(1), msg(2)], updatedAt: 5
+  })
+  const origSet = (globalThis as any).uni.setStorageSync
+  ;(globalThis as any).uni.setStorageSync = (k: string, v: any) => {
+    if (k === 'u_user_bad_conv_cy') throw new Error('模拟 header 写入失败')
+    origSet(k, v)
+  }
+  const r2 = await conversationManager.migrateForeignLegacy()
+  ;(globalThis as any).uni.setStorageSync = origSet
+  check('失败计数 = 1', r2.failed === 1, r2)
+  check('旧档仍在（没丢数据）', store.has('u_user_bad_conversation_cy'))
+  check('header 未写入（header 最后写，不留半吊子）', !store.has('u_user_bad_conv_cy'))
+  check('旧列表键保留（下次还能重试）', store.has('u_user_bad_conversation_list'))
+  const r3 = await conversationManager.migrateForeignLegacy()
+  check('修好后重试成功', r3.migrated === 1, r3)
+  check('重试后旧档已删', !store.has('u_user_bad_conversation_cy'))
+  check('重试后存档完整', store.get('u_user_bad_conv_cy')?.messageCount === 3)
+
+  console.log('\n[15] cachedStore：其他账号的键搬进 IDB，当前账号的留给 hydrate')
+  store.delete('u_u2_card_x') // 清掉 [6] 账号切换用例的残留，避免干扰计数
+  const { createCachedStore, migrateForeignUserKeys } = await import('../src/utils/storage/cachedStore')
+  const foreignStore = createCachedStore({
+    name: 'smokeForeign',
+    dbName: 'smoke_kv2',
+    match: (k: string) => k.indexOf('u_guest_card_') === 0,
+    uidOf: (k: string) => { const m = k.match(/^u_(.+)_card_.+$/); return m ? m[1] : null }
+  })
+  store.set('u_user_other2_card_a', { id: 'a', name: '他人卡片' })
+  store.set('u_guest_card_home', { id: 'home', name: '本账号卡片' })
+  store.set('u_user_other2_card_dup', { v: 1 })
+  await migrateForeignUserKeys()
+  const t2 = fakeRef.dump()['smoke_kv2'] || {}
+  check('他人的键已搬进 IDB', t2['u_user_other2_card_a']?.name === '他人卡片', Object.keys(t2))
+  check('他人键的本地副本已删', !store.has('u_user_other2_card_a'))
+  check('当前账号的键被跳过（留给 hydrate）', store.has('u_guest_card_home'))
+  check('当前账号的键没被写进 IDB', t2['u_guest_card_home'] === undefined)
+  check('不属于任何 store 的键未被动', store.has('u_guest_other_key'))
+  check('内存缓存不含他人数据', foreignStore.get('u_user_other2_card_a') === null)
+  // 两边都有（例如旧版本在迁移之后又写了一份本地副本）→ 保守保留，不删
+  store.set('u_user_other2_card_dup', { v: 2 })
+  const m2 = await migrateForeignUserKeys()
+  check('两边都有时保留本地副本', store.has('u_user_other2_card_dup'))
+  check('kept 计数 = 1', m2.kept === 1, m2)
+
+  console.log('\n[16] init 顺序：迁移不得覆盖已有列表 + 孤儿档也能救回')
+  store.set('u_guest_conv_keep', {
+    schemaVersion: 2, revision: 1, cardId: 'keep', cardName: '保留', updatedAt: 100,
+    messageCount: 2, pageCount: 1, pageSize: 100
+  })
+  store.set('u_guest_conv_keep_p0', [msg(0), msg(1)])
+  store.set('u_guest_conv_list', [{ cardId: 'keep', cardName: '保留', updatedAt: 100, messageCount: 2, lastMessagePreview: '' }])
+  // 孤儿档：有数据键、但列表里没有它（改造前只认列表 → 永远不会被迁移）
+  store.set('u_guest_conversation_orphan', { cardId: 'orphan', cardName: '孤儿档', messages: [msg(0)], updatedAt: 200 })
+  await conversationManager.reload()
+  const ids = conversationManager.getList().map(i => i.cardId).sort()
+  check('已有列表项没被迁移覆盖', ids.indexOf('keep') >= 0, ids)
+  check('孤儿档被救回并进入列表', ids.indexOf('orphan') >= 0, ids)
+  check('孤儿旧键已删', !store.has('u_guest_conversation_orphan'))
+
+  console.log('\n[17] 账号切换：不得把上一个账号的列表/存档给下一个账号看')
+  // 为什么必须断言：scopedKey 让**存档本身**不串号，但列表是内存态（_listCache）；
+  // 换账号后若不作废，页面就会把上一个账号的对话列表渲染给下一个账号（跨账号可见）。
+  const guestIds = conversationManager.getList().map(i => i.cardId)
+  check('前置：guest 自己的列表已就绪', guestIds.indexOf('keep') >= 0, guestIds)
+
+  store.set('sillytroops_current_user_id', 'u2')
+  check('切到 u2 后同步读不到 guest 的列表（宁可空，也不能串号）',
+    conversationManager.getList().length === 0, conversationManager.getList())
+
+  store.set('u_u2_conv_list', [{ cardId: 'z', cardName: 'U2 对话', updatedAt: 999, messageCount: 0, lastMessagePreview: '' }])
+  await conversationManager.init()
+  const u2Ids = conversationManager.getList().map(i => i.cardId)
+  check('重新 init 后读到的是 u2 自己的列表', u2Ids.length === 1 && u2Ids[0] === 'z', u2Ids)
+
+  await conversationManager.save({ cardId: 'z', cardName: 'U2 对话', messages: [msg(0)] })
+  check('u2 的存档写在 u2 名下（不是 guest）',
+    store.has('u_u2_conv_z') && !store.has('u_guest_conv_z'),
+    [...store.keys()].filter(k => k.indexOf('conv_z') > 0))
+
+  store.delete('sillytroops_current_user_id')
+  await conversationManager.init()
+  const backIds = conversationManager.getList().map(i => i.cardId)
+  check('切回 guest 后恢复 guest 自己的列表', backIds.indexOf('keep') >= 0 && backIds.indexOf('z') < 0, backIds)
 }
 
 /**
@@ -304,6 +466,7 @@ function _installFakeIndexedDB() {
 }
 
 main()
+  .then(() => checkMigration())
   .then(() => checkReasoningSplit())
   .then(() => checkFixes())
   .then(() => {

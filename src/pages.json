@@ -60,6 +60,14 @@
       }
     },
     {
+      "path": "pages/cardpool/cardpool",
+      "style": {
+        "navigationStyle": "custom",
+        "backgroundColor": "#1c1712",
+        "backgroundTextStyle": "light"
+      }
+    },
+    {
       "path": "pages/settings/settings",
       "style": {
         "navigationStyle": "custom",

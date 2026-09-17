@@ -28,6 +28,11 @@ const _store = createCachedStore({
   name: 'characterCard',
   match: function (k) {
     return k.indexOf(scopedKey('char_card')) === 0 || k === scopedKey('active_char_card');
+  },
+  // D20 跨账号迁移：角色卡/世界书是本地存储里最大的一块，其他账号遗留的也要能认领
+  uidOf: function (k) {
+    var m = k.match(/^u_(.+)_(?:char_card_.+|active_char_card)$/);
+    return m ? m[1] : null;
   }
 });
 

@@ -58,29 +58,9 @@
         <view class="xp-badge" :style="{ '--badge-color': item.tint }">{{ item.xpReward }}</view>
       </view>
     </view>
-    <view class="tabbar">
-      <view class="tab active" @tap="handleTabTap" data-id="today">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="7.5"/><path d="M10 5.5v4.5l3 2"/></svg>
-        <text>今日</text>
-      </view>
-      <view class="tab" @tap="handleTabTap" data-id="characters">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><rect x="2.5" y="5" width="11" height="10" rx="2"/><path d="M6.5 3.3h9a1.7 1.7 0 0 1 1.7 1.7v7.5"/></svg>
-        <text>角色</text>
-      </view>
-      <view class="tab-center">
-        <view class="fab" @tap="handleFabTap">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 5v10M5 10h10"/></svg>
-        </view>
-      </view>
-      <view class="tab" @tap="handleTabTap" data-id="collect">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M7 3h6l3 4-6 9-6-9 3-4z"/><path d="M3 7h14"/></svg>
-        <text>收藏</text>
-      </view>
-      <view class="tab" @tap="handleTabTap" data-id="profile">
-        <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><circle cx="10" cy="7" r="3.4"/><path d="M4 17c0-3.2 2.7-5 6-5s6 1.8 6 5"/></svg>
-        <text>我的</text>
-      </view>
-    </view>
+    <!-- 全局底部导航栏：样式与跳转逻辑统一收在 components/common/TabBar.vue，
+         "冒险卡池"由 TabBar 内部 navigateTo，其余未实现项在 TabBar 内统一 Toast。 -->
+    <TabBar active="today" @tab="handleTabTap" />
   </view>
 
   <!-- 通知窗口：背景透明，右上角关闭键 -->
@@ -97,8 +77,10 @@
 import { getNavBarHeight } from '../../utils/navbar.js'
 import { useUserStore } from '../../stores/userStore'
 import userManager from '../../utils/account/userManager.js'
+import TabBar from '../../components/common/TabBar.vue'
 
 export default {
+  components: { TabBar },
   data() {
     return {
       statusBarHeight: 0,
@@ -178,15 +160,9 @@ export default {
     handleFabTap() {
       uni.navigateTo({ url: '/pages/session/session' })
     },
-    handleTabTap(e) {
-      const id = e.currentTarget.dataset.id
-      switch (id) {
-        case 'today': break
-        case 'characters': uni.navigateTo({ url: '/pages/characters/index' }); break
-        case 'collect': uni.navigateTo({ url: '/pages/collect/collect' }); break
-        case 'profile': uni.showToast({ title: '功能开发中', icon: 'none', duration: 1500 }); break
-      }
-    },
+    // TabBar 的跳转（含"冒险卡池"navigateTo 与未实现项的 Toast「功能开发中」）
+    // 已统一收在 TabBar.vue 内部；这里只接收 tab 事件，留给后续按页做埋点/联动。
+    handleTabTap(_id) {},
     onMenuItemTap(e) {
       const id = e.currentTarget.dataset.id
       switch (id) {
@@ -549,79 +525,8 @@ export default {
   z-index: 1;
 }
 
-.tabbar {
-  margin-top: auto;
-  height: 110rpx;
-  flex: none;
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-around;
-  padding: 26rpx 16rpx 0;
-  background: oklch(15% 0.012 70 / 0.85);
-  backdrop-filter: blur(18px);
-  -webkit-backdrop-filter: blur(18px);
-  border-top: 1rpx solid var(--border);
-  position: relative;
-  z-index: 30;
-}
-
-.tab {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6rpx;
-  width: 104rpx;
-  padding-top: 2rpx;
-  color: var(--faint);
-  border-radius: 18rpx;
-  transition: color 150ms ease;
-}
-
-.tab svg {
-  width: 34rpx;
-  height: 34rpx;
-}
-
-.tab text {
-  font-size: 19rpx;
-  font-family: var(--font-body);
-  font-weight: 500;
-  letter-spacing: 0.01em;
-}
-
-.tab.active {
-  color: var(--accent);
-}
-
-.tab-center {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  width: 104rpx;
-}
-
-.fab {
-  width: 72rpx;
-  height: 72rpx;
-  border-radius: 24rpx;
-  margin-top: -40rpx;
-  background: linear-gradient(160deg, var(--accent), var(--accent-strong));
-  color: #171104;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 24rpx 52rpx -20rpx oklch(75% 0.14 80 / 0.6), inset 0 2rpx 0 oklch(100% 0 0 / 0.4);
-  transition: transform 160ms ease, filter 160ms ease;
-}
-
-.fab:active {
-  transform: translateY(0) scale(0.94);
-}
-
-.fab svg {
-  width: 30rpx;
-  height: 30rpx;
-}
+/* 底部导航栏样式已迁移到 components/common/TabBar.vue（全局共用一套），
+   这里不再保留 .tabbar/.tab/.fab 的局部副本，避免两处样式各自漂移。 */
 
 .notif-modal {
   position: fixed;

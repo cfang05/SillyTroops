@@ -18,7 +18,12 @@ function ACTIVE_KEY() { return scopedKey('llm_active_preset_id') }
  */
 const _store = createCachedStore({
   name: 'preset',
-  match: (k: string) => k === STORAGE_KEY() || k === ACTIVE_KEY()
+  match: (k: string) => k === STORAGE_KEY() || k === ACTIVE_KEY(),
+  // D20 跨账号迁移：其他账号遗留的预设也要能认领（键名里本来就刻着 uid）
+  uidOf: (k: string) => {
+    const m = k.match(/^u_(.+)_llm_(?:presets|active_preset_id)$/)
+    return m ? m[1] : null
+  }
 })
 
 export const usePresetStore = defineStore('preset', {

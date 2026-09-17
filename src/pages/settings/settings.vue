@@ -155,25 +155,14 @@
           <switch :checked="thinkingEnabled" @change="onToggleThinking" color="#c9a84a" />
         </view>
         <view class="switch-item">
-          <text class="switch-label">解析正文里的思考（前后缀定界符）</text>
+          <text class="switch-label">解析正文里的思考（自动识别定界符）</text>
           <switch
             :checked="reasoningCfg.enabled"
             @change="(e) => { reasoningCfg.enabled = !!(e.detail && e.detail.value); onSaveReasoningCfg() }"
             color="#c9a84a"
           />
         </view>
-        <view class="form-item">
-          <text class="label">思考前缀</text>
-          <input class="input" :value="reasoningCfg.prefix" @input="(e) => reasoningCfg.prefix = e.detail.value" placeholder="例如 &lt;think&gt;" />
-        </view>
-        <view class="form-item">
-          <text class="label">思考后缀</text>
-          <input class="input" :value="reasoningCfg.suffix" @input="(e) => reasoningCfg.suffix = e.detail.value" placeholder="例如 &lt;/think&gt;" />
-        </view>
-        <view class="quick-preset-row">
-          <button class="btn-secondary quick-btn" @tap="onUseReasoningTemplate('<analysis>', '</analysis>')">用 &lt;analysis&gt; 模板</button>
-          <button class="btn-primary quick-btn" @tap="onSaveReasoningCfg">保存</button>
-        </view>
+        <text class="section-subtitle">打开后自动识别正文里的思考定界符（无需配置）：命中就把这段内容从正文移除、放进上面的「思考过程」折叠块；折叠块里会同时显示上游思考与这里切出来的思考，点标题可收起/展开。支持的定界符：{{ reasoningDelimiterHint }}</text>
       </view>
 
       <!-- 数据与存储（P5.4 / D8）：对话存档已改用 IndexedDB，这里看用量与做备份 -->
@@ -275,7 +264,7 @@ import NavBar from '../../components/common/NavBar.vue'
 import ContextInspector from '../../components/render/ContextInspector.vue'
 import { loadCustomCss, saveCustomCss, initCustomCss } from '../../utils/customCss'
 import { exportBackup, pickBackupFile, restoreBackup } from '../../services/backupService'
-import { loadReasoningConfig, saveReasoningConfig } from '../../engine/ReasoningHandler'
+import { loadReasoningConfig, saveReasoningConfig, REASONING_DELIMITERS } from '../../engine/ReasoningHandler'
 import { loadPacingConfig, savePacingConfig } from '../../utils/streamPacing'
 
 // LLM 配置改为按当前用户隔离存储（原全局 STORAGE_KEYS.LLM_CONFIG 键名不变，但加上用户前缀）
@@ -286,6 +275,10 @@ function llmConfigKey() {
 export default {
   components: { NavBar, ContextInspector },
   computed: {
+    /** 支持的思考定界符（D21：硬编码自动识别，这里只是把清单展示给用户看） */
+    reasoningDelimiterHint() {
+      return REASONING_DELIMITERS.map(pair => pair[0] + ' … ' + pair[1]).join('、')
+    },
     /** 存储用量文案（P5.4）：不支持查询的环境给出明确说明而不是空白 */
     storageUsageText() {
       const u = this.storageUsage
@@ -306,7 +299,7 @@ export default {
       storagePersisted: false,
       // 思考内容（P6.6 / P6.4）
       thinkingEnabled: false,
-      reasoningCfg: { enabled: false, prefix: ' thinking', suffix: '' },
+      reasoningCfg: { enabled: false },
       // 流式输出节奏（本轮新增）
       pacingCfg: { enabled: true, charsPerSec: 80 },
       modelList: [],
@@ -412,16 +405,10 @@ export default {
         uni.showToast({ title: '保存失败', icon: 'none' })
       }
     },
-    /** 保存文本思考解析配置（P6.4） */
+    /** 保存文本思考解析配置（P6.4 / D21：只存一个开关，定界符由代码内置自动识别） */
     onSaveReasoningCfg() {
       const ok = saveReasoningConfig(this.reasoningCfg)
       uni.showToast({ title: ok ? '已保存' : '保存失败', icon: 'none' })
-    },
-    /** 一键套用常见思考定界符模板 */
-    onUseReasoningTemplate(prefix, suffix) {
-      this.reasoningCfg = { enabled: true, prefix, suffix }
-      saveReasoningConfig(this.reasoningCfg)
-      uni.showToast({ title: '已套用模板并启用', icon: 'none' })
     },
 
     /** 读取存储用量与持久化状态（P5.4；仅 H5 有标准 API，其它端静默跳过） */

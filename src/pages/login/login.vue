@@ -85,13 +85,25 @@ onLoad((options: any) => {
   back.value = String(options?.back || '')
 
   const rawRedirect = String(options?.redirect || '')
-  // decodeURIComponent 遇到非法转义（例如手改 URL 造成的孤立 %）会抛 URIError，
-  // 兜住它，否则整个登录页会因为一个坏参数白屏
-  try {
-    redirect.value = rawRedirect ? decodeURIComponent(rawRedirect) : ''
-  } catch (e) {
-    redirect.value = ''
+  // redirect 是本站页面路径（守卫从 currentRoutePath() 取的），登录后要用 reLaunch 重建它。
+  //
+  // ⚠️ 为什么这里要**反复解码**而不是解一次：
+  // H5 的 uni.navigateTo 会把 query 值再编码一层（守卫传进来的值本身已经被
+  // encodeURIComponent 过一次），所以 address bar 上是 redirect=%252Fpages%252F…
+  // —— 实测只解一次拿到的是 "%2Fpages%2F…"，indexOf('/pages/') 判不过，
+  // 于是登录后会被退化成回首页，用户永远回不到他本来要进的页面。
+  // 这里循环解到稳定（最多 3 次，防手改 URL 造成的无限嵌套），并全程兜住 URIError。
+  let decoded = rawRedirect
+  for (let i = 0; i < 3; i++) {
+    const before = decoded
+    try {
+      decoded = decodeURIComponent(decoded)
+    } catch (e) {
+      break // 非法转义（例如孤立的 %）就停在上一层，交给下面的格式检查兜住
+    }
+    if (decoded === before) break
   }
+  redirect.value = decoded
 
   if (reason.value === 'expired') notice.value = '登录状态过期，请重新登录'
   else if (reason.value === 'login-required') notice.value = '请先登录后继续'

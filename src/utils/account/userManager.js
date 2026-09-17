@@ -317,7 +317,7 @@ function verifySession(force) {
 
 function _sanitize(user) {
   if (!user) return null;
-  return {
+  var out = {
     id: user.id,
     username: user.username,
     nickname: user.nickname || '',
@@ -326,6 +326,12 @@ function _sanitize(user) {
     isTest: !!(user.isAdmin || user.isTest),
     canUseTestApi: !!(user.canUseTestApi || user.isAdmin || user.isTest)
   };
+  // 等级/经验：服务端是权威来源（跨设备同步 + 评论里显示他人等级要用它）。
+  // 老服务端（还没升级）不返回这两个字段时**不带 key**，前端据此走本地缓存，
+  // 不会把等级误当成 0。
+  if (user.level !== undefined && user.level !== null) out.level = Number(user.level);
+  if (user.xp !== undefined && user.xp !== null) out.xp = Number(user.xp);
+  return out;
 }
 
 /** 用服务端返回的用户对象刷新本地缓存（保留 token） */
@@ -527,6 +533,26 @@ async function login(username, password) {
   }
 }
 
+/**
+ * 读取某用户在本地的等级缓存（键 user_level_{userId}）。
+ * 认领老账号时要把这份等级一起提交，否则迁移后老用户会从原有等级掉回 1 级。
+ */
+function _localLevelOf(userId) {
+  if (!userId) return null;
+  try {
+    var data = _get('user_level_' + userId, null);
+    if (!data || typeof data !== 'object') return null;
+    var level = Number(data.level);
+    var xp = Number(data.xp);
+    return {
+      level: Number.isFinite(level) ? level : null,
+      xp: Number.isFinite(xp) ? xp : null
+    };
+  } catch (e) {
+    return null;
+  }
+}
+
 /** 老账号认领：本地明文校验 -> /api/auth/claim -> 删除本地明文记录 */
 async function _tryClaimLegacyAccount(username, password) {
   var list = _legacyUsers();
@@ -536,6 +562,9 @@ async function _tryClaimLegacyAccount(username, password) {
   }
   if (!legacy) return null;
   if (legacy.password !== password) return null; // 本地校验不通过，按密码错误处理
+
+  // 迁移前的等级只存在这台浏览器里（user_level_{userId}），认领时一并带上服务端
+  var local = _localLevelOf(legacy.id);
 
   try {
     var data = await _request('/api/auth/claim', {
@@ -547,7 +576,10 @@ async function _tryClaimLegacyAccount(username, password) {
         legacyLocalId: legacy.id || null,
         // 老账号的权限沿用本地记录（admin 会带入管理员权限）
         isAdmin: !!legacy.isAdmin,
-        isTest: !!(legacy.isTest || legacy.isAdmin)
+        isTest: !!(legacy.isTest || legacy.isAdmin),
+        // 老账号的等级/经验沿用本地记录（服务端只在这两个字段有值时才采用）
+        level: local ? local.level : undefined,
+        xp: local ? local.xp : undefined
       }
     });
     var user = _refreshProfile(data.user);
@@ -665,6 +697,38 @@ async function updateProfile(userId, updates) {
     return true;
   }
   return false;
+}
+
+/**
+ * 把等级/经验同步到服务端（跨设备同步 + 评论里显示他人等级要用）。
+ *
+ * 为什么必须同步：评论要显示"评论者当前等级"，而对方的等级在你本地浏览器里不存在。
+ * 等级因此从"纯本地派生数据"升级为账号属性（与 nickname 同级）。
+ *
+ * 失败只是打印告警、不阻塞本地升级 —— 等级是趣味性数据，不该因为它让升级流程报错；
+ * 下次 syncProgressionToServer 会再推一次。
+ *
+ * @param {{level:number, xp:number}} progression
+ * @returns {Promise<boolean>} 是否成功
+ */
+async function syncProgression(progression) {
+  var p = progression || {};
+  if (!_getToken()) return false;
+  var body = {};
+  if (p.level !== undefined && p.level !== null) body.level = Number(p.level);
+  if (p.xp !== undefined && p.xp !== null) body.xp = Number(p.xp);
+  if (body.level === undefined && body.xp === undefined) return false;
+  try {
+    var data = await _request('/api/auth/me', { method: 'PATCH', body: body });
+    if (data && data.user) _refreshProfile(data.user);
+    return true;
+  } catch (e) {
+    // 401 已由 _request 统一处理（清登录态 + 跳登录页），这里只记业务失败
+    if (!(e && e.status === 401)) {
+      console.warn('[UserManager] 等级同步失败（下次进页面会重试）:', e && e.message);
+    }
+    return false;
+  }
 }
 
 // ── 活跃时长统计 ─────────────────────────────────────────────
@@ -933,6 +997,7 @@ export default {
   handleUnauthorized: _handleUnauthorized,
   getUserById: getUserById,
   updateProfile: updateProfile,
+  syncProgression: syncProgression,
   isAdmin: isAdmin,
   isTestAccount: isTestAccount,
   isTestAccountChecked: isTestAccountChecked,

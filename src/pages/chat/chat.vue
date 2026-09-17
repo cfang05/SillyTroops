@@ -140,7 +140,7 @@ import { balanceIncompleteMarkdown } from '../../engine/BlockParser'
 import type { PromptInfo } from '../../engine/PromptBuilder'
 import { savePromptInfo } from '../../services/promptInfoStore'
 import { initCustomCss } from '../../utils/customCss'
-import { splitReasoning, loadReasoningConfig, type ReasoningSplitConfig } from '../../engine/ReasoningHandler'
+import { splitReasoning, combineReasoning, loadReasoningConfig, type ReasoningSplitConfig } from '../../engine/ReasoningHandler'
 import { nextShownLength, loadPacingConfig, type StreamPacingConfig } from '../../utils/streamPacing'
 
 const runtimeStore = useRuntimeStore()
@@ -286,8 +286,8 @@ function _applyPacedText(index: number, fullText: string): boolean {
 }
 
 /**
- * 把"原始正文"落到消息上（P6.4）
- * 切分文本思考 → 显示态正则 → segments；流式与最终收尾共用，保证两条路径一致。
+ * 把"原始正文"落到消息上（P6.4 / D21）
+ * 自动识别定界符切出思考 → 显示态正则 → segments；流式与最终收尾共用，保证两条路径一致。
  */
 function _applyMessageText(index: number, rawText: string, opts: { streaming?: boolean } = {}) {
   const m = runtimeStore.messages[index]
@@ -296,9 +296,21 @@ function _applyMessageText(index: number, rawText: string, opts: { streaming?: b
   m.content = split.content
   // 流式期间补齐未闭合的成对 Markdown（P2.3 / B6），并走显示态正则（P4.6 / C1）
   m.segments = _segmentsFor(split.content, index, { streaming: !!opts.streaming })
-  // 文本思考只在"上游没有给原生思考"时才用来填充，避免覆盖更权威的 reasoning_content
-  if (split.reasoning && !m.reasoning) m.reasoning = split.reasoning
-  if (m.reasoning) m.reasoningDisplay = _reasoningFor(m.reasoning, index)
+  // 正文定界符切出来的思考（开关关着时为空）。它与上游 reasoning 并列保留，
+  // 折叠块里显示两者的并集（D21）—— 见 _refreshReasoningDisplay。
+  m.reasoningFromText = split.reasoning || undefined
+  _refreshReasoningDisplay(m, index)
+}
+
+/**
+ * 刷新思考的"显示态"（P6.5 / D17 + D21）
+ *
+ * 折叠块里要显示的思考有**两份来源**：上游原生 `reasoning_content` + 正文定界符切出的部分。
+ * 两者合并后统一走 placement=REASONING 的显示态正则（用户可以单独控制思考怎么显示）。
+ */
+function _refreshReasoningDisplay(m: any, index: number) {
+  const combined = combineReasoning(m.reasoning, m.reasoningFromText)
+  m.reasoningDisplay = combined ? _reasoningFor(combined, index) : undefined
 }
 
 /** 真正写进 store：就地修改消息对象，父组件不会因为每个 chunk 而整体重渲染 */
@@ -317,9 +329,10 @@ function _flushStreamContent() {
         if (Array.isArray(m.swipes)) m.swipes[m.swipe_id || 0] = m.content
       }
       if (typeof pending.reasoning === 'string') {
-        // 上游原生思考（reasoning_content）优先；思考不参与正文限速，避免拖慢正文
+        // 上游原生思考（reasoning_content）：与正文定界符切出的部分**并列保留**（D21），
+        // 折叠块显示两者的并集；思考不参与正文限速，避免拖慢正文
         m.reasoning = pending.reasoning
-        m.reasoningDisplay = _reasoningFor(pending.reasoning, pending.index)
+        _refreshReasoningDisplay(m, pending.index)
       }
       m.isStreaming = true
     }
@@ -408,7 +421,7 @@ function _segmentsFor(
 }
 
 /** 文本思考解析配置（P6.4）：onLoad 时从本地读取，设置页改完回来重新读 */
-const _reasoningCfg = ref<ReasoningSplitConfig>({ enabled: false, prefix: ' thinking', suffix: '' })
+const _reasoningCfg = ref<ReasoningSplitConfig>({ enabled: false })
 /** 思考开始时间（按消息下标记录，用于"已思考 N 秒"；不持久化） */
 const _reasoningStart = new Map<number, number>()
 
@@ -434,8 +447,9 @@ function _finalizeMessage(index: number, finalText: string) {
     segments: m.segments,
     isStreaming: false,
     reasoning: m.reasoning,
+    reasoningFromText: m.reasoningFromText,
     reasoningDisplay: m.reasoningDisplay,
-    reasoningDone: !!m.reasoning,
+    reasoningDone: !!(m.reasoning || m.reasoningFromText),
     reasoningDurationMs: startedAt ? Date.now() - startedAt : undefined,
     swipes
   }
@@ -593,8 +607,10 @@ function _rehydrateMessage(m: any, index: number, total: number): any {
   if (!Array.isArray(out.segments) || out.segments.length === 0) {
     out.segments = _segmentsFor(out.content || '', index, { role: out.role, total })
   }
-  // 思考的"显示态"是派生数据，不入档；读档时按原文重算（P6.5）
-  if (out.reasoning) out.reasoningDisplay = _reasoningFor(out.reasoning, index)
+  // 思考的"显示态"是派生数据，不入档；读档时按两份来源合并后重算（P6.5 / D21）
+  if (out.reasoning || out.reasoningFromText) {
+    out.reasoningDisplay = _reasoningFor(combineReasoning(out.reasoning, out.reasoningFromText), index)
+  }
   return out
 }
 

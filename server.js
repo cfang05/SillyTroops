@@ -2,9 +2,10 @@
 // 职责：
 // 1. 账号体系（Neon Postgres）：注册/登录/改昵称/认领老账号/管理员开关测试权限
 // 2. 使用统计（Neon Postgres）：登录次数、活跃时长、token 用量（含按天维度）
-// 3. 内置测试 API：Key 只保存服务端，模型名/目标地址/协议参数全部由服务端决定
-// 4. 用户自配 Key 的 OpenAI 兼容转发代理（/api/chat/completions）
-// 5. 托管 uni-app 打包后的静态文件
+// 3. 卡池数据（Cloudflare R2）：卡片评分、下载量、评论（见 cardpool.js / r2.js）
+// 4. 内置测试 API：Key 只保存服务端，模型名/目标地址/协议参数全部由服务端决定
+// 5. 用户自配 Key 的 OpenAI 兼容转发代理（/api/chat/completions）
+// 6. 托管 uni-app 打包后的静态文件
 
 const express = require('express');
 const { createProxyMiddleware } = require('http-proxy-middleware');
@@ -15,6 +16,8 @@ const db = require('./db');
 const auth = require('./auth');
 const accounts = require('./accounts');
 const stats = require('./stats');
+const r2 = require('./r2');
+const cardpool = require('./cardpool');
 const { runMigrations } = require('./migrate');
 
 const app = express();
@@ -28,7 +31,11 @@ const STATS_FILE = path.join(__dirname, 'data', 'stats.json');
 // 请求流，导致 http-proxy 转发给上游 LLM 的 body 为空、且上游请求流永不收尾；上游会一直等
 // body 直到超时后重置连接（日志表现为 [HPM] ECONNRESET，前端表现为 loading 卡住）。
 // 因此这里用白名单：只有下列前缀（本服务的接口）才解析 JSON，其余 /api/* 一律交给代理。
-const LOCAL_API_PREFIXES = ['/api/stats', '/api/auth', '/api/admin', '/api/test-api', '/api/chat/test'];
+//
+// ⚠️ 新增本地接口时**必须**同时把前缀加到这里：否则请求体不会被解析（req.body 永远是
+// undefined），而且请求会掉进下面 app.use('/api', …) 的 catch-all 被转发到 LLM 上游。
+// 卡池的 /api/card-stats、/api/card-comments 与等级榜 /api/levels 就是这样加进来的。
+const LOCAL_API_PREFIXES = ['/api/stats', '/api/auth', '/api/admin', '/api/test-api', '/api/chat/test', '/api/card-stats', '/api/card-comments', '/api/levels'];
 
 function isLocalApiPath(p) {
   return LOCAL_API_PREFIXES.some(function (prefix) {
@@ -151,17 +158,73 @@ app.get('/api/auth/me', requireAuth, (req, res) => {
   res.json({ user: req.accountPublic });
 });
 
-/** 修改自己的昵称（跨设备同步） */
+/**
+ * 修改自己的资料：昵称（跨设备同步）/ 等级与经验。
+ *
+ * 等级为什么也要 PATCH 到这里：等级原本只存在浏览器本地（localStorage），
+ * 而"评论里显示评论者等级"要求**服务端知道每个人的等级** —— 别人的浏览器里没有你的等级。
+ * 所以等级升级为账号属性，与 nickname 同级同步，评论接口再回来读它。
+ *
+ * 字段都是可选的，只更新传了的（前端改昵称时不必带等级，反之亦然）。
+ */
 app.patch('/api/auth/me', requireAuth, async (req, res) => {
   try {
     const body = req.body || {};
-    if (typeof body.nickname !== 'string') return res.status(400).json({ error: '缺少 nickname' });
-    const row = await accounts.updateNickname(db.getPool(), req.account.id, body.nickname.trim());
-    if (!row) return res.status(404).json({ error: '账号不存在' });
+    let row = req.account;
+    let changed = false;
+
+    if (typeof body.nickname === 'string') {
+      row = await accounts.updateNickname(db.getPool(), req.account.id, body.nickname.trim());
+      if (!row) return res.status(404).json({ error: '账号不存在' });
+      changed = true;
+    }
+
+    // 等级/经验：客户端传来的是它算出来的最新进度，服务端夹取后落库（见 updateProgression 注释）
+    if (body.level !== undefined || body.xp !== undefined) {
+      row = await accounts.updateProgression(db.getPool(), req.account.id, {
+        level: body.level,
+        xp: body.xp
+      });
+      if (!row) return res.status(404).json({ error: '账号不存在' });
+      changed = true;
+    }
+
+    if (!changed) return res.status(400).json({ error: '缺少可更新字段（nickname / level / xp）' });
     res.json({ user: accounts.toPublicUser(row) });
   } catch (e) {
-    console.error('[Auth] 更新昵称失败:', e && e.message);
+    console.error('[Auth] 更新资料失败:', e && e.message);
     res.status(500).json({ error: '更新失败' });
+  }
+});
+
+/**
+ * 等级榜（可选能力，供后续"旅团榜"之类页面用）：
+ * 按等级倒序、同级按经验倒序，只返回公开字段。
+ */
+app.get('/api/levels/rank', requireAuth, async (req, res) => {
+  try {
+    const limitRaw = Number(req.query.limit);
+    const limit = Math.min(200, Math.max(1, Number.isFinite(limitRaw) ? Math.trunc(limitRaw) : 50));
+    const pool = db.getPool();
+    const result = await pool.query(
+      `SELECT id, username, nickname, level, xp
+         FROM accounts
+        ORDER BY level DESC, xp DESC, created_at ASC
+        LIMIT $1`,
+      [limit]
+    );
+    res.json({
+      users: result.rows.map((r) => ({
+        userId: r.id,
+        username: r.username,
+        nickname: r.nickname || '',
+        level: r.level == null ? 1 : Number(r.level),
+        xp: r.xp == null ? 0 : Number(r.xp)
+      }))
+    });
+  } catch (e) {
+    console.error('[Auth] 读取等级榜失败:', e && e.message);
+    res.status(500).json({ error: '读取等级榜失败' });
   }
 });
 
@@ -193,7 +256,11 @@ app.post('/api/auth/claim', async (req, res) => {
       legacyLocalId: legacyLocalId,
       // 老账号的权限沿用本地记录（admin 会带入管理员权限）
       isAdmin: !!body.isAdmin,
-      isTest: body.isTest === undefined ? true : !!body.isTest
+      isTest: body.isTest === undefined ? true : !!body.isTest,
+      // 老账号的等级也沿用本地记录：迁移前等级就在浏览器里，
+      // 不带过来的话老用户会从原有等级掉回 1 级（前端认领时会一起提交）
+      level: body.level,
+      xp: body.xp
     });
     console.log('[Auth] 老本地账号已认领:', row.username, '(legacy=' + (legacyLocalId || '-') + ')');
     try {
@@ -317,6 +384,15 @@ app.get('/api/stats/daily', requireAuth, requireAdmin, async (req, res) => {
     res.status(500).json({ error: '按天统计读取失败' });
   }
 });
+
+// ========== 卡池数据（Cloudflare R2：评分 / 下载量 / 评论） ==========
+// 数据文件在 R2 上的 stats.json 与 comments.json（见 r2.js）。
+// 评分与下载是匿名接口（卡片对未登录访客也可见），评论的发表/删除必须登录，
+// 且 authorId/authorName 一律取自 token —— 不接受客户端自报身份。
+// 评论还会带上评论者等级：快照存在 R2，读取时用数据库里的**当前**等级覆盖
+// （所以要注入 db/accounts，等级是存在账号表里的，不在 R2）。
+// ⚠️ 这些前缀已加入上方 LOCAL_API_PREFIXES，否则 body 不会被解析。
+cardpool.registerCardPoolRoutes(app, { requireAuth, db, accounts });
 
 // ========== 内置测试 API（Key / 模型 / 目标地址 全部只保存在服务端） ==========
 // 背景：内置测试 Key 以前硬编码在前端（会随 dist 分发），模型名也写死在前端。
@@ -629,7 +705,24 @@ async function startServer() {
     console.warn('[Static] 未找到 dist/build/h5/index.html：前端产物缺失，请先在本地执行 npm run build 并提交 dist/ 再部署');
   }
 
-  // 4. 监听
+  // 4. 卡池数据（R2）自检：只读一次 HeadObject，失败不阻塞启动 ——
+  //    卡池不可用不应该把整个服务（登录/对话）拖下水。
+  if (r2.isConfigured()) {
+    try {
+      const ping = await r2.checkConnection();
+      if (ping.ok) {
+        console.log('[R2] 卡池数据存储已连通（bucket=' + r2.describe().bucket + '，stats.json ' + (ping.exists ? '已存在' : '尚未创建（首次评分/下载时自动创建）') + '）');
+      } else {
+        console.warn('[R2] 卡池数据存储连接失败:', ping.reason);
+      }
+    } catch (e) {
+      console.warn('[R2] 卡池数据存储自检异常:', e && e.message);
+    }
+  } else {
+    console.warn('[R2] 未配置 R2 凭证（R2_ACCESS_KEY_ID / R2_SECRET_ACCESS_KEY / R2_ENDPOINT / R2_BUCKET）：卡池评分/下载/评论接口将返回 503');
+  }
+
+  // 5. 监听
   app.listen(PORT, () => {
     console.log('='.repeat(50));
     console.log(`📡 监听端口: ${PORT}`);

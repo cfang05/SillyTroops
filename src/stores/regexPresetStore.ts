@@ -28,7 +28,12 @@ function STORAGE_KEY() { return scopedKey('regex_presets') }
 /** P5.3：正侧文件改存 IndexedDB（同步 API 不变） */
 const _store = createCachedStore({
   name: 'regexPreset',
-  match: (k: string) => k === STORAGE_KEY()
+  match: (k: string) => k === STORAGE_KEY(),
+  // D20 跨账号迁移：其他账号遗留的正侧文件也要能认领
+  uidOf: (k: string) => {
+    const m = k.match(/^u_(.+)_regex_presets$/)
+    return m ? m[1] : null
+  }
 })
 
 export const useRegexPresetStore = defineStore('regexPreset', {

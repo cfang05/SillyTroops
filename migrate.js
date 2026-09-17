@@ -68,7 +68,25 @@ const STATEMENTS = [
      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
    )`,
 
-  `CREATE INDEX IF NOT EXISTS login_events_created_idx ON login_events (created_at)`
+  `CREATE INDEX IF NOT EXISTS login_events_created_idx ON login_events (created_at)`,
+
+  // ── 等级 / 经验（跨设备同步 + 评论里显示他人等级） ──────────
+  // 背景：等级原先只存在**浏览器本地**（localStorage 的 user_level_{userId}），
+  // 于是"评论里显示评论者等级"这件事根本做不到 —— 别人的等级在你的浏览器里不存在。
+  // 现在把等级同步到服务端，成为账号属性（与 nickname 同级）。
+  //
+  // 为什么用 ALTER 而不是写进上面的 CREATE TABLE：
+  // 线上库已经建好了 accounts 表，CREATE TABLE IF NOT EXISTS 不会再加列，
+  // 所以必须用 ADD COLUMN IF NOT EXISTS 做增量迁移（幂等，可重复执行）。
+  //
+  // 注：默认 1 级是"普通账号"的起点；管理员沿用历史行为（15 级）由
+  // accounts.ensureAdminAccount 在创建时显式写入，不靠默认值。
+  //
+  // ⚠️ 这里刻意不加 CHECK 约束：加约束需要 PL/pgSQL 的 DO 块，而本地冒烟测试用的
+  // pg-mem 不支持匿名块。越界由接口层夹取（server.js 里把 level 限制在 0~999），
+  // 属于"可信输入 + 服务端兜底"，不依赖数据库约束。
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1`,
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS xp INTEGER NOT NULL DEFAULT 0`
 ];
 
 /**
