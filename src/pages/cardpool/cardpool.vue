@@ -4,15 +4,14 @@
         它自带状态栏留白 + 毛玻璃 + 68rpx 返回键 + 居中标题/副标题，不再自己画一套。 -->
     <NavBar title="冒险卡池" subtitle="Card Pool" />
 
-    <!-- 主内容：弹窗/抽屉打开时加 inert，让键盘/读屏也无法聚焦背后的元素。
-         ⚠️ inert 必须加在**不含**弹窗/抽屉的那一层（.mkt-stage）上：
-         之前整个 .market 都被 inert，而 CardDetail / FilterDrawer 就在 .market 里面，
-         结果悬浮层自己也被 inert 掉了 —— 真实鼠标点击会被浏览器按"inert 子树不接收
-         指针事件"处理（命中测试直接穿透到 .stage），表现为"弹窗里的按钮、输入框、
-         星星全都点不动"。合成事件（dispatchEvent）不经过命中测试，所以自动化测试
-         当时是绿的，这个坑只在真实点击下暴露。 -->
+    <!-- 主内容：弹窗/抽屉打开时禁止它接收点击，让背后的卡片/按钮不会被误触。
+         ⚠️ 这里**不能**用 inert：uni.showModal / showToast / showLoading 都是把 DOM 渲染在
+         当前页面容器里的，也就是说它们会落进这个被禁用的子树 —— inert 会让它们
+         **从命中测试里消失**（视觉上正常显示、但真实点击穿透到背后的元素上，按钮变成死键）。
+         实测踩过两次：悬浮层被 inert 吞掉、以及「导入成功」的确认键点不动。
+         pointer-events 只挡指针、不影响视觉，也不会波及这些框架弹窗。 -->
     <view class="market">
-      <view class="mkt-stage" :inert="layerOpen">
+      <view class="mkt-stage" :class="{ 'is-masked': layerOpen }">
         <!-- 分类 Tab：角色卡 / 冒险卡 / 预设·正则（预设与正则合并为一个入口，未实现 Toast） -->
         <view class="mkt-tabs" role="group" aria-label="卡池分类">
           <button
@@ -256,6 +255,13 @@ export default {
           else if (Array.isArray(data)) list = data      // 容错：万一上传脚本改成裸数组
           this.cards = list.filter((c) => c && c.id)
           this.loading = false
+          // 给"本功能上线前从卡池导入过、但没打来源标记"的历史卡片补标记（幂等）。
+          // 不补的话，用户打开这些卡的详情时「导入卡片」仍是可点的，会重复导入同一张卡。
+          try {
+            useCharacterCardStore().reconcilePoolImports(this.cards)
+          } catch (e) {
+            console.warn('[CardPool] 补历史卡池导入标记失败（忽略）:', e && e.message)
+          }
         },
         fail: (err) => {
           console.warn('[CardPool] manifest 加载失败:', err && err.errMsg)
@@ -398,6 +404,11 @@ export default {
   min-height: 0;
   display: flex;
   flex-direction: column;
+}
+/* 悬浮层打开时：背后的内容不接收指针事件（避免误触到卡片/按钮）。
+   用 pointer-events 而不是 inert —— 原因见模板里的注释。 */
+.mkt-stage.is-masked {
+  pointer-events: none;
 }
 
 /* 顶部导航改用公共 NavBar 组件后，这里不再保留 .mkt-head/.mkt-exit 的局部副本，

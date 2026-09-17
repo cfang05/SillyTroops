@@ -7,6 +7,9 @@
         <view class="import-btn" @tap="goImport">
           <text class="import-btn-text">前往酒馆导入</text>
         </view>
+        <view class="import-btn import-btn-pool" @tap="goCardPool">
+          <text class="import-btn-text">前往卡池获取</text>
+        </view>
       </view>
     </view>
 
@@ -26,7 +29,11 @@
           <text v-else class="char-avatar-text">{{ (card.name || '?').charAt(0) }}</text>
         </view>
         <view class="char-info">
-          <text class="char-name">{{ card.name }}</text>
+          <view class="char-name-row">
+            <text class="char-name">{{ card.name }}</text>
+            <!-- 从卡池导入的卡片，24 小时内标「新导入」（判定集中在 utils/character_card/poolImport.js） -->
+            <text v-if="isNewImport(card)" class="char-new-badge">新导入</text>
+          </view>
           <text class="char-desc">{{ card.description || card.personality || '暂无描述' }}</text>
           <view class="char-tags" v-if="card.tags && card.tags.length > 0">
             <text v-for="tag in card.tags" :key="tag" class="char-tag">{{ tag }}</text>
@@ -67,6 +74,15 @@ function goImport() {
   uni.navigateTo({ url: '/pages/import/import' })
 }
 
+function goCardPool() {
+  uni.navigateTo({ url: '/pages/cardpool/cardpool' })
+}
+
+/** 是否显示「新导入」标识（来自卡池 + 24 小时内） */
+function isNewImport(card: any) {
+  return cardStore.isNewImport(card)
+}
+
 function onEdit(id: string) {
   uni.navigateTo({ url: '/pages/characters/edit?id=' + id })
 }
@@ -91,6 +107,9 @@ function onDelete(id: string) {
 .header-sub { display: block; font-size: 21rpx; color: var(--faint); margin-bottom: 20rpx; line-height: 1.5; }
 .import-actions { display: flex; gap: 12rpx; }
 .import-btn { flex: 1; height: 68rpx; display: flex; align-items: center; justify-content: center; background: var(--accent-soft); border: 1rpx solid var(--accent); border-radius: 18rpx; text-align: center; }
+/* 前往卡池获取：用次级描边色，与主入口（酒馆导入）区分开 */
+.import-btn-pool { background: var(--surface); border-color: var(--border-strong); }
+.import-btn-pool .import-btn-text { color: var(--fg-soft); }
 .import-btn-text { font-size: 23rpx; color: var(--accent); font-weight: 700; }
 .list-scroll { flex: 1; padding: 20rpx; min-height: 0; }
 .empty-state { padding: 100rpx 40rpx; text-align: center; }
@@ -106,7 +125,15 @@ function onDelete(id: string) {
 .char-avatar-img { width: 100%; height: 100%; }
 .char-avatar-text { font-family: var(--font-serif); font-size: 30rpx; color: #1b0b05; font-weight: 900; }
 .char-info { flex: 1; min-width: 0; overflow: hidden; }
-.char-name { display: block; font-size: 25rpx; color: var(--fg); font-weight: 700; margin-bottom: 6rpx; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.char-name-row { display: flex; align-items: center; gap: 10rpx; margin-bottom: 6rpx; }
+.char-name { display: block; font-size: 25rpx; color: var(--fg); font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* 「新导入」标识：成功色小胶囊，24 小时后自动消失 */
+.char-new-badge {
+  flex: none; font-size: 17rpx; font-weight: 700; color: var(--success);
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  border: 1rpx solid color-mix(in oklch, var(--success) 40%, transparent);
+  padding: 2rpx 10rpx; border-radius: 8rpx;
+}
 .char-desc {
   display: -webkit-box;
   -webkit-box-orient: vertical;

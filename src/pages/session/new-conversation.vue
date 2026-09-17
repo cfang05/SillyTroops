@@ -16,6 +16,8 @@
               <text v-else class="card-avatar-text">{{ (card.name || '?').charAt(0) }}</text>
             </view>
             <text class="card-name">{{ card.name }}</text>
+            <!-- 从卡池导入的卡片，24 小时内标「新导入」（与角色卡库同一套判定） -->
+            <text v-if="cardStore.isNewImport(card)" class="card-new-badge">新导入</text>
             <text class="card-desc">{{ card.description || card.personality || '暂无描述' }}</text>
             <view v-if="selectedCardId === card.id" class="card-check">
               <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></svg>
@@ -190,6 +192,19 @@ function _navigateToChat(cardId: string, presetId: string, regexPresetId: string
 .card-avatar-img { width: 100%; height: 100%; }
 .card-avatar-text { font-family: var(--font-serif); font-size: 34rpx; color: #1b0b05; font-weight: 900; }
 .card-name { font-size: 24rpx; color: var(--fg); font-weight: 700; margin-bottom: 6rpx; width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex-shrink: 0; }
+/* 「新导入」标识：与角色卡库同一套判定（utils/character_card/poolImport.js），24 小时后消失 */
+.card-new-badge {
+  align-self: flex-start;
+  flex-shrink: 0;
+  margin-bottom: 6rpx;
+  font-size: 17rpx;
+  font-weight: 700;
+  color: var(--success);
+  background: color-mix(in oklch, var(--success) 16%, transparent);
+  border: 1rpx solid color-mix(in oklch, var(--success) 40%, transparent);
+  padding: 2rpx 10rpx;
+  border-radius: 8rpx;
+}
 .card-desc {
   font-size: 19rpx;
   color: var(--faint);

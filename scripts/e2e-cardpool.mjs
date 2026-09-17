@@ -477,6 +477,30 @@ try {
   check('弹窗 tag 用中文', /冒险/.test(detText0) && !/adventure/.test(detText0));
   check('已有一条他人评论', detText0.indexOf('设定很细。') !== -1 && detText0.indexOf('评论（1）') !== -1);
 
+  // 版式顺序（需求）：我的评分 → 身份说明 + 输入框 → 评论展示
+  const order = await ev(`
+    (function(){
+      var body = document.querySelector('.det-body');
+      var idx = function(sel){
+        var el = body.querySelector(sel);
+        if (!el) return -1;
+        // 用文档顺序比较：给每个节点编号后取最小索引
+        var all = Array.prototype.slice.call(body.querySelectorAll('*'));
+        return all.indexOf(el);
+      };
+      return JSON.stringify({
+        rate: idx('.rate-row'),
+        identity: idx('.identity-note'),
+        input: idx('.comment-row'),
+        list: idx('.cmt-list') >= 0 ? idx('.cmt-list') : idx('.cmt-state')
+      });
+    })()
+  `);
+  const orderObj = JSON.parse(order);
+  check('顺序：我的评分 → 身份说明 → 输入框 → 评论展示',
+    orderObj.rate >= 0 && orderObj.rate < orderObj.identity && orderObj.identity < orderObj.input && orderObj.input < orderObj.list,
+    order);
+
   // 半星：点第 4 颗星的**左半** → 3.5 分
   const starHalf = await realClickAt('.star', 0.3, 3);
   await sleep(300);
@@ -623,12 +647,66 @@ try {
     });
     'ok'
   `);
+
+  // 导入前：按钮文字应是「导入卡片」
+  check('导入前按钮文字是「导入卡片」',
+    /导入卡片/.test(String(await textOf('.act-btn.is-primary'))), String(await textOf('.act-btn.is-primary')));
+
   const impBefore = store['stats.json']['fate_grand_order__rpg'].downloadCount;
   const impHit = await realClick('.act-btn.is-primary', 0);
   await sleep(3000);
   const impAfter = store['stats.json']['fate_grand_order__rpg'].downloadCount;
   check('「导入卡片」按钮真实可点（命中按钮本身）', /UNI-BUTTON/.test(impHit.top || ''), '命中=' + impHit.top);
   check('「导入卡片」也让下载次数 +1', impAfter === impBefore + 1, impBefore + ' → ' + impAfter);
+
+  // ⚠️ 需求：导入后要"提示成功并让玩家点确认"，所以必须是弹窗（有确认键），不是一闪而过的 toast
+  const modalShown = await waitFor("!!document.querySelector('.uni-modal__btn_primary')", 6000, '导入成功确认弹窗');
+  const modalText = modalShown ? await ev("(document.querySelector('.uni-modal')||{}).textContent || ''") : '';
+  check('导入成功后弹出确认提示（而不是一闪而过的 toast）', modalShown);
+  check('确认弹窗写明"导入成功"与卡片名', /导入成功/.test(String(modalText)) && /Fate Grand Order/.test(String(modalText)),
+    String(modalText).slice(0, 120));
+  check('确认弹窗只有确认键（玩家点一下即可）', (await ev("document.querySelectorAll('.uni-modal__btn_default').length")) === 0);
+  // 玩家点确认
+  const confirmHit = await realClick('.uni-modal__btn_primary', 0);
+  await sleep(700);
+  // ⚠️ uni 的 showModal 用 v-show 控制显隐：关掉之后元素仍在 DOM 里（只是 display:none），
+  //    所以断言"弹窗已关闭"要看**可见性**，不能看元素是否存在（否则永远判失败）。
+  const modalVisible = await ev(`
+    (function(){
+      var b = document.querySelector('.uni-modal__btn_primary');
+      if (!b) return false;
+      var r = b.getBoundingClientRect();
+      var host = document.querySelector('uni-modal');
+      var cs = host ? getComputedStyle(host) : null;
+      return !!(r.width > 0 && r.height > 0 && cs && cs.display !== 'none' && cs.visibility !== 'hidden');
+    })()
+  `);
+  if (modalVisible) {
+    console.log('[DIAG] 确认键命中 =', JSON.stringify(confirmHit));
+    console.log('[DIAG] 按钮中心最顶层元素 =', await ev(`
+      (function(){
+        var b = document.querySelector('.uni-modal__btn_primary');
+        if (!b) return '按钮不存在';
+        var r = b.getBoundingClientRect();
+        var top = document.elementFromPoint(r.left + r.width/2, r.top + r.height/2);
+        return JSON.stringify({ rect: { l: Math.round(r.left), t: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) }, top: top ? top.tagName + '.' + String(top.className) : 'null' });
+      })()
+    `));
+  }
+  check('点确认后弹窗关闭（可见性判定）', !modalVisible);
+
+  // 导入后按钮应变成「已导入卡库」
+  const btnTextAfter = String(await textOf('.act-btn.is-primary'));
+  check('导入后按钮变成「已导入卡库」', /已导入卡库/.test(btnTextAfter), btnTextAfter);
+  check('已导入按钮带 is-done 样式（不再诱导重复点击）',
+    await ev("document.querySelector('.act-btn.is-primary').className.indexOf('is-done') !== -1"));
+  const dlCountBeforeReimport = store['stats.json']['fate_grand_order__rpg'].downloadCount;
+  await realClick('.act-btn.is-primary', 0);
+  await sleep(800);
+  check('再点「已导入卡库」不会重复导入、也不再计下载次数',
+    store['stats.json']['fate_grand_order__rpg'].downloadCount === dlCountBeforeReimport,
+    JSON.stringify({ before: dlCountBeforeReimport, after: store['stats.json']['fate_grand_order__rpg'].downloadCount }));
+
   const pageLogs = await ev('JSON.stringify(window.__pageLogs || [])');
   if (String(pageLogs).indexOf('导入') !== -1 || String(pageLogs).indexOf('CardDetail') !== -1) {
     console.log('[DIAG] 导入相关页面日志 =', String(pageLogs).slice(0, 900));
@@ -723,6 +801,40 @@ try {
   check('抽屉关闭后恢复滚动', (await ev('document.body.style.overflow')) === '');
 
   check('全程没有未捕获异常', consoleErrors.length === 0, consoleErrors.slice(0, 3).join(' || '));
+
+  // ════════════════════════════════════════════════════════════
+  // 10. 角色卡库 / 选择角色卡：新导入标识 + 前往卡池获取
+  // ════════════════════════════════════════════════════════════
+  await hardGoto(BASE + '/#/pages/characters/index');
+  const libReady = await waitFor("document.querySelectorAll('.char-card').length >= 1", 12000, '角色卡库渲染');
+  check('角色卡库页面能打开并列出卡片', libReady);
+  if (libReady) {
+    const libText = await ev("document.querySelector('.list-scroll').textContent");
+    check('刚导入的卡出现在角色卡库里', /Fate Grand Order - RPG/.test(libText));
+    check('刚导入的卡带「新导入」标识', /新导入/.test(libText),
+      (String(libText).match(/新导入/g) || []).length + ' 个标识');
+    // 标识只应出现在卡池导入的卡上：内置卡不该被标注
+    const badgeCount = (String(libText).match(/新导入/g) || []).length;
+    check('内置角色卡不会被标成「新导入」', badgeCount === 1, '标识数量=' + badgeCount);
+    check('「前往酒馆导入」仍在', /前往酒馆导入/.test(await ev("document.querySelector('.header').textContent")));
+    check('新增「前往卡池获取」按钮', /前往卡池获取/.test(await ev("document.querySelector('.header').textContent")));
+    // 点它应该打开卡池页
+    await realClick('.import-btn-pool', 0);
+    await sleep(1200);
+    check('点「前往卡池获取」打开卡池页',
+      /pages\/cardpool\/cardpool/.test(await ev('location.hash')), await ev('location.hash'));
+  }
+
+  await hardGoto(BASE + '/#/pages/session/new-conversation');
+  const pickReady = await waitFor("document.querySelectorAll('.card-item').length >= 1", 12000, '选择角色卡页渲染');
+  check('选择角色卡页面能打开', pickReady);
+  if (pickReady) {
+    const pickText = await ev("document.querySelector('.card-grid').textContent");
+    check('选择角色卡页面也有「新导入」标识', /新导入/.test(pickText));
+    check('标识只给卡池导入的卡（内置卡不标）', (String(pickText).match(/新导入/g) || []).length === 1,
+      '标识数量=' + (String(pickText).match(/新导入/g) || []).length);
+    check('导入的卡出现在选择列表里', /Fate Grand Order - RPG/.test(pickText));
+  }
 } catch (e) {
   bad('测试执行中断', e && e.message);
 } finally {

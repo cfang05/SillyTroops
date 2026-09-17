@@ -37,9 +37,10 @@
 
         <!-- 按钮：导入卡片（主） + 下载原卡（次） -->
         <view class="det-actions">
-          <button class="act-btn is-primary" @tap="onImport">
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.6" width="14" height="12.8" rx="2.2" /><path d="M10 7.2v5.2M7.8 10.2L10 12.4l2.2-2.2" /></svg>
-            <text>导入卡片</text>
+          <button class="act-btn is-primary" :class="{ 'is-done': imported }" :disabled="importing" @tap="onImport">
+            <svg v-if="!imported" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3.6" width="14" height="12.8" rx="2.2" /><path d="M10 7.2v5.2M7.8 10.2L10 12.4l2.2-2.2" /></svg>
+            <svg v-else viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5l3.5 3.5 7.5-8" /></svg>
+            <text>{{ importing ? '正在导入...' : (imported ? '已导入卡库' : '导入卡片') }}</text>
           </button>
           <button class="act-btn" :disabled="downloading" @tap="onDownload">
             <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 3.4v7.2M7.1 7.7L10 10.6l2.9-2.9" /><path d="M4.2 12.4v2.2a1.6 1.6 0 0 0 1.6 1.6h8.4a1.6 1.6 0 0 0 1.6-1.6v-2.2" /></svg>
@@ -79,9 +80,29 @@
           </view>
         </view>
 
+        <!-- 评分与评论一起提交：身份说明 + 输入框紧跟在我的评分下面 -->
+        <view class="det-sec">
+          <!-- 评论身份：让用户明确知道会以哪个身份发布（含等级） -->
+          <text v-if="isLoggedIn" class="identity-note">以「{{ myNickname }}」{{ myLevelBadge ? '（' + myLevelBadge + '）' : '' }}的身份发表评论与评分</text>
+          <view class="comment-row">
+            <input
+              class="comment-input"
+              type="text"
+              :disabled="!isLoggedIn"
+              :placeholder="isLoggedIn ? '写下你的评论...' : '请先登录后再评论'"
+              :value="commentDraft"
+              @input="onCommentInput"
+              @tap="onInputTap"
+            />
+            <button class="comment-send" :disabled="sending" @tap="onSubmit">
+              <text class="comment-send-text">{{ sending ? '...' : '提交' }}</text>
+            </button>
+          </view>
+        </view>
+
         <view class="det-hr"></view>
 
-        <!-- 评论区 -->
+        <!-- 卡片评论展示：我的评论置顶，下面是其他人的评论 -->
         <view class="det-sec">
           <text class="sec-title">评论（{{ comments.length }}）</text>
 
@@ -122,25 +143,6 @@
               </view>
             </view>
           </template>
-
-          <!-- 评论身份：让用户明确知道会以哪个身份发布（含等级） -->
-          <text v-if="isLoggedIn" class="identity-note">以「{{ myNickname }}」{{ myLevelBadge ? '（' + myLevelBadge + '）' : '' }}的身份发表评论与评分</text>
-
-          <!-- 输入框 + 提交（评分与评论一起提交） -->
-          <view class="comment-row">
-            <input
-              class="comment-input"
-              type="text"
-              :disabled="!isLoggedIn"
-              :placeholder="isLoggedIn ? '写下你的评论...' : '请先登录后再评论'"
-              :value="commentDraft"
-              @input="onCommentInput"
-              @tap="onInputTap"
-            />
-            <button class="comment-send" :disabled="sending" @tap="onSubmit">
-              <text class="comment-send-text">{{ sending ? '...' : '提交' }}</text>
-            </button>
-          </view>
         </view>
       </scroll-view>
     </view>
@@ -173,6 +175,8 @@ export default {
       rating: false,          // 评分请求进行中
       downloading: false,
       importing: false,
+      /** 这张卡池卡片是否已经导入过本地卡库（决定按钮显示「导入卡片」还是「已导入卡库」） */
+      imported: false,
       coverFailed: false,
       comments: [],
       commentsLoading: false,
@@ -261,6 +265,7 @@ export default {
         this.commentsError = false
         this.syncLoginState()
         this.myRating = getMyRating(next.id)
+        this.imported = this.checkImported(next.id)
         this.loadComments()
         // 弹窗打开期间禁止主页面滚动（可重入计数，详见 scroll-lock.js）
         if (!this._scrollLocked) {
@@ -279,6 +284,19 @@ export default {
   },
   methods: {
     relativeTime,
+    /**
+     * 这张卡池卡片是否已经在本地角色卡库里（按 sourceCardId 精确匹配）。
+     * 读失败（IndexedDB 异常等）时按"未导入"处理 —— 宁可让用户再点一次，
+     * 也不要因为一个读取故障把按钮永久锁死成「已导入卡库」。
+     */
+    checkImported(poolCardId) {
+      try {
+        return useCharacterCardStore().isImportedFromPool(poolCardId)
+      } catch (e) {
+        console.warn('[CardDetail] 检查导入状态失败（按未导入处理）:', e && e.message)
+        return false
+      }
+    },
     /** 某条评论的等级徽标（'Lv.15 旅团长'）；等级缺失返回空串 */
     levelBadgeOf(comment) {
       return levelBadge(comment && comment.authorLevel)
@@ -571,6 +589,10 @@ export default {
      */
     onImport() {
       if (!this.card || this.importing) return
+      if (this.imported) {
+        uni.showToast({ title: '这张卡已经在你的角色卡库里了', icon: 'none' })
+        return
+      }
       if (!this.isLoggedIn) {
         uni.showToast({ title: '请先登录后再导入', icon: 'none' })
         this.gotoLogin()
@@ -593,16 +615,24 @@ export default {
       this.fetchCardFile(url).then((file) => {
         // 复用现有导入链路：解析 PNG 内嵌 chara 数据 + 生成头像缩略图 + 世界书条目
         return CharacterImporter.importFromPng(file).then((result) => {
-          // ⚠️ store 上的动作叫 importCard（不是 createCard —— createCard 是它内部调用的
-          //    characterCardManager 的方法）。用错名字会得到 "createCard is not a function"。
+          // ⚠️ store 上的动作叫 importFromPool（内部调 characterCardManager.createCard），
+          //    它会同时打上"来自卡池"的来源标记与导入时间（用于「新导入」标识）
           const store = useCharacterCardStore()
-          const id = store.importCard(result.character, result.lorebookEntries)
-          return { id: id, result: result }
+          const id = store.importFromPool(result.character, result.lorebookEntries, this.card.id)
+          return { id: id, result: result, store: store }
         })
       }).then((out) => {
         const name = (out.result && out.result.character && out.result.character.data && out.result.character.data.name) || this.card.name
-        uni.showToast({ title: '已导入到角色卡库：' + name, icon: 'none', duration: 2200 })
+        // 成功后把按钮切成「已导入卡库」，避免用户重复导入同一张卡
+        this.imported = true
         console.log('[CardDetail] 已导入角色卡', out.id, name)
+        // ⚠️ 需求：导入后要**明确提示成功并让玩家点确认**，而不是一闪而过的 toast
+        uni.showModal({
+          title: '导入成功',
+          content: '「' + name + '」已导入你的角色卡库，可在「角色卡库」中查看和使用。',
+          confirmText: '知道了',
+          showCancel: false
+        })
       }).catch((e) => {
         console.warn('[CardDetail] 导入卡片失败:', e && e.message)
         uni.showToast({ title: (e && e.message) || '导入失败', icon: 'none', duration: 2500 })
@@ -765,13 +795,17 @@ export default {
 /* 遮罩铺满视口，但内容限制在页面同一条 maxWidth:480 的中轴列里 ——
    pages.json 的 globalStyle.maxWidth:480 只约束页面容器，管不到 position:fixed 的悬浮层；
    PC 上不限制的话弹窗会横跨整个窗口，远超金色边框（实测 1440 宽窗口下弹窗宽 1390px）。 */
+/* ⚠️ z-index 必须**低于** uni 框架弹窗（showModal/showToast/showLoading 用的是 999）：
+   详情弹窗是一整屏遮罩，如果压在框架弹窗上面，showModal 的确认键虽然显示出来、
+   但真实点击会落到这层遮罩上（实测：按钮可见却点不动，elementFromPoint 命中的是弹窗背后的元素）。
+   层级安排：页面内容 < 详情弹窗 900 < 筛选抽屉 950 < 框架弹窗 999 */
 .overlay {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 1150;
+  z-index: 900;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -956,6 +990,14 @@ export default {
   background: linear-gradient(150deg, oklch(81% 0.13 84 / 0.16), oklch(81% 0.13 84 / 0.04));
   color: var(--accent);
 }
+/* 已导入：换成低调的"完成"样式，不再是强调色（避免诱导重复点击） */
+.act-btn.is-done {
+  border-color: var(--border);
+  background: var(--surface);
+  color: var(--muted);
+}
+.act-btn.is-done svg { color: var(--success); }
+.act-btn[disabled] { opacity: 0.65; }
 
 /* 下载提醒 */
 .tip-note {

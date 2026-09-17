@@ -165,13 +165,15 @@ export default {
 /* 遮罩铺满视口，但抽屉限制在页面同一条 maxWidth:480 的中轴列里 ——
    pages.json 的 globalStyle.maxWidth:480 管不到 position:fixed 的悬浮层，
    PC 上不限制的话抽屉会横跨整个窗口（实测 1440 宽窗口下抽屉宽 1414px）。 */
+/* ⚠️ z-index 同样要**低于** uni 框架弹窗的 999（原因见 CardDetail 的注释）：
+   抽屉在详情弹窗之上（950 > 900），但都在框架弹窗之下。 */
 .overlay {
   position: fixed;
   top: 0;
   right: 0;
   bottom: 0;
   left: 0;
-  z-index: 1200;
+  z-index: 950;
   display: flex;
   align-items: flex-end;
   justify-content: center;

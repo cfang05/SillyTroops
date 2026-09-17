@@ -44,6 +44,56 @@ check('中文 tag 与英文 tag 长度可以不一一对应（按 tagsZh 自己�
   assert.deepStrictEqual(displayTags({ tags: ['a'], tagsZh: ['甲', '乙', '丙'] }), ['甲', '乙', '丙']);
 });
 
+// ── 「新导入」标识与"是否已导入"判定 ────────────────────────
+const poolMod = await import('../src/utils/character_card/poolImport.js');
+const { isNewImport, findImportedCard, NEW_IMPORT_BADGE_MS } = poolMod;
+
+check('标识时长是 24 小时', () => {
+  assert.strictEqual(NEW_IMPORT_BADGE_MS, 24 * 60 * 60 * 1000);
+});
+check('刚导入（1 分钟前）显示「新导入」', () => {
+  const now = Date.now();
+  assert.strictEqual(isNewImport({ sourceCardId: 'c1', importedFromPoolAt: now - 60 * 1000 }, now), true);
+});
+check('导入 23 小时仍显示', () => {
+  const now = Date.now();
+  assert.strictEqual(isNewImport({ importedFromPoolAt: now - 23 * 3600 * 1000 }, now), true);
+});
+check('导入满 24 小时后不再显示', () => {
+  const now = Date.now();
+  assert.strictEqual(isNewImport({ importedFromPoolAt: now - 24 * 3600 * 1000 }, now), false);
+  assert.strictEqual(isNewImport({ importedFromPoolAt: now - 25 * 3600 * 1000 }, now), false);
+});
+check('没有导入时间戳的卡片（酒馆导入/内置卡）不显示标识', () => {
+  assert.strictEqual(isNewImport({ name: '内置卡' }), false);
+  assert.strictEqual(isNewImport({ importedFromPoolAt: 0 }), false);
+  assert.strictEqual(isNewImport({ importedFromPoolAt: null }), false);
+  assert.strictEqual(isNewImport(null), false);
+});
+check('设备时钟回拨（时间戳在未来）仍按"新导入"处理，不会刚导入就消失', () => {
+  const now = Date.now();
+  assert.strictEqual(isNewImport({ importedFromPoolAt: now + 60 * 1000 }, now), true);
+});
+check('脏数据不炸：非数字时间戳按不显示处理', () => {
+  assert.strictEqual(isNewImport({ importedFromPoolAt: 'abc' }), false);
+  assert.strictEqual(isNewImport({ importedFromPoolAt: {} }), false);
+});
+
+check('findImportedCard 按 sourceCardId 精确匹配', () => {
+  const cards = [{ id: 'local1', sourceCardId: 'pool_a' }, { id: 'local2', sourceCardId: 'pool_b' }];
+  assert.strictEqual(findImportedCard(cards, 'pool_a').id, 'local1');
+  assert.strictEqual(findImportedCard(cards, 'pool_b').id, 'local2');
+  assert.strictEqual(findImportedCard(cards, 'pool_c'), null);
+});
+check('findImportedCard 不会用名字误匹配（重名卡是不同卡片）', () => {
+  const cards = [{ id: 'local1', name: '同名卡' }];   // 没有 sourceCardId
+  assert.strictEqual(findImportedCard(cards, 'pool_a'), null);
+});
+check('findImportedCard 对空输入/非数组安全', () => {
+  assert.strictEqual(findImportedCard(null, 'pool_a'), null);
+  assert.strictEqual(findImportedCard([{ sourceCardId: 'pool_a' }], ''), null);
+});
+
 // ── URL 拼接 ────────────────────────────────────────────────
 check('r2Url 拼出 R2 公开域名', () => {
   assert.strictEqual(r2Url('manifest.json'), 'https://cardpool.sillytroops.com/manifest.json');

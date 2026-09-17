@@ -4,12 +4,18 @@
 
 import { defineStore } from 'pinia'
 import characterCardManager from '../utils/character_card/characterCardManager.js'
+// @ts-ignore
+import poolImport from '../utils/character_card/poolImport.js'
 import type { CharacterV2Data, LorebookEntry } from '../types/character'
 
 export interface CharacterCardRecord extends CharacterV2Data {
   id: string
   createdAt: number
   updatedAt: number
+  /** 来自卡池时记录来源卡池卡片的 id（"是否已导入卡库"的判定依据） */
+  sourceCardId?: string
+  /** 来自卡池时的导入时间戳（「新导入」标识保持 24 小时） */
+  importedFromPoolAt?: number
 }
 
 // 模块级单例锁：无论 loadAll() 被多少个页面并发调用多少次，
@@ -37,6 +43,91 @@ export const useCharacterCardStore = defineStore('characterCard', {
 
       // 自动加载内置角色卡（如果尚未导入），全局单例保证不会并发重复导入
       this._loadBuiltinCards()
+    },
+
+    /**
+     * 从卡池导入一张卡（供 CardDetail 调用）。
+     *
+     * 会同时打上两个来自卡池的标记：
+     *   · sourceCardId        → "这张卡池卡片已经导入过"，用来把「导入卡片」变成「已导入卡库」
+     *   · importedFromPoolAt  → 导入时间，用来在角色卡库/选择角色卡页显示「新导入」24 小时
+     *
+     * @param {{data: CharacterV2Data}} characterV2
+     * @param {LorebookEntry[]} lorebookEntries
+     * @param {string} sourceCardId 卡池卡片 id
+     * @returns {string} 本地角色卡 id
+     */
+    importFromPool(characterV2: { data: CharacterV2Data }, lorebookEntries: LorebookEntry[], sourceCardId: string): string {
+      const id = characterCardManager.createCard(
+        Object.assign({}, characterV2.data, {
+          sourceCardId: String(sourceCardId || ''),
+          importedFromPoolAt: Date.now()
+        }),
+        lorebookEntries
+      )
+      this.loadAll()
+      return id
+    },
+
+    /**
+     * 某张卡池卡片是否已经导入过本地卡库。
+     * 直接扫全量卡片（不是 this.cards）—— this.cards 只在 loadAll 后才是全量，
+     * 而详情弹窗可能在卡池页（没调过 loadAll）里打开。
+     */
+    isImportedFromPool(sourceCardId: string): boolean {
+      if (!sourceCardId) return false
+      const all = characterCardManager.getAllCards() as CharacterCardRecord[]
+      return !!poolImport.findImportedCard(all, sourceCardId)
+    },
+
+    /** 某张本地角色卡是否是"24 小时内从卡池导入"的（页面据此显示「新导入」标识） */
+    isNewImport(card: CharacterCardRecord): boolean {
+      return poolImport.isNewImport(card)
+    },
+
+    /**
+     * 给"从卡池导入但当时没打标记"的历史卡片补上标记（幂等）。
+     *
+     * 背景：sourceCardId / importedFromPoolAt 是本功能新增的字段，
+     * 用户在这之前从卡池导入过的卡片没有这两个字段 → 打开卡池详情时
+     * 「导入卡片」仍然是可点的（会重复导入同一张卡）。
+     *
+     * 匹配方式：卡池卡片与角色卡的**名字相同**，且该卡池卡片的 id 还没被任何本地卡片占用。
+     * 用名字匹配是这里唯一可行的办法（历史数据没存 id），因此：
+     *   · 名字取 trim 后精确比较，不做模糊匹配
+     *   · 每张卡池卡片只认领一张本地卡（避免重名卡被批量标记）
+     *   · 认领时间用卡片自身的 createdAt（近似"当时导入的时间"），
+     *     所以老卡片不会被误显示成「新导入」
+     *
+     * @param {Array<{id:string,name:string}>} poolCards 卡池清单
+     */
+    reconcilePoolImports(poolCards: Array<{ id: string; name?: string }>): void {
+      if (!Array.isArray(poolCards) || !poolCards.length) return
+      const all = characterCardManager.getAllCards() as CharacterCardRecord[]
+      if (!all.length) return
+
+      const claimed = new Set(all.map((c) => String((c as any).sourceCardId || '')).filter(Boolean))
+      let changed = 0
+      for (const poolCard of poolCards) {
+        const poolId = String(poolCard && poolCard.id || '')
+        const poolName = String(poolCard && poolCard.name || '').trim()
+        if (!poolId || !poolName || claimed.has(poolId)) continue
+        const hit = all.find((c) =>
+          !String((c as any).sourceCardId || '') && String(c.name || '').trim() === poolName
+        )
+        if (!hit) continue
+        characterCardManager.updateCard(hit.id, {
+          sourceCardId: poolId,
+          // 用原 createdAt：既反映"当时导入"，又不会让老卡突然变成「新导入」
+          importedFromPoolAt: Number(hit.createdAt) || Date.now()
+        } as any)
+        claimed.add(poolId)
+        changed++
+      }
+      if (changed) {
+        console.log('[characterCardStore] 已为 ' + changed + ' 张历史卡池导入的卡片补上来源标记')
+        this.loadAll()
+      }
     },
 
     getById(id: string): CharacterCardRecord | null {
