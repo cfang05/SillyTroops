@@ -61,21 +61,20 @@
 
         <view class="det-hr"></view>
 
-        <!-- 我的评分 -->
+        <!-- 我的评分：点击即选择（与评论一起提交，见下方「提交」）
+             整行只绑一个原生 click，靠坐标算"第几颗星的左/右半"（见 onRateRowClick 的注释） -->
         <view class="det-sec">
           <text class="sec-title">我的评分</text>
-          <view class="rate-row">
-            <button
-              v-for="n in 5"
-              :key="n"
-              :class="['star', n <= myRating ? 'on' : '']"
-              :aria-label="n + ' 星'"
-              :disabled="rating"
-              @tap="onRate(n)"
-            >
-              <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.6l2.3 4.7 5.2.8-3.8 3.7.9 5.2L10 14.5l-4.6 2.5.9-5.2L2.5 8.1l5.2-.8L10 2.6z" /></svg>
-            </button>
-            <text class="rate-value">{{ myRating ? myRating.toFixed(1) : '--' }}</text>
+          <view class="rate-row" @click="onRateRowClick" @touchstart="onRateRowClick" @mouseleave="onStarLeave" @mousemove="onRateRowHover">
+            <view v-for="n in 5" :key="n" class="star" :aria-label="n + ' 星'">
+              <!-- 底层：空心星（灰色描边），永远整颗显示 -->
+              <svg class="star-base" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linejoin="round"><path d="M10 2.6l2.3 4.7 5.2.8-3.8 3.7.9 5.2L10 14.5l-4.6 2.5.9-5.2L2.5 8.1l5.2-.8L10 2.6z" /></svg>
+              <!-- 上层：金色实心星，按 0 / 50% / 100% 宽度裁切，做出半星 -->
+              <view class="star-fill" :style="{ width: starFillWidth(n) }">
+                <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 2.6l2.3 4.7 5.2.8-3.8 3.7.9 5.2L10 14.5l-4.6 2.5.9-5.2L2.5 8.1l5.2-.8L10 2.6z" /></svg>
+              </view>
+            </view>
+            <text class="rate-value">{{ myRatingText }}</text>
             <text class="rate-hint">{{ rateHint }}</text>
           </view>
         </view>
@@ -86,8 +85,16 @@
         <view class="det-sec">
           <text class="sec-title">评论（{{ comments.length }}）</text>
 
-          <!-- 评论身份：让用户明确知道会以哪个身份发布（含等级） -->
-          <text v-if="isLoggedIn" class="identity-note">以「{{ myNickname }}」{{ myLevelBadge ? '（' + myLevelBadge + '）' : '' }}的身份发表评论</text>
+          <!-- 我的评论：置顶显示，明确标注「我的评论」 -->
+          <view v-if="myComment" class="cmt-mine">
+            <view class="cmt-mine-head">
+              <text class="cmt-mine-badge">我的评论</text>
+              <text v-if="myComment.rating" class="cmt-mine-rating">评分 {{ Number(myComment.rating).toFixed(1) }}</text>
+              <text class="cmt-time">{{ relativeTime(myComment.createdAt) }}</text>
+              <button class="cmt-del" @tap="onDelete(myComment)">删除</button>
+            </view>
+            <text class="cmt-content">{{ myComment.content || '（只打了分）' }}</text>
+          </view>
 
           <view v-if="commentsLoading" class="cmt-state">评论加载中...</view>
           <view v-else-if="commentsError" class="cmt-state cmt-error" @tap="loadComments">
@@ -95,25 +102,31 @@
           </view>
           <view v-else-if="!comments.length" class="cmt-state">还没有评论</view>
 
-          <view v-else class="cmt-list">
-            <view v-for="c in comments" :key="c.id" class="cmt-item">
-              <view class="cmt-avatar">
-                <text>{{ initialOf(c.authorName) }}</text>
-              </view>
-              <view class="cmt-main">
-                <view class="cmt-top">
-                  <text class="cmt-name">{{ c.authorName || '匿名' }}</text>
-                  <!-- 评论者等级：读取时由服务端用**当前**等级覆盖快照，所以这里是实时的 -->
-                  <text v-if="levelBadgeOf(c)" class="cmt-level">{{ levelBadgeOf(c) }}</text>
-                  <text class="cmt-time">{{ relativeTime(c.createdAt) }}</text>
-                  <button v-if="c.authorId === myUserId" class="cmt-del" @tap="onDelete(c)">删除</button>
+          <template v-else>
+            <!-- 其他评论（含我自己更早的评论）：在我的评论下面 -->
+            <view v-if="otherComments.length" class="cmt-list">
+              <view v-for="c in otherComments" :key="c.id" class="cmt-item">
+                <view class="cmt-avatar">
+                  <text>{{ initialOf(c.authorName) }}</text>
                 </view>
-                <text class="cmt-content">{{ c.content }}</text>
+                <view class="cmt-main">
+                  <view class="cmt-top">
+                    <text class="cmt-name">{{ c.authorName || '匿名' }}</text>
+                    <!-- 评论者等级：读取时由服务端用**当前**等级覆盖快照，所以这里是实时的 -->
+                    <text v-if="levelBadgeOf(c)" class="cmt-level">{{ levelBadgeOf(c) }}</text>
+                    <text class="cmt-time">{{ relativeTime(c.createdAt) }}</text>
+                    <button v-if="c.authorId === myUserId" class="cmt-del" @tap="onDelete(c)">删除</button>
+                  </view>
+                  <text class="cmt-content">{{ c.content }}</text>
+                </view>
               </view>
             </view>
-          </view>
+          </template>
 
-          <!-- 输入框 + 发送 -->
+          <!-- 评论身份：让用户明确知道会以哪个身份发布（含等级） -->
+          <text v-if="isLoggedIn" class="identity-note">以「{{ myNickname }}」{{ myLevelBadge ? '（' + myLevelBadge + '）' : '' }}的身份发表评论与评分</text>
+
+          <!-- 输入框 + 提交（评分与评论一起提交） -->
           <view class="comment-row">
             <input
               class="comment-input"
@@ -124,7 +137,9 @@
               @input="onCommentInput"
               @tap="onInputTap"
             />
-            <button class="comment-send" :disabled="sending" @tap="onSend">{{ sending ? '...' : '发送' }}</button>
+            <button class="comment-send" :disabled="sending" @tap="onSubmit">
+              <text class="comment-send-text">{{ sending ? '...' : '提交' }}</text>
+            </button>
           </view>
         </view>
       </scroll-view>
@@ -139,6 +154,8 @@ import { lockPageScroll, unlockPageScroll } from '../utils/scroll-lock.js'
 // 直接复用现有登录系统：Pinia 包装（store）优先，userManager（本地缓存）兜底。
 // 不新建任何用户体系，昵称口径与全站一致：nickname → username。
 import { useUserStore } from '../../../stores/userStore'
+import { useCharacterCardStore } from '../../../stores/characterCardStore'
+import * as CharacterImporter from '../../../adapters/character/CharacterImporter'
 import userManager from '../../../utils/account/userManager.js'
 
 export default {
@@ -152,8 +169,10 @@ export default {
   data() {
     return {
       myRating: 0,
+      hoverRating: 0,        // PC 上滑过星星时的预览分值（0 = 无预览）
       rating: false,          // 评分请求进行中
       downloading: false,
+      importing: false,
       coverFailed: false,
       comments: [],
       commentsLoading: false,
@@ -193,13 +212,34 @@ export default {
     },
     rateHint() {
       if (!this.isLoggedIn) return '请先登录后再评分'
-      if (this.rating) return '提交中...'
-      if (this.myRating) return '点击星星可修改评分'
-      return '点击星星打分'
+      if (this.sending) return '提交中...'
+      if (this.myRating) return '点击星星可改分（左半 = 半星）'
+      return '点击星星打分（左半 = 半星）'
     },
     /** 我自己身份的等级徽标（'Lv.15 旅团长'）；取不到等级时返回空串，模板据此不渲染 */
     myLevelBadge() {
       return levelBadge(this.myLevel)
+    },
+    /**
+     * 我的评论（列表里**最新**的一条自己的评论）：单独置顶显示，并标记「我的评论」。
+     * 同一个人写过多次时只置顶最新那条，更早的仍留在下方"其他评论"里，不会凭空消失。
+     */
+    myComment() {
+      if (!this.myUserId) return null
+      return this.comments.find((c) => c && String(c.authorId) === this.myUserId) || null
+    },
+    /** 其他人的评论（含我自己更早的评论），按时间倒序 */
+    otherComments() {
+      const mine = this.myComment
+      return this.comments.filter((c) => !mine || c.id !== mine.id)
+    },
+    /** 我的评分展示：0.5 步进，未评分显示 -- */
+    myRatingText() {
+      return this.myRating ? Number(this.myRating).toFixed(1) : '--'
+    },
+    /** 当前用于渲染的分数：hover 预览优先（PC 上滑过星星时预览"点这里打几分"），否则是我的选择 */
+    ratingForDisplay() {
+      return this.hoverRating || this.myRating || 0
     }
   },
   watch: {
@@ -299,9 +339,19 @@ export default {
       uni.navigateTo({ url: '/pages/login/login?reason=login-required&back=1' })
     },
 
-    // ── 评分 ─────────────────────────────────────────────────
-    onRate(n) {
-      if (this.rating) return
+    // ── 评分选择（不立即提交，与评论一起提交） ────────────────
+    /**
+     * 点星星选分：每颗星分左右两半 —— **左半 = 半星（x.5）、右半 = 整星（x.0）**。
+     *
+     * 实现方式：整行绑一个原生 click，用点击横坐标反推"第几颗星 + 左/右半"。
+     *
+     * ⚠️ 为什么不用「每颗星各绑一个事件、再从事件里找那颗星」：
+     * uni 在 H5 上派发给处理器的**不是原生事件**，而是一个归一化对象 ——
+     * 实测其中 target / currentTarget 都是 undefined（连 `ev.target.tagName` 都会抛错），
+     * 且 `$el` 在这类渲染下也不可靠。所以"从事件里反查元素"这条路走不通。
+     * 改用行级委托后只需要 clientX + 行内五颗星的矩形，全部是可测量的事实。
+     */
+    onRateRowClick(e) {
       if (!this.isLoggedIn) {
         uni.showToast({ title: '请先登录后再评分', icon: 'none' })
         this.gotoLogin()
@@ -309,20 +359,67 @@ export default {
       }
       if (!this.card) return
 
-      const previous = this.myRating          // 0 表示本设备还没评过
-      this.rating = true
-      statsApi.rateCard(this.card.id, n, previous || null).then((res) => {
-        this.myRating = n
-        setMyRating(this.card.id, n)
-        if (res && res.stats) this.$emit('rated', this.card.id, res.stats)
-        uni.showToast({ title: previous ? '评分已更新' : '感谢评分', icon: 'none' })
-      }).catch((e) => {
-        // 降级：不崩溃，只提示；列表上的平均分保持服务端原值
-        console.warn('[CardDetail] 评分失败:', e && e.message)
-        uni.showToast({ title: this.describeApiError(e, '评分'), icon: 'none' })
-      }).then(() => {
-        this.rating = false
-      })
+      const picked = this.pickRatingFromEvent(e)
+      if (picked) this.myRating = picked
+    },
+    /**
+     * 由指针横坐标算出分值：每颗星宽 w，落点在第 i 颗（0-based）时
+     * 相对该星的比例 < 0.5 → i+0.5 分（半星），否则 i+1 分（整星）。
+     * @returns {number|null} 0.5 步进的分值；取不到坐标/矩形时返回 null
+     */
+    pickRatingFromEvent(e) {
+      try {
+        const src = e || {}
+        const touch = (src.touches && src.touches[0]) || (src.changedTouches && src.changedTouches[0]) || src
+        const clientX = touch.clientX !== undefined ? touch.clientX
+          : (touch.pageX !== undefined ? touch.pageX : null)
+        if (clientX == null || typeof document === 'undefined') return null
+
+        const stars = document.querySelectorAll('.rate-row .star')
+        if (!stars || stars.length < 1) return null
+        for (let i = 0; i < stars.length; i++) {
+          const rect = stars[i].getBoundingClientRect()
+          if (!rect || rect.width <= 0) continue
+          if (clientX < rect.left || clientX > rect.right) continue
+          const isLeftHalf = (clientX - rect.left) < rect.width / 2
+          return isLeftHalf ? (i + 0.5) : (i + 1)
+        }
+        // 落在星星之外的左右留白：按"更靠近哪一端"取边界值，避免点了没反应
+        const first = stars[0].getBoundingClientRect()
+        const last = stars[stars.length - 1].getBoundingClientRect()
+        if (clientX < first.left) return 0.5
+        if (clientX > last.right) return stars.length
+        return null
+      } catch (err) {
+        return null
+      }
+    },
+    /** 每颗星在"当前显示分"下应该亮到哪一半：'empty' | 'half' | 'full' */
+    starFill(starIndex) {
+      // ⚠️ ratingForDisplay 是 computed，不是方法：这里不能写成 ratingForDisplay()
+      const r = Number(this.ratingForDisplay) || 0
+      if (r >= starIndex) return 'full'
+      if (r >= starIndex - 0.5) return 'half'
+      return 'empty'
+    },
+    /** 金色实心层的宽度：空 0% / 半星 50% / 整星 100% */
+    starFillWidth(starIndex) {
+      const f = this.starFill(starIndex)
+      if (f === 'full') return '100%'
+      if (f === 'half') return '50%'
+      return '0%'
+    },
+    /**
+     * 星星的 hover 预览（PC）：鼠标划过时临时显示"点这里会打几分"，
+     * 离开后回到已选分值。移动端没有 hover，不影响。
+     */
+    onRateRowHover(e) {
+      if (!this.isLoggedIn) return
+      const picked = this.pickRatingFromEvent(e)
+      if (picked) this.hoverRating = picked
+    },
+    onStarLeave() {
+      this.hoverRating = 0
     },
 
     /**
@@ -339,6 +436,10 @@ export default {
     },
 
     // ── 下载原卡 ─────────────────────────────────────────────
+    /**
+     * 下载原卡：把原 PNG 存到用户设备。
+     * **同时计入该卡片的下载次数**（与"导入卡片"一样，两者都算一次下载）。
+     */
     onDownload() {
       if (!this.card || this.downloading) return
       const url = this.fileUrl
@@ -355,57 +456,207 @@ export default {
         console.warn('[CardDetail] 下载计数失败（不影响下载）:', e && e.message)
       })
 
-      this.triggerDownload(url)
-
-      // 下载成功的小奖励（与全站经验值系统一致；失败不影响下载）
-      try {
-        const store = useUserStore()
-        if (store && typeof store.addXp === 'function') store.addXp(5)
-      } catch (e) { /* 经验值只影响趣味性，失败忽略 */ }
-
-      setTimeout(() => { this.downloading = false }, 1200)
+      Promise.resolve(this.triggerDownload(url, this.card.file)).then(() => {
+        // 下载成功的小奖励（与全站经验值系统一致；失败不影响下载）
+        try {
+          const store = useUserStore()
+          if (store && typeof store.addXp === 'function') store.addXp(5)
+        } catch (e) { /* 经验值只影响趣味性，失败忽略 */ }
+        this.downloading = false
+      })
     },
     /**
-     * 触发浏览器下载。
-     * ⚠️ R2 的公开域名与站点跨域，`download` 属性会被浏览器忽略（变为"打开新标签页"），
-     * 要真正下载需要在 R2 侧对该域名设置 CORS 允许本站，并返回 Content-Disposition: attachment。
-     * 这里先做能力最全的尝试，失败再退化为新窗口打开，保证用户始终能拿到文件。
+     * 触发"下载到设备"。
+     *
+     * ⚠️ 为什么不直接用 `<a href="跨域URL" download>`：
+     * 实测（本地双端口 + 真 Chrome）—— 跨域链接上的 download 属性会被浏览器**直接忽略**，
+     * 退化成"打开这个 URL"，于是**整个页面被导航走**（表现为整页空白、用户以为崩了）。
+     * 只有服务端返回 Content-Disposition: attachment 时浏览器才会真的下载。
+     *
+     * 所以这里的策略（按可靠性排序，实测均通过）：
+     *   1) 同源（含 blob:）：a[download] 一定生效，直接下载。
+     *   2) 跨域：先 fetch 成 Blob（R2 已配 CORS，所以读得到字节），
+     *      再用**同源 blob: URL** + a[download] 下载 —— 与域名、与服务器响应头都无关，
+     *      前端自己就能保证成功。
+     *   3) 上面都不行（CORS 没配好 / 网络异常）才退化成新窗口打开，并给出明确提示。
+     *
+     * @param {string} url 资源地址
+     * @param {string} filename 期望的文件名（下载后显示的名字）
      */
-    triggerDownload(url) {
+    triggerDownload(url, filename) {
       // #ifdef H5
-      try {
+      const name = String(filename || '').split('/').pop() || 'card.png'
+      const sameOrigin = (() => {
+        try {
+          return new URL(url, location.href).origin === location.origin
+        } catch (e) {
+          return false
+        }
+      })()
+
+      const anchorDownload = (href, isBlob) => {
         const a = document.createElement('a')
-        a.href = url
+        a.href = href
         a.rel = 'noopener'
-        a.setAttribute('download', '')
+        a.setAttribute('download', name)
         a.style.display = 'none'
         document.body.appendChild(a)
         a.click()
         document.body.removeChild(a)
-        uni.showToast({ title: '已开始下载原卡', icon: 'none' })
-        return
-      } catch (e) {
-        console.warn('[CardDetail] 触发下载失败，退回新窗口打开:', e && e.message)
-        try {
-          window.open(url, '_blank', 'noopener')
-          uni.showToast({ title: '已在新窗口打开原卡', icon: 'none' })
-          return
-        } catch (e2) { /* 落到下面的通用兜底 */ }
+        if (isBlob) {
+          // 给浏览器留出读取时间再释放，避免刚点完就 revoke 导致下载中断
+          setTimeout(() => { try { URL.revokeObjectURL(href) } catch (e) { /* ignore */ } }, 10000)
+        }
       }
+
+      if (sameOrigin) {
+        try {
+          anchorDownload(url, false)
+          uni.showToast({ title: '已开始下载原卡', icon: 'none' })
+          return Promise.resolve(true)
+        } catch (e) {
+          console.warn('[CardDetail] 同源下载失败，尝试 blob 方案:', e && e.message)
+        }
+      }
+
+      // 跨域：fetch → blob → 同源 blob URL 下载
+      uni.showLoading({ title: '正在取得原卡...' })
+      return fetch(url, { mode: 'cors', credentials: 'omit' })
+        .then((res) => {
+          if (!res.ok) throw new Error('HTTP ' + res.status)
+          return res.blob()
+        })
+        .then((blob) => {
+          if (!blob || !blob.size) throw new Error('原卡内容为空')
+          const blobUrl = URL.createObjectURL(blob)
+          anchorDownload(blobUrl, true)
+          uni.showToast({ title: '已开始下载原卡', icon: 'none' })
+          return true
+        })
+        .catch((e) => {
+          console.warn('[CardDetail] blob 下载失败，退化为打开新窗口:', e && e.message)
+          try {
+            window.open(url, '_blank', 'noopener')
+            uni.showToast({ title: '已在新窗口打开原卡', icon: 'none' })
+          } catch (e2) {
+            uni.showToast({ title: '下载失败，请检查网络或 R2 的 CORS 配置', icon: 'none' })
+          }
+          return false
+        })
+        .then((ok) => {
+          uni.hideLoading()
+          return ok
+        })
       // #endif
-      // 小程序端没有 a 标签：保存到本地相册/文件由调用方后续接入
+      // #ifndef H5
+      // 小程序端没有 a 标签/blob 下载：复制链接交给系统能力
       uni.setClipboardData({
         data: url,
         success: () => { uni.showToast({ title: '下载链接已复制', icon: 'none' }) },
         fail: () => { uni.showToast({ title: '下载失败', icon: 'none' }) }
       })
+      return Promise.resolve(false)
+      // #endif
     },
 
-    // ── 导入卡片 ─────────────────────────────────────────────
+    // ── 导入卡片（写入玩家本地的角色卡池） ───────────────────
+    /**
+     * 把这张卡导入玩家本地角色卡池：
+     *   1) 从 R2 取原 PNG
+     *   2) 用现有的 CharacterImporter.importFromPng 解析 PNG 里的 chara 元数据
+     *      （与"酒馆导入 → 导入 PNG 角色卡"完全同一条链路，会顺带压头像、解析世界书）
+     *   3) 落进 characterCardStore（IndexedDB，按账号隔离）
+     *
+     * **同时计入该卡片的下载次数**（与"下载原卡"一样，两者都算一次下载）。
+     */
     onImport() {
-      // 卡池 → 本地卡库的导入链路尚未接通（需要把 R2 上的 PNG 拉下来解析 chara_card 数据）。
-      // 这里如实提示，不假装成功。
-      uni.showToast({ title: '功能开发中', icon: 'none', duration: 1500 })
+      if (!this.card || this.importing) return
+      if (!this.isLoggedIn) {
+        uni.showToast({ title: '请先登录后再导入', icon: 'none' })
+        this.gotoLogin()
+        return
+      }
+      const url = this.fileUrl
+      if (!url) {
+        uni.showToast({ title: '该卡片没有可导入的原卡文件', icon: 'none' })
+        return
+      }
+
+      this.importing = true
+      // 导入也算一次下载（需求明确要求两处都计入下载次数）
+      statsApi.recordDownload(this.card.id).then((res) => {
+        if (res && res.stats) this.$emit('downloaded', this.card.id, res.stats)
+      }).catch((e) => {
+        console.warn('[CardDetail] 导入计数失败（不影响导入）:', e && e.message)
+      })
+
+      this.fetchCardFile(url).then((file) => {
+        // 复用现有导入链路：解析 PNG 内嵌 chara 数据 + 生成头像缩略图 + 世界书条目
+        return CharacterImporter.importFromPng(file).then((result) => {
+          // ⚠️ store 上的动作叫 importCard（不是 createCard —— createCard 是它内部调用的
+          //    characterCardManager 的方法）。用错名字会得到 "createCard is not a function"。
+          const store = useCharacterCardStore()
+          const id = store.importCard(result.character, result.lorebookEntries)
+          return { id: id, result: result }
+        })
+      }).then((out) => {
+        const name = (out.result && out.result.character && out.result.character.data && out.result.character.data.name) || this.card.name
+        uni.showToast({ title: '已导入到角色卡库：' + name, icon: 'none', duration: 2200 })
+        console.log('[CardDetail] 已导入角色卡', out.id, name)
+      }).catch((e) => {
+        console.warn('[CardDetail] 导入卡片失败:', e && e.message)
+        uni.showToast({ title: (e && e.message) || '导入失败', icon: 'none', duration: 2500 })
+      }).then(() => {
+        this.importing = false
+      })
+    },
+
+    /**
+     * 从 R2 取原卡文件并包装成 File（CharacterImporter.importFromPng 需要 File）。
+     *
+     * 用 XHR 而不是 fetch：需要拿到 ArrayBuffer + 文件名，且 XHR 的 onerror/status 更好判错；
+     * 小程序端没有 File/ArrayBuffer 文件读取能力，直接给出清晰提示（与导入页一致）。
+     */
+    fetchCardFile(url) {
+      return new Promise((resolve, reject) => {
+        // #ifdef H5
+        try {
+          const xhr = new XMLHttpRequest()
+          xhr.open('GET', url, true)
+          xhr.responseType = 'arraybuffer'
+          xhr.onload = () => {
+            if (xhr.status < 200 || xhr.status >= 300) {
+              reject(new Error('取原卡失败（HTTP ' + xhr.status + '）'))
+              return
+            }
+            const buf = xhr.response
+            if (!buf || !buf.byteLength) {
+              reject(new Error('取到的原卡文件是空的'))
+              return
+            }
+            const fileName = String((this.card && this.card.file) || 'card.png').split('/').pop()
+            try {
+              resolve(new File([buf], fileName, { type: 'image/png' }))
+            } catch (e) {
+              // 老浏览器没有 File 构造器时，退化成 Blob（importFromPng 只用到 arrayBuffer()）
+              resolve(new Blob([buf], { type: 'image/png' }))
+            }
+          }
+          xhr.onerror = () => {
+            // 跨域被拦（R2 未放行本站）或网络不通都走这里
+            reject(new Error('取原卡失败：可能是跨域被拦截，请管理员为 R2 配置 CORS 允许本站'))
+          }
+          xhr.send()
+          return
+        } catch (e) {
+          reject(e)
+          return
+        }
+        // #endif
+        // #ifndef H5
+        reject(new Error('小程序端不支持导入 PNG 角色卡，请用「下载原卡」再前往酒馆导入'))
+        // #endif
+      })
     },
 
     // ── 评论 ─────────────────────────────────────────────────
@@ -423,25 +674,29 @@ export default {
         this.commentsLoading = false
       })
     },
-    onCommentInput(e) {
-      this.commentDraft = (e && e.detail && e.detail.value !== undefined) ? e.detail.value : ''
-    },
-    onInputTap() {
+    /**
+     * 「提交」= 评分 + 评论**一起**提交（需求约定）。
+     *
+     * 一次 POST /api/card-comments/:cardId 同时带上 content 与 rating：
+     * 服务端会用 applyRating 记账评分（与 /rate 同一套语义），并把最新 stats 一起回传，
+     * 所以这里一次请求就能同时刷新星级人数与评论列表 —— 不会出现"评论成功但分没记上"。
+     *
+     * 至少要有一项：只打分不写评论、或只评论不打分都允许（需求里"评论需要可以输入"，
+     * 但没说要强制两者都填；强制会让人打不了分）。
+     */
+    onSubmit() {
+      if (this.sending || this.rating) return
       if (!this.isLoggedIn) {
-        uni.showToast({ title: '请先登录后再评论', icon: 'none' })
-        this.gotoLogin()
-      }
-    },
-    onSend() {
-      if (this.sending) return
-      if (!this.isLoggedIn) {
-        uni.showToast({ title: '请先登录后再评论', icon: 'none' })
+        uni.showToast({ title: '请先登录后再操作', icon: 'none' })
         this.gotoLogin()
         return
       }
+      if (!this.card) return
+
       const content = String(this.commentDraft || '').trim()
-      if (!content) {
-        uni.showToast({ title: '评论内容不能为空', icon: 'none' })
+      const rating = Number(this.myRating) || 0
+      if (!content && !rating) {
+        uni.showToast({ title: '请先打分或写下评论', icon: 'none' })
         return
       }
       if (content.length > 500) {
@@ -450,24 +705,39 @@ export default {
       }
 
       this.sending = true
-      statsApi.postComment(this.card.id, {
+      // previousRating 传本地记下的旧分：0 表示首次评分（服务端把它当"未评过"，增加人数）
+      const previous = rating ? getMyRating(this.card.id) : 0
+
+      statsApi.submitRatingAndComment(this.card.id, {
         authorId: this.myUserId,
         authorName: this.myNickname,
         content: content,
-        // 已经打过分的，顺手把评分一起带上（服务端的 rating 字段是可选语义）
-        rating: this.myRating || null
+        rating: rating || null,
+        previousRating: previous
       }).then((res) => {
+        // 服务端回传的最新统计 + 评论：直接采用，保证"提交后立刻看到变化"
+        if (res && res.stats) this.$emit('rated', this.card.id, res.stats)
+        if (rating) setMyRating(this.card.id, rating)
         const c = res && res.comment ? res.comment : null
-        if (c) this.comments = [c].concat(this.comments)   // 乐观更新：插入列表顶部
+        if (c) this.comments = [c].concat(this.comments)
         this.commentDraft = ''
         this.$emit('commented', this.card.id)
-        uni.showToast({ title: '评论已发布', icon: 'none' })
+        uni.showToast({ title: rating ? '已提交评分和评论' : '已提交评论', icon: 'none' })
       }).catch((e) => {
-        console.warn('[CardDetail] 评论发送失败:', e && e.message)
-        uni.showToast({ title: this.describeApiError(e, '评论发送'), icon: 'none' })
+        console.warn('[CardDetail] 评分/评论提交失败:', e && e.message)
+        uni.showToast({ title: this.describeApiError(e, '提交'), icon: 'none' })
       }).then(() => {
         this.sending = false
       })
+    },
+    onCommentInput(e) {
+      this.commentDraft = (e && e.detail && e.detail.value !== undefined) ? e.detail.value : ''
+    },
+    onInputTap() {
+      if (!this.isLoggedIn) {
+        uni.showToast({ title: '请先登录后再评论', icon: 'none' })
+        this.gotoLogin()
+      }
     },
     onDelete(comment) {
       if (!comment || !comment.id) return
@@ -492,6 +762,9 @@ export default {
 </script>
 
 <style scoped>
+/* 遮罩铺满视口，但内容限制在页面同一条 maxWidth:480 的中轴列里 ——
+   pages.json 的 globalStyle.maxWidth:480 只约束页面容器，管不到 position:fixed 的悬浮层；
+   PC 上不限制的话弹窗会横跨整个窗口，远超金色边框（实测 1440 宽窗口下弹窗宽 1390px）。 */
 .overlay {
   position: fixed;
   top: 0;
@@ -502,7 +775,6 @@ export default {
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 24rpx;
   background: oklch(7% 0.012 70 / 0.74);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
@@ -519,8 +791,11 @@ export default {
 }
 
 .det {
+  /* maxWidth 与内边距都要算进 480 之内：420 + 左右各 24 = 468 < 480 */
   width: 100%;
-  max-height: 100%;
+  max-width: 420px;
+  max-height: calc(100vh - 48px);
+  margin: 0 24px;
   display: flex;
   flex-direction: column;
   overflow: hidden;
@@ -530,6 +805,7 @@ export default {
   box-shadow: 0 68rpx 140rpx -56rpx oklch(4% 0.02 70 / 0.95);
   transform: translateY(10rpx) scale(0.99);
   transition: transform 200ms ease;
+  box-sizing: border-box;
 }
 .overlay.show .det {
   transform: translateY(0) scale(1);
@@ -740,23 +1016,46 @@ export default {
   gap: 8rpx;
   margin-top: 18rpx;
 }
+/* 星星：底层空心 + 上层金色实心按宽度裁切（0 / 50% / 100%），做出半星。
+   星星本身用 view 而不是 button：需要拿到点击坐标来区分左右半颗，
+   而且 button 的默认样式会把内部 svg 撑得不好控制。
+
+   ⚠️ 星形必须**铺满** .star 这个盒子（width/height 100%）。
+   之前写死 38rpx 且靠 flex 居左，图形实际只占盒子宽度的 79%，
+   于是"点右半"落在图形的右半 → 被判成左半 → 第 5 颗星点右半却只给 4.5 分（实测踩过）。
+   铺满之后，坐标比例与视觉比例才一致，半星判断才成立。 */
 .star {
+  position: relative;
   width: 48rpx;
   height: 48rpx;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  background: none;
+  flex: none;
   color: oklch(34% 0.014 70);
-  line-height: 1;
 }
-.star svg { width: 38rpx; height: 38rpx; }
-.star.on { color: var(--accent); }
-/* 提交中禁用点击，但保留配色（不加这条会被 uni 的默认禁用样式压成灰色） */
-.star[disabled] { opacity: 0.6; }
+.star svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+.star-base {
+  color: oklch(40% 0.014 70);
+}
+.star-fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 0;
+  height: 100%;
+  overflow: hidden;
+  color: var(--accent);
+  /* 宽度由内联 style 控制；不加过渡，点半星时要即时变化 */
+}
+.star-fill svg {
+  /* 关键：实心层里的 svg 也要铺满**外层盒子**（而不是被 50% 宽的父层压扁），
+     这样左半才正好是半颗星 */
+  width: 48rpx;
+  height: 48rpx;
+  flex: none;
+}
 .rate-value {
   margin-left: 8rpx;
   font-family: var(--font-mono);
@@ -893,6 +1192,50 @@ export default {
   color: #171104;
   font-size: 24rpx;
   font-weight: 700;
+  /* 居中要同时管住 button 自身与内部文字节点：
+     uni 的 button 默认带 padding + line-height，"提交"两个字很容易偏上/偏左（实测偏了一些）。 */
+  display: flex;
+  align-items: center;
+  justify-content: center;
   line-height: 1;
+  white-space: nowrap;
+}
+.comment-send-text {
+  display: block;
+  line-height: 1;
+  font-size: 24rpx;
+  font-weight: 700;
+  color: #171104;
+}
+
+/* 我的评论：置顶 + 金边强调 */
+.cmt-mine {
+  margin-top: 18rpx;
+  padding: 18rpx 20rpx;
+  border-radius: 20rpx;
+  border: 1rpx solid oklch(74% 0.11 84 / 0.45);
+  background: linear-gradient(150deg, oklch(81% 0.13 84 / 0.13), oklch(81% 0.13 84 / 0.03));
+}
+.cmt-mine-head {
+  display: flex;
+  align-items: center;
+  gap: 12rpx;
+}
+.cmt-mine-badge {
+  flex: none;
+  padding: 3rpx 12rpx;
+  border-radius: 10rpx;
+  background: linear-gradient(135deg, var(--accent), var(--accent-strong));
+  color: #171104;
+  font-size: 18rpx;
+  font-weight: 700;
+}
+.cmt-mine-rating {
+  font-family: var(--font-mono);
+  font-size: 19rpx;
+  color: var(--accent);
+}
+.cmt-mine .cmt-content {
+  margin-top: 10rpx;
 }
 </style>

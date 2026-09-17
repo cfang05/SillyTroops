@@ -6,9 +6,10 @@
        1px = 2rpx（基准屏 750rpx = 375px）。 -->
   <view class="tabbar">
     <button
-      v-for="item in tabs"
+      v-for="(item, idx) in tabs"
       :key="item.id"
       :class="['tab', active === item.id ? 'active' : '']"
+      :style="{ order: idx < 2 ? idx + 1 : idx + 2 }"
       :aria-label="item.label"
       :aria-pressed="active === item.id ? 'true' : 'false'"
       @tap="onTab(item)"
@@ -38,7 +39,11 @@
       <text>{{ item.label }}</text>
     </button>
 
-    <view class="tab-center">
+    <!-- 中间的 + 按钮：用 order:3 显式钉在正中间。
+         只靠 DOM 顺序不可靠 —— 实测编译产物把静态节点排在了 v-for 之后
+         （children 顺序变成 [tab,tab,tab,tab,tab-center]），FAB 就被挤到最右边了。
+         flex order 与 DOM 顺序无关，无论编译器怎么排都能保证它落在第 3 位、真正居中。 -->
+    <view class="tab-center" :style="{ order: 3 }">
       <button class="fab" aria-label="开始对话" @tap="onFab">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><path d="M10 5v10M5 10h10" /></svg>
       </button>
@@ -116,6 +121,7 @@ export default {
   color: var(--faint);
   border-radius: 18rpx;
   transition: color 150ms ease;
+  /* order 由模板内联给出（见上面的注释），这里不写死，避免与内联值打架 */
 }
 
 .tab svg {

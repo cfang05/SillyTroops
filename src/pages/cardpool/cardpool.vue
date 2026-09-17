@@ -1,21 +1,19 @@
 <template>
-  <view class="stage" :style="{ paddingTop: statusBarHeight + 'px' }">
-    <!-- 主内容：弹窗/抽屉打开时加 inert，让键盘/读屏也无法聚焦到背后的元素 -->
-    <view class="market" :inert="layerOpen">
-      <view class="mkt-stage">
-        <!-- 顶部导航：返回 + 标题 + 副标题 -->
-        <view class="mkt-head">
-          <button class="mkt-exit" aria-label="返回" @tap="goBack">
-            <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M11.6 5.8H7A2.2 2.2 0 0 0 4.8 8v4A2.2 2.2 0 0 0 7 14.2h4.6" /><path d="M8.4 10h5.2" /><path d="M11.4 7.8L13.6 10l-2.2 2.2" /></svg>
-          </button>
-          <view class="mkt-title">
-            <text class="mkt-h2">冒险卡池</text>
-            <text class="mkt-sub">Card Pool</text>
-          </view>
-          <view class="mkt-head-spacer"></view>
-        </view>
+  <view class="stage">
+    <!-- 顶部导航：与其它子页面（角色卡库等）完全一致，直接复用通用 NavBar 组件。
+        它自带状态栏留白 + 毛玻璃 + 68rpx 返回键 + 居中标题/副标题，不再自己画一套。 -->
+    <NavBar title="冒险卡池" subtitle="Card Pool" />
 
-        <!-- 分类 Tab：仅「角色卡」已实现，其余 Toast -->
+    <!-- 主内容：弹窗/抽屉打开时加 inert，让键盘/读屏也无法聚焦背后的元素。
+         ⚠️ inert 必须加在**不含**弹窗/抽屉的那一层（.mkt-stage）上：
+         之前整个 .market 都被 inert，而 CardDetail / FilterDrawer 就在 .market 里面，
+         结果悬浮层自己也被 inert 掉了 —— 真实鼠标点击会被浏览器按"inert 子树不接收
+         指针事件"处理（命中测试直接穿透到 .stage），表现为"弹窗里的按钮、输入框、
+         星星全都点不动"。合成事件（dispatchEvent）不经过命中测试，所以自动化测试
+         当时是绿的，这个坑只在真实点击下暴露。 -->
+    <view class="market">
+      <view class="mkt-stage" :inert="layerOpen">
+        <!-- 分类 Tab：角色卡 / 冒险卡 / 预设·正则（预设与正则合并为一个入口，未实现 Toast） -->
         <view class="mkt-tabs" role="group" aria-label="卡池分类">
           <button
             v-for="t in categories"
@@ -30,11 +28,8 @@
               <template v-else-if="t.id === 'adventure'">
                 <path d="M3.6 4.8l4.3-1.5 4.2 1.5 4.3-1.5v10.9l-4.3 1.5-4.2-1.5-4.3 1.5V4.8z" /><path d="M7.9 3.3v10.9M12.1 4.8v10.9" />
               </template>
-              <template v-else-if="t.id === 'preset'">
-                <path d="M3.5 7h5.6M14.1 7h2.4M3.5 13h2.5M11.1 13h5.4" /><circle cx="11.2" cy="7" r="1.9" /><circle cx="8.2" cy="13" r="1.9" />
-              </template>
               <template v-else>
-                <path d="M4 5.5h12M4 10h12M4 14.5h8" />
+                <path d="M3.5 7h5.6M14.1 7h2.4M3.5 13h2.5M11.1 13h5.4" /><circle cx="11.2" cy="7" r="1.9" /><circle cx="8.2" cy="13" r="1.9" />
               </template>
             </svg>
             <text>{{ t.label }}</text>
@@ -146,23 +141,21 @@
 <script>
 import CardDetail from './components/CardDetail.vue'
 import FilterDrawer from './components/FilterDrawer.vue'
+import NavBar from '../../components/common/NavBar.vue'
 import statsApi, { r2Url, ratingText, downloadText, displayTags, configureCardPoolStats } from './utils/cardpool_stats.js'
 import { resetPageScrollLock } from './utils/scroll-lock.js'
-import { getNavBarHeight } from '../../utils/navbar.js'
 import userManager from '../../utils/account/userManager.js'
 import { useUserStore } from '../../stores/userStore'
 
 export default {
-  components: { CardDetail, FilterDrawer },
+  components: { CardDetail, FilterDrawer, NavBar },
   data() {
     return {
-      statusBarHeight: 0,
-      // 分类：仅「角色卡」已实现
+      // 分类：仅「角色卡」已实现；预设与正则合并成一个入口
       categories: [
         { id: 'character', label: '角色卡' },
         { id: 'adventure', label: '冒险卡' },
-        { id: 'preset', label: '预设' },
-        { id: 'regex', label: '正则' }
+        { id: 'preset', label: '预设 / 正则' }
       ],
       activeCategory: 'character',
 
@@ -228,15 +221,11 @@ export default {
     // 未登录用户不允许进入卡池页：守卫会 reLaunch 到登录页，
     // 登录成功后凭 redirect 参数自动重建本页（实现在 App.vue 的 checkUserLogin）。
     if (!getApp().checkUserLogin()) return
-    this.statusBarHeight = getNavBarHeight().statusBarHeight
-    // #ifdef H5
-    this.statusBarHeight = 0
-    // #endif
 
     // 把"取登录 token"的能力注入统计工具层（评论接口需要 Bearer）
     configureCardPoolStats(() => userManager.getAuthToken())
 
-    // 同步一次当前用户，保证评论身份是最新的昵称
+    // 同步一次当前用户，保证评论身份是最新的昵称/等级
     try { useUserStore().syncCurrentUser() } catch (e) { /* 忽略 */ }
 
     this.loadManifest()
@@ -329,17 +318,6 @@ export default {
     },
 
     // ── 交互 ─────────────────────────────────────────────────
-    goBack() {
-      // 直接输 URL 进来时页面栈里没有上一页，退回首页而不是卡住。
-      // 用 typeof 判断而不是直接调用：H5 构建会把 getCurrentPages 注入成 import，
-      // 小程序端才有全局同名函数（与 App.vue 里的写法保持一致）。
-      let pages = []
-      try {
-        if (typeof getCurrentPages === 'function') pages = getCurrentPages()
-      } catch (e) { pages = [] }
-      if (pages && pages.length > 1) uni.navigateBack()
-      else uni.reLaunch({ url: '/pages/index/index' })
-    },
     onCategoryTap(t) {
       if (t.id === 'character') {
         this.activeCategory = 'character'
@@ -403,6 +381,9 @@ export default {
   background: var(--bg-deep);
   display: flex;
   flex-direction: column;
+  /* 顶部导航栏是 position:fixed（NavBar 组件），所以内容要自己让出高度：
+     状态栏（H5 为 0）+ 导航栏 108rpx，再留一点间距 */
+  padding-top: calc(108rpx + 16rpx);
 }
 
 .market {
@@ -419,52 +400,8 @@ export default {
   flex-direction: column;
 }
 
-/* 顶部导航 */
-.mkt-head {
-  flex: none;
-  display: flex;
-  align-items: center;
-  gap: 16rpx;
-  padding: 12rpx 28rpx 14rpx;
-}
-.mkt-title {
-  flex: 1;
-  min-width: 0;
-  text-align: center;
-}
-.mkt-h2 {
-  display: block;
-  font-family: var(--font-serif);
-  font-size: 32rpx;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--fg);
-}
-.mkt-sub {
-  display: block;
-  margin-top: 6rpx;
-  font-family: var(--font-mono);
-  font-size: 16rpx;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--muted);
-}
-.mkt-exit {
-  width: 60rpx;
-  height: 60rpx;
-  flex: none;
-  margin: 0;
-  padding: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 18rpx;
-  border: 1rpx solid var(--border);
-  background: var(--surface);
-  color: var(--muted);
-}
-.mkt-exit svg { width: 28rpx; height: 28rpx; }
-.mkt-head-spacer { width: 60rpx; flex: none; }
+/* 顶部导航改用公共 NavBar 组件后，这里不再保留 .mkt-head/.mkt-exit 的局部副本，
+   避免与 NavBar 的返回键样式各自漂移（返回键统一由 components/common/NavBar.vue 提供）。 */
 
 /* 分类 Tab */
 .mkt-tabs {

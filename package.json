@@ -14,7 +14,8 @@
     "smoke:cardpool": "node scripts/smoke-cardpool.js",
     "smoke:cardpool-utils": "node scripts/smoke-cardpool-utils.mjs",
     "test:e2e-cardpool": "node scripts/e2e-cardpool.mjs",
-    "test:e2e-levels": "node scripts/e2e-cardpool-levels.mjs"
+    "test:e2e-levels": "node scripts/e2e-cardpool-levels.mjs",
+    "test:e2e-pc": "node scripts/e2e-cardpool-pc.mjs"
   },
   "engines": {
     "node": ">=18"

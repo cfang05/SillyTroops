@@ -166,11 +166,40 @@ if (process.argv.indexOf('--unconfigured') !== -1) {
     assert.strictEqual(r.body.stats.ratingCount, 2);
   });
 
-  await check('rating 非法（0 / 6 / 字符串）→ 400', async () => {
-    for (const bad of [0, 6, 'abc', 2.5]) {
+  await check('rating 非法（0 / 6 / 字符串 / 非 0.5 倍数）→ 400', async () => {
+    for (const bad of [0, 6, 'abc', 2.3, 0.4, 5.5, 2.25, -1]) {
       const r = await callWith('POST', '/api/card-stats/:cardId/rate', { cardId: 'x_card' }, { rating: bad });
       assert.strictEqual(r.status, 400, 'rating=' + JSON.stringify(bad) + ' 应被拒绝');
     }
+  });
+
+  await check('半星评分被接受（0.5 / 2.5 / 4.5）', async () => {
+    delete store[r2.STATS_KEY];
+    const a = await callWith('POST', '/api/card-stats/:cardId/rate', { cardId: 'half_card' }, { rating: 0.5 });
+    assert.strictEqual(a.status, 200, JSON.stringify(a.body));
+    assert.strictEqual(a.body.stats.ratingSum, 0.5);
+    const b = await callWith('POST', '/api/card-stats/:cardId/rate', { cardId: 'half_card' }, { rating: 2.5 });
+    assert.strictEqual(b.body.stats.ratingSum, 3);
+    assert.strictEqual(b.body.stats.ratingCount, 2);
+    const c = await callWith('POST', '/api/card-stats/:cardId/rate', { cardId: 'half_card' }, { rating: 4.5 });
+    assert.strictEqual(c.body.stats.ratingSum, 7.5);
+    assert.strictEqual(c.body.stats.ratingCount, 3);
+  });
+
+  await check('半星改评分：只调总和、人数不变（0.5 → 4.5 的差值精确）', async () => {
+    const r = await callWith('POST', '/api/card-stats/:cardId/rate', { cardId: 'half_card' }, { rating: 4.5, previousRating: 0.5 });
+    assert.strictEqual(r.body.stats.ratingSum, 11.5, '7.5 - 0.5 + 4.5 = 11.5');
+    assert.strictEqual(r.body.stats.ratingCount, 3);
+  });
+
+  await check('多次半星累加不会出现浮点尾巴（0.1+0.2 类问题）', async () => {
+    delete store[r2.STATS_KEY];
+    for (let i = 0; i < 10; i++) {
+      await callWith('POST', '/api/card-stats/:cardId/rate', { cardId: 'float_card' }, { rating: 0.5 });
+    }
+    const s = (await call('GET', '/api/card-stats')).body['float_card'];
+    assert.strictEqual(s.ratingSum, 5, '10 × 0.5 应正好是 5，实际 ' + s.ratingSum);
+    assert.strictEqual(String(s.ratingSum).indexOf('0000000'), -1);
   });
 
   await check('cardId 非法（原型污染键 / 超长 / 含斜杠）→ 400', async () => {
@@ -243,6 +272,44 @@ if (process.argv.indexOf('--unconfigured') !== -1) {
   await check('删除不存在的评论 → 404', async () => {
     const r = await callWith('DELETE', '/api/card-comments/:cardId/:commentId', { cardId: 'dungeon-master', commentId: 'c_1_deadbeef' });
     assert.strictEqual(r.status, 404);
+  });
+
+  await check('评论 + 评分一起提交：一次请求同时记账评分与评论', async () => {
+    delete store[r2.STATS_KEY];
+    delete store[r2.COMMENTS_KEY];
+    const r = await callWith('POST', '/api/card-comments/:cardId', { cardId: 'combo_card' }, {
+      content: '评分和评论一起提交',
+      rating: 3.5,
+      previousRating: 0
+    });
+    assert.strictEqual(r.status, 200, JSON.stringify(r.body));
+    assert.strictEqual(r.body.rated, true);
+    // 评分已记入 stats
+    assert.deepStrictEqual(r.body.stats, { ratingSum: 3.5, ratingCount: 1, downloadCount: 0 });
+    // 评论也写入了
+    assert.strictEqual(r.body.comment.rating, 3.5);
+    assert.strictEqual(r.body.comment.content, '评分和评论一起提交');
+    const list = await callWith('GET', '/api/card-comments/:cardId', { cardId: 'combo_card' });
+    assert.strictEqual(list.body.total, 1);
+    const stats = (await call('GET', '/api/card-stats')).body['combo_card'];
+    assert.strictEqual(stats.ratingSum, 3.5);
+  });
+
+  await check('只评论不打分：不产生评分记录（rated=false、stats 为 null）', async () => {
+    const r = await callWith('POST', '/api/card-comments/:cardId', { cardId: 'comment_only_card' }, { content: '只评论' });
+    assert.strictEqual(r.status, 200);
+    assert.strictEqual(r.body.rated, false);
+    assert.strictEqual(r.body.stats, null);
+    const stats = (await call('GET', '/api/card-stats')).body['comment_only_card'];
+    assert.strictEqual(stats, undefined, '不该凭空产生该卡片的评分记录');
+  });
+
+  await check('评论里带非法评分 → 400，且不写入评论', async () => {
+    const before = ((await callWith('GET', '/api/card-comments/:cardId', { cardId: 'bad_combo' })).body.total) || 0;
+    const r = await callWith('POST', '/api/card-comments/:cardId', { cardId: 'bad_combo' }, { content: 'x', rating: 2.3 });
+    assert.strictEqual(r.status, 400);
+    const after = ((await callWith('GET', '/api/card-comments/:cardId', { cardId: 'bad_combo' })).body.total) || 0;
+    assert.strictEqual(after, before, '非法评分时不应留下评论');
   });
 
   await check('R2 未配置时 GET /api/card-stats → 503（子进程实测，避免打桩 isConfigured）', async () => {

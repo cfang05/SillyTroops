@@ -45,12 +45,14 @@
       </button>
 
       <!-- 本地真实生效的开关：按 tags 里的 nsfw 过滤。默认开启（保持当前清单不变） -->
-      <!-- ⚠️ 用 uni 自己的 <checkbox> 组件，而不是 <input type="checkbox">：
-           uni-app 编译器会把 input 一律转成 uni-input（type 只支持 text/number/idcard/
-           digit/tel），勾选语义会整个丢掉 —— 实测编译产物里 type=checkbox 变成了文本输入框。
-           原生 checkbox 有真正的勾选语义（可聚焦、可读屏）。 -->
-      <label class="f-check">
-        <checkbox class="nsfw-box" :checked="nsfw" color="#e9c877" @tap="onNsfwToggle" />
+      <!-- ⚠️ 两个实现细节（都实测踩过）：
+           1) 用 uni 的 <checkbox> 而不是 <input type="checkbox"> —— 编译器会把 input 一律
+              转成 uni-input（type 只支持 text/number/idcard/digit/tel），勾选语义会丢。
+           2) 开关状态挂在**整行**的 @tap 上，而不是挂在 checkbox 上：在 H5 上
+              checkbox 会被包进 uni-label，真实点击命中的是 label，挂在 checkbox 上的
+              @tap 收不到（表现为"这一行点了没反应"）。挂整行同时也符合"点哪都能开关"的预期。 -->
+      <label class="f-check" @tap="onNsfwToggle">
+        <checkbox class="nsfw-box" :checked="nsfw" color="#e9c877" />
         <view class="shield"><svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"><path d="M10 2.8l6 2.3v5c0 3.6-2.5 6.3-6 7.4-3.5-1.1-6-3.8-6-7.4v-5l6-2.3z" /></svg></view>
         <text class="f-check-txt">NSFW</text>
         <text class="f-check-hint">{{ nsfw ? '显示 NSFW 卡片' : '隐藏 NSFW 卡片' }}</text>
@@ -160,7 +162,9 @@ export default {
 </script>
 
 <style scoped>
-/* 遮罩 + 毛玻璃 */
+/* 遮罩铺满视口，但抽屉限制在页面同一条 maxWidth:480 的中轴列里 ——
+   pages.json 的 globalStyle.maxWidth:480 管不到 position:fixed 的悬浮层，
+   PC 上不限制的话抽屉会横跨整个窗口（实测 1440 宽窗口下抽屉宽 1414px）。 */
 .overlay {
   position: fixed;
   top: 0;
@@ -170,6 +174,7 @@ export default {
   z-index: 1200;
   display: flex;
   align-items: flex-end;
+  justify-content: center;
   background: oklch(7% 0.012 70 / 0.74);
   backdrop-filter: blur(2px);
   -webkit-backdrop-filter: blur(2px);
@@ -187,6 +192,7 @@ export default {
 /* 从底部升起，圆角顶部 */
 .sheet {
   width: 100%;
+  max-width: 480px;
   display: flex;
   flex-direction: column;
   gap: 18rpx;

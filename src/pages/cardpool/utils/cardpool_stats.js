@@ -124,7 +124,7 @@ export function fetchComments(cardId) {
 /**
  * 发表评论。
  * @param {string} cardId
- * @param {{authorId:string, authorName:string, content:string, rating?:number|null}} payload
+ * @param {{authorId:string, authorName:string, content:string, rating?:number|null, previousRating?:number}} payload
  */
 export function postComment(cardId, payload) {
   const body = {
@@ -133,7 +133,23 @@ export function postComment(cardId, payload) {
     content: payload.content
   };
   if (payload.rating) body.rating = payload.rating;
+  if (payload.previousRating) body.previousRating = payload.previousRating;
   return _request('/api/card-comments/' + _enc(cardId), { method: 'POST', body: body });
+}
+
+/**
+ * 详情页的「评分 + 评论一起提交」。
+ *
+ * 走的就是评论接口（服务端的评论接口支持可选 rating，会复用与 /rate 完全相同的评分语义），
+ * 但语义上它是一次"提交"而不是"发评论"，所以单独包一个名字更清楚。
+ *
+ * @param {string} cardId
+ * @param {{authorId:string, authorName:string, content:string, rating?:number|null, previousRating?:number}} payload
+ * @returns {Promise<{cardId:string, comment:object, stats:object|null, rated:boolean}>}
+ *          stats 仅在本次带了评分时返回（前端据此刷新星级人数/平均分）
+ */
+export function submitRatingAndComment(cardId, payload) {
+  return postComment(cardId, payload);
 }
 
 /** 删除评论（服务端只允许删自己的，否则 403） */
@@ -241,6 +257,7 @@ export default {
   recordDownload,
   fetchComments,
   postComment,
+  submitRatingAndComment,
   deleteComment,
   displayTags,
   averageRating,

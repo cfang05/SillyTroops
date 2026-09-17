@@ -68,15 +68,28 @@ function _toInt(v) {
 }
 
 /**
- * 严格整数校验：只接受整数（含 "5" 这种数字字符串）。
- * ⚠️ 不能先 Math.trunc 再判范围：Math.trunc(2.5) === 2 会让 2.5 星蒙混过关，
- * 把平均分算成非预期值。NaN 与小数一律拒绝。
+ * 评分值校验：1-5 分，**允许 0.5 的半个星**（UI 上每颗星左半 = x.5、右半 = x.0）。
+ *
+ * ⚠️ 这里不能再用"必须是整数"（历史实现是整数校验，加半星后会被全部拒掉）。
+ * 但仍然要严格：只接受 0.5 的整数倍，避免 4.37 这种值把平均分弄得很难看。
+ * ⚠️ 也不能先 Math.trunc 再判范围：Math.trunc(2.5)===2 会让 2.5 蒙混过关成 2 分。
+ *
+ * @returns {number} 合法评分；不合法返回 NaN
  */
 function _toRating(v) {
   if (v === null || v === undefined || v === '') return NaN;
   const n = Number(v);
-  return Number.isInteger(n) ? n : NaN;
+  if (!Number.isFinite(n)) return NaN;
+  // 0.5 的整数倍：乘 2 后必须是整数
+  if (!Number.isInteger(Math.round(n * 2))) return NaN;
+  const half = Math.round(n * 2) / 2;
+  if (Math.abs(half - n) > 1e-9) return NaN;
+  return half;
 }
+
+/** 评分区间与文案（0.5 步进） */
+const MIN_RATING = 0.5;
+const MAX_RATING = 5;
 
 // ── 建路由 ───────────────────────────────────────────────────
 /**
@@ -110,6 +123,55 @@ function registerCardPoolRoutes(app, deps) {
     res.status(status).json({ error: (e && e.message) || (what + '失败') });
   }
 
+  /**
+   * 把一次评分写进 stats.json（读-改-写串行化在 r2.updateJson 里）。
+   *
+   * @param {string} cardId
+   * @param {number} rating 0.5-5（0.5 步进）
+   * @param {number} previousRating 该用户之前的评分；0 表示首次评分
+   * @returns {Promise<object>} 该卡片的最新统计
+   */
+  async function applyRating(cardId, rating, previousRating) {
+    return r2.updateJson(r2.STATS_KEY, {}, (current) => {
+      const stats = _isPlainObject(current) ? Object.assign({}, current) : {};
+      const s = _statsOf(stats, cardId);
+      if (previousRating) {
+        // 改评分：只调整总和，不增加评分人数
+        s.ratingSum = Math.max(0, s.ratingSum - previousRating) + rating;
+      } else {
+        s.ratingSum += rating;
+        s.ratingCount += 1;
+      }
+      // 半星会让浮点数累积出 0.30000000000000004 这种尾巴，落盘前收敛到 1 位小数
+      s.ratingSum = Math.round(s.ratingSum * 10) / 10;
+      stats[cardId] = s;
+      return { data: stats, result: s };
+    });
+  }
+
+  /** 解析并校验 body 里的 rating / previousRating，返回 { ok, rating, previousRating, error } */
+  function parseRatingBody(body) {
+    const b = body || {};
+    const rating = _toRating(b.rating);
+    if (!(rating >= MIN_RATING && rating <= MAX_RATING)) {
+      return { ok: false, error: 'rating 必须是 0.5-5 之间的值（0.5 的整数倍）' };
+    }
+    let previousRating = 0;
+    if (b.previousRating !== undefined && b.previousRating !== null && b.previousRating !== '') {
+      // ⚠️ previousRating = 0 是**合法**的"该用户还没评过分"（前端本地记录为空时天然就是 0），
+      // 必须与缺省等价，不能按非法值拒掉 —— 否则"评分+评论一起提交"在首次评分时必失败。
+      const prev = _toRating(b.previousRating);
+      if (prev === 0) {
+        previousRating = 0;
+      } else if (!(prev >= MIN_RATING && prev <= MAX_RATING)) {
+        return { ok: false, error: 'previousRating 必须是 0（未评过）或 0.5-5 之间的值（0.5 的整数倍）' };
+      } else {
+        previousRating = prev;
+      }
+    }
+    return { ok: true, rating: rating, previousRating: previousRating };
+  }
+
   // ========== 评分 + 下载量 ==========
 
   /** 全量统计（前端首屏与卡片列表用，卡片与 R2 manifest 并行请求） */
@@ -124,9 +186,9 @@ function registerCardPoolRoutes(app, deps) {
   });
 
   /**
-   * 评分。
+   * 评分（单独评分入口；详情页的"评分+评论一起提交"走 comments 接口）。
    *
-   * body: { rating: 1-5, previousRating?: 1-5 }
+   * body: { rating: 0.5-5, previousRating?: 0.5-5 }
    *
    * previousRating 是「该用户本地记下的旧评分」，用来实现需求 4.5 推荐的策略
    * （允许修改评分，但只更新 ratingSum、不增加 ratingCount）：
@@ -142,35 +204,12 @@ function registerCardPoolRoutes(app, deps) {
     const cardId = normalizeCardId(req.params.cardId);
     if (!cardId) return res.status(400).json({ error: 'cardId 不合法' });
 
-    const body = req.body || {};
-    const rating = _toRating(body.rating);
-    if (!(rating >= 1 && rating <= 5)) {
-      return res.status(400).json({ error: 'rating 必须是 1-5 的整数' });
-    }
-
-    // previousRating 可能缺省（首次评分）；给了就必须合法，否则宁可报错也不猜
-    let previousRating = 0;
-    if (body.previousRating !== undefined && body.previousRating !== null && body.previousRating !== '') {
-      previousRating = _toRating(body.previousRating);
-      if (!(previousRating >= 1 && previousRating <= 5)) {
-        return res.status(400).json({ error: 'previousRating 必须是 1-5 的整数' });
-      }
-    }
+    const parsed = parseRatingBody(req.body);
+    if (!parsed.ok) return res.status(400).json({ error: parsed.error });
 
     try {
-      const updated = await r2.updateJson(r2.STATS_KEY, {}, (current) => {
-        const stats = _isPlainObject(current) ? Object.assign({}, current) : {};
-        const s = _statsOf(stats, cardId);
-        if (previousRating) {
-          s.ratingSum = Math.max(0, s.ratingSum - previousRating) + rating;
-        } else {
-          s.ratingSum += rating;
-          s.ratingCount += 1;
-        }
-        stats[cardId] = s;
-        return { data: stats, result: s };
-      });
-      res.json({ cardId: cardId, stats: updated, updated: !!previousRating });
+      const updated = await applyRating(cardId, parsed.rating, parsed.previousRating);
+      res.json({ cardId: cardId, stats: updated, updated: !!parsed.previousRating });
     } catch (e) {
       fail(res, e, '保存评分');
     }
@@ -256,10 +295,15 @@ function registerCardPoolRoutes(app, deps) {
   /**
    * 发表评论（必须登录）。
    *
-   * body: { authorId, authorName, content, rating? }
+   * body: { authorId, authorName, content, rating?, previousRating? }
    * ⚠️ authorId / authorName 由 token 覆盖：客户端传什么都不作数，
    *    这样"评论者身份 = 登录用户昵称"是服务端保证的，不是前端自觉。
    *    仍然校验 authorName 字段（长度 1-20），以便前端传了脏数据时能立刻报错。
+   *
+   * 详情页的交互是「评分 + 评论一起提交」，所以这里可选地带一个 rating：
+   * 带上就同时更新 stats.json（复用 applyRating，与 /rate 完全同一套语义：
+   * 首次评分涨人数、改评分只调总和），并在响应里回传最新统计，
+   * 让前端一次请求就能同时刷新评分与评论，不需要发两次、也不会出现"评论成功但分没记上"。
    */
   app.post('/api/card-comments/:cardId', requireAuth, async (req, res) => {
     if (!ensureR2Or503(res)) return;
@@ -280,11 +324,14 @@ function registerCardPoolRoutes(app, deps) {
       }
     }
 
+    // 可选评分：带了就一并记账（0.5 步进）
     let rating = null;
+    let previousRating = 0;
     if (body.rating !== undefined && body.rating !== null && body.rating !== '') {
-      const r = _toRating(body.rating);
-      if (!(r >= 1 && r <= 5)) return res.status(400).json({ error: 'rating 必须是 1-5 的整数' });
-      rating = r;
+      const parsed = parseRatingBody(body);
+      if (!parsed.ok) return res.status(400).json({ error: parsed.error });
+      rating = parsed.rating;
+      previousRating = parsed.previousRating;
     }
 
     const account = req.account || {};
@@ -319,6 +366,13 @@ function registerCardPoolRoutes(app, deps) {
     };
 
     try {
+      // 先记账评分（若带了），再写评论。两者都在 R2 上、各自串行化；
+      // 评分失败就不写评论，避免"评论说打了 5 分但统计里没有"的不一致。
+      let stats = null;
+      if (rating !== null) {
+        stats = await applyRating(cardId, rating, previousRating);
+      }
+
       await r2.updateJson(r2.COMMENTS_KEY, {}, (current) => {
         const all = _isPlainObject(current) ? Object.assign({}, current) : {};
         const list = Array.isArray(all[cardId]) ? all[cardId].slice() : [];
@@ -327,10 +381,12 @@ function registerCardPoolRoutes(app, deps) {
         all[cardId] = list.length > MAX_COMMENTS_PER_CARD ? list.slice(-MAX_COMMENTS_PER_CARD) : list;
         return { data: all, result: comment };
       });
-      console.log('[CardPool] ' + authorName + '（Lv.' + (authorLevel == null ? '?' : authorLevel) + '）评论了 ' + cardId);
+      console.log('[CardPool] ' + authorName + '（Lv.' + (authorLevel == null ? '?' : authorLevel) + '）评论了 ' + cardId +
+        (rating !== null ? '（评分 ' + rating + '）' : ''));
       // 回传的评论也带上"当前等级"（与读取接口一致），前端乐观插入时就能显示正确的等级
       const [resolved] = await withCurrentLevels([comment]);
-      res.json({ cardId: cardId, comment: resolved || comment });
+      // stats 只在这次提交带了评分时才返回（前端据此同步刷新星级人数/平均分）
+      res.json({ cardId: cardId, comment: resolved || comment, stats: stats, rated: rating !== null });
     } catch (e) {
       fail(res, e, '保存评论');
     }

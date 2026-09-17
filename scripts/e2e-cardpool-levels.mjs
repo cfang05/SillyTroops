@@ -352,9 +352,18 @@ try {
     check('评论身份提示里也带等级', /以「改个昵称」/.test(detText) && /Lv\.12/.test(detText), '');
 
     const levels = await evaluate("Array.from(document.querySelectorAll('.cmt-level')).map(function(e){return e.textContent})");
-    check('两条评论各有一个等级徽标', levels.length === 2, JSON.stringify(levels));
-    check('普通账号的评论显示实时等级 Lv.12（不是发表时的 7）',
-      levels.some((t) => /Lv\.12/.test(t)), JSON.stringify(levels));
+    // ⚠️ 布局变化：登录用户自己的评论现在被单独置顶到「我的评论」块里（那块不重复显示等级徽标），
+    //    所以「其他评论」列表里只剩管理员的评论一条。自己的实时等级改从身份提示里断言。
+    check('其他评论的等级徽标正确（管理员 Lv.15 旅团长）',
+      levels.length === 1 && /Lv\.15/.test(levels[0]), JSON.stringify(levels));
+    check('我的评论置顶块存在', !!(await evaluate("!!document.querySelector('.cmt-mine')")));
+    check('我的身份提示显示实时等级 Lv.12（不是发表时的快照 7）',
+      /以「改个昵称」/.test(detText) && /Lv\.12/.test(detText),
+      (String(detText).match(/以「[^」]*」[^的]*的身份/) || ['(未找到身份提示)'])[0]);
+    // 服务端返回的等级本来就是实时值，这里再直接从接口确认一次
+    const liveList = await (await fetch(BASE + '/api/card-comments/dungeon-master')).json();
+    const mine = (liveList.comments || []).find((c) => c.authorId === userId);
+    check('接口返回的"我的评论"等级是当前等级 12', mine && mine.authorLevel === 12, 'authorLevel=' + (mine && mine.authorLevel));
   }
 } catch (e) {
   bad('测试执行中断', e && e.message);
