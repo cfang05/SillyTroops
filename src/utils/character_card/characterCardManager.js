@@ -1,9 +1,9 @@
 // src/utils/character_card/characterCardManager.js
 // AI 角色卡（Character Card，酒馆语义）存储管理器
-// 与 utils/character_info/character-manager.js（玩家扮演的 TRPG 角色/role）完全独立
+// 与 TRPG 数值档案（utils/persona/trpgProfile.js）完全独立
 //
 // 概念说明：
-//   - Role（玩家角色）  = 玩家在 TRPG 中扮演的角色，六维属性/HP/MP/装备，见 character-manager.js
+//   - Role（玩家角色）  = 玩家在 TRPG 中扮演的角色，六维属性/HP/MP/装备，见 trpgProfile.js
 //   - Character Card    = AI 扮演的 NPC/角色，酒馆语义字段（description/personality/scenario/first_mes等）
 // 两者语义完全不同，存储也完全独立，不共享 storage key。
 //
@@ -101,6 +101,19 @@ function createCard(cardData, lorebookEntries) {
   }
 
   return id;
+}
+
+/**
+ * 等待底层存储（IndexedDB）hydrate 完成。
+ *
+ * 为什么必须暴露它（Bug 修复：内置角色卡每次刷新重复导入）：
+ * 本文件对外是**同步** API，而 P5.3 之后真正的数据在 IndexedDB 里。
+ * hydrate 完成前 `_store.get()` 会同步回落到本地存储，而本地副本在首次迁移后
+ * 已被清除 —— 于是"刷新页面后第一次读列表"会拿到**空数组**。
+ * 任何"库里有没有这张卡"的判重逻辑（如内置卡逐项比对）都必须先 await 本函数。
+ */
+function ensureReady() {
+  return _store.ensureReady();
 }
 
 function getCard(id) {
@@ -217,6 +230,7 @@ function getLorebookEntryByKey(id, key) {
 
 export default {
   createCard,
+  ensureReady,
   getCard,
   getAllCards,
   updateCard,

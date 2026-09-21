@@ -488,17 +488,24 @@ function ensureAdminSeed() {
 
 // ── 注册 / 登录 / 登出 ───────────────────────────────────────
 /**
- * 注册（注册即测试账号由服务端数据库默认值决定，客户端不能指定）
+ * 注册
+ *
+ * 规则（站点公开后）：昵称**必填且不能与他人重复**（服务端权威判定，重名返回 409）；
+ * 新账号默认**没有**测试权限 —— is_test 由服务端固定写 false，客户端传什么都不作数，
+ * 要用内置测试通道必须由管理员在监控页的「测试管理」里打开开关。
+ *
  * @returns {Promise<{success:boolean, message?:string, user?:object}>}
  */
 async function register(username, password, nickname) {
   var u = (username || '').trim();
   var p = (password || '').trim();
+  var n = (nickname || '').trim();
   if (!u || !p) return { success: false, message: '用户名和密码不能为空' };
+  if (!n) return { success: false, message: '请填写昵称' };
   try {
     var data = await _request('/api/auth/register', {
       method: 'POST',
-      body: { username: u, password: p, nickname: (nickname || '').trim() }
+      body: { username: u, password: p, nickname: n }
     });
     var user = _refreshProfile(data.user);
     _saveSession(data.token, user);
@@ -574,9 +581,9 @@ async function _tryClaimLegacyAccount(username, password) {
         password: password,
         nickname: legacy.nickname || '',
         legacyLocalId: legacy.id || null,
-        // 老账号的权限沿用本地记录（admin 会带入管理员权限）
-        isAdmin: !!legacy.isAdmin,
-        isTest: !!(legacy.isTest || legacy.isAdmin),
+        // ⚠️ 不再提交 isAdmin/isTest：服务端已改为**一律忽略**这两个字段
+        // （认领接口是公开的，采信它等于让任何人自封管理员/测试权限）。
+        // 认领后的账号权限与其他账号一致：测试权限要管理员在监控页开启。
         // 老账号的等级/经验沿用本地记录（服务端只在这两个字段有值时才采用）
         level: local ? local.level : undefined,
         xp: local ? local.xp : undefined
@@ -706,7 +713,7 @@ async function updateProfile(userId, updates) {
  * 等级因此从"纯本地派生数据"升级为账号属性（与 nickname 同级）。
  *
  * 失败只是打印告警、不阻塞本地升级 —— 等级是趣味性数据，不该因为它让升级流程报错；
- * 下次 syncProgressionToServer 会再推一次。
+ * 下次 syncProgression 会再推一次。
  *
  * @param {{level:number, xp:number}} progression
  * @returns {Promise<boolean>} 是否成功

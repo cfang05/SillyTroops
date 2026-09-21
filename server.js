@@ -54,6 +54,12 @@ app.use((req, res, next) => {
 //   - 密码用 scrypt + 每账号 salt 哈希入库，明文永不落库
 //   - 权限（is_admin / is_test）以数据库为准，客户端无法自授
 //   - 前端只保存服务端签发的 token 与脱敏后的用户信息
+//
+// 站点公开后的注册策略（2026-09 调整）：
+//   - 昵称必填且全站唯一（大小写不敏感），见 /api/auth/register 与 accounts.nicknameExists
+//   - 新账号 is_test 一律为 false：不再"注册即测试账号"，要用内置测试 API 必须由
+//     admin 在监控页的「测试管理」里打开开关（/api/admin/set-test）
+//   - 认领老账号（/api/auth/claim）同样不带来任何权限，堵住"自封管理员"的公开后门
 
 const DB_UNAVAILABLE_MSG = '账号服务未配置（服务端缺少 DATABASE_URL）';
 
@@ -96,27 +102,42 @@ function requireAdmin(req, res, next) {
   next();
 }
 
-/** 注册（注册即测试账号：is_test 由数据库默认值 TRUE 决定，不接受客户端传值） */
+/**
+ * 注册
+ *
+ * 规则（站点公开后的策略）：
+ *   - 昵称**必填**，且不能与任何已有账号重复（大小写不敏感，见 accounts.nicknameExists）
+ *   - is_test 固定写 false：注册不再默认拥有测试权限，必须由 admin 在监控页的
+ *     「测试管理」里打开开关。请求体里的 isTest/isAdmin 一律忽略，客户端无法自授。
+ */
 app.post('/api/auth/register', async (req, res) => {
   if (!_ensureDbOr503(res)) return;
   try {
     const body = req.body || {};
     const v = auth.validateCredentials(body.username, body.password);
     if (!v.ok) return res.status(400).json({ error: v.message });
+    const nv = auth.validateNickname(body.nickname);
+    if (!nv.ok) return res.status(400).json({ error: nv.message });
 
     const pool = db.getPool();
     if (await accounts.usernameExists(pool, v.username)) {
       return res.status(409).json({ error: '该用户名已被注册' });
     }
+    if (await accounts.nicknameExists(pool, nv.nickname)) {
+      return res.status(409).json({ error: '该昵称已被使用，请换一个' });
+    }
     const row = await accounts.createAccount(pool, {
       username: v.username,
       password: v.password,
-      nickname: typeof body.nickname === 'string' ? body.nickname.slice(0, 40) : ''
+      nickname: nv.nickname,
+      // 权限不由客户端决定：注册的新账号默认既不是管理员也没有测试权限
+      isAdmin: false,
+      isTest: false
     });
     console.log('[Auth] 新账号注册:', row.username);
     res.json({ token: auth.signToken(row), user: accounts.toPublicUser(row) });
   } catch (e) {
-    if (e && e.code === '23505') return res.status(409).json({ error: '该用户名已被注册' });
+    if (e && e.code === '23505') return res.status(409).json({ error: '用户名或昵称已被占用' });
     console.error('[Auth] 注册失败:', e && e.message);
     res.status(500).json({ error: '注册失败，请稍后重试' });
   }
@@ -174,7 +195,13 @@ app.patch('/api/auth/me', requireAuth, async (req, res) => {
     let changed = false;
 
     if (typeof body.nickname === 'string') {
-      row = await accounts.updateNickname(db.getPool(), req.account.id, body.nickname.trim());
+      // 昵称与注册同规则：不能为空、不能重名（重名判定要排除自己，否则改不动任何东西）
+      const nv = auth.validateNickname(body.nickname);
+      if (!nv.ok) return res.status(400).json({ error: nv.message });
+      if (await accounts.nicknameExists(db.getPool(), nv.nickname, req.account.id)) {
+        return res.status(409).json({ error: '该昵称已被使用，请换一个' });
+      }
+      row = await accounts.updateNickname(db.getPool(), req.account.id, nv.nickname);
       if (!row) return res.status(404).json({ error: '账号不存在' });
       changed = true;
     }
@@ -229,9 +256,45 @@ app.get('/api/levels/rank', requireAuth, async (req, res) => {
 });
 
 /**
+ * 认领老账号时确定昵称。
+ *
+ * 老本地记录里的昵称可能为空（迁移前昵称是可选字段），也可能与库里已有账号重名
+ * （迁移前不做重名校验）。而认领是**自动触发**的（登录返回 401 后前端自动走这条路），
+ * 一旦因为"昵称被占用"直接失败，用户就卡在"登不进来、也认领不了"的死角，
+ * 所以这里按 老昵称 -> 用户名 -> 用户名+序号 兜底，而不是把冲突抛给用户。
+ *
+ * @returns {Promise<string>} 可用的昵称（保证非空且当前未被占用）
+ */
+async function _resolveClaimNickname(pool, preferred, username) {
+  const user = String(username || '').trim();
+  const candidates = [];
+  const nv = auth.validateNickname(preferred);
+  if (nv.ok) candidates.push(nv.nickname);   // 老本地昵称（格式合法时优先沿用）
+  if (user) {
+    candidates.push(user);                    // 用户名唯一，拿它当昵称最稳
+    for (let i = 2; i <= 10; i++) candidates.push(user + i);
+  }
+  for (const c of candidates) {
+    if (!(await accounts.nicknameExists(pool, c))) return c;
+  }
+  // 理论上到不了这里（上面的候选里至少用户名本身是唯一的）；真到了就给个随机昵称兜底，
+  // 宁可名字不好听，也不能让老用户认领失败、历史数据取不回来。
+  for (let i = 0; i < 5; i++) {
+    const c = '旅人' + Date.now().toString(36).slice(-4) + (i || '');
+    if (!(await accounts.nicknameExists(pool, c))) return c;
+  }
+  return user || '旅人';
+}
+
+/**
  * 认领老本地账号：账号体系迁移前，账号（含明文密码）存在浏览器 localStorage。
  * 用户在本地用旧密码校验通过后调用这里，把账号"认领"到服务端。
  * 只在用户名尚未被占用时创建；legacy_local_id 记录来源，便于排查。
+ *
+ * ⚠️ 权限一律不给（见下面 createAccount 的 isAdmin/isTest）：
+ * 这个接口是**公开**的 —— 它只校验"用户名没被占用"和"调用方知道那套本地旧密码"，
+ * 而后者的"证据"完全由调用方自述。如果采信请求体里的 isAdmin/isTest，
+ * 任何人拿一个没用过的用户名调一次就能自封管理员，等于把权限策略彻底绕过。
  */
 app.post('/api/auth/claim', async (req, res) => {
   if (!_ensureDbOr503(res)) return;
@@ -252,11 +315,12 @@ app.post('/api/auth/claim', async (req, res) => {
       id: reusableId,
       username: v.username,
       password: v.password,
-      nickname: typeof body.nickname === 'string' ? body.nickname.slice(0, 40) : '',
+      // 昵称必填是注册侧的新规则；老账号走自动兜底，不因为重名/为空而认领失败
+      nickname: await _resolveClaimNickname(pool, body.nickname, v.username),
       legacyLocalId: legacyLocalId,
-      // 老账号的权限沿用本地记录（admin 会带入管理员权限）
-      isAdmin: !!body.isAdmin,
-      isTest: body.isTest === undefined ? true : !!body.isTest,
+      // 认领不能带来任何权限：管理员恒有权限，测试权限要 admin 在监控页打开
+      isAdmin: false,
+      isTest: false,
       // 老账号的等级也沿用本地记录：迁移前等级就在浏览器里，
       // 不带过来的话老用户会从原有等级掉回 1 级（前端认领时会一起提交）
       level: body.level,
@@ -469,11 +533,12 @@ app.get('/api/test-api/config', (req, res) => {
 /**
  * 内置测试通道：服务端决定模型与 Key，采样参数透传。
  * 权限：必须登录，且 is_admin || is_test 为真（以数据库为准）。
+ * 新注册账号默认 is_test=false，需要管理员在监控页的「测试管理」里打开开关。
  */
 app.post('/api/chat/test', requireAuth, async (req, res) => {
   if (!TEST_API_ENABLED) return res.status(503).json({ error: '内置测试 API 已关闭' });
   if (!req.accountPublic.canUseTestApi) {
-    return res.status(403).json({ error: '内置测试 API 仅测试账号可用，请在设置中选择其他模型或填写自己的 Key' });
+    return res.status(403).json({ error: '内置测试 API 需要管理员开通测试权限，请在设置中选择其他模型或填写自己的 Key' });
   }
   const apiKey = _readTestApiKey();
   if (!apiKey) return res.status(503).json({ error: '内置测试 API 未配置：服务端缺少 TEST_API_KEY' });

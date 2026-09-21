@@ -1,13 +1,12 @@
 // src/utils/persona/trpgProfile.js
-// TRPG 数值档案纯函数集合 —— 从 utils/character_info/character-manager.js 迁移而来
+// TRPG 数值档案纯函数集合
 //
 // 设计原则（合并方案决策 6）：
-//   - 只保留纯函数，不再含任何 storage / CRUD / stateManager 依赖；
+//   - 只保留纯函数，不再含任何 storage / CRUD / 全局状态依赖；
 //   - 局内动态状态（HP/MP/SAN/有效属性）由调用方以参数传入，而非在此处读取全局状态；
 //   - 数据归宿：Persona.trpgProfile（仅当某卡开启 stats 时才需要填）。
 //
-// 迁移自 character-manager.js 的函数：
-//   createDefaultCharacterData / buildCharStatus / formatCharacterForLLM / calcModifier
+// 本文件提供：createDefaultCharacterData / buildCharStatus / formatCharacterForLLM / calcModifier
 
 'use strict';
 

@@ -1,6 +1,6 @@
 // utils/llm/intentParser.js - 意图常量定义
-// 职责：统一定义所有意图类型枚举，供 gameAI.js / narrator.js / stateManager 等模块共享。
-// 注意：意图解析已合并到 gameAI.js 的单次 LLM 调用中，本模块不再包含 LLM 调用逻辑。
+// 职责：统一定义所有意图类型枚举，供 pages/chat/chat.vue 等模块共享。
+// 注意：意图识别已改为关键词匹配（见 detectIntent），本模块不包含 LLM 调用逻辑。
 
 /**
  * 意图类型枚举

@@ -169,9 +169,14 @@ onMounted(() => {
   } catch (e) { /* 忽略，取默认值 0 */ }
 
   // #ifdef H5
-  // 存档改为防抖后（D12），直接关闭标签页可能落在防抖窗口内；
-  // beforeunload 里同步写一次本地存储是来得及的（uni.setStorageSync 是同步的）
+  // 存档改为防抖后（D12），直接关闭标签页/刷新可能落在防抖窗口内。
+  // ⚠️ 别再指望"beforeunload 里同步写一次本地存储"——P5.2 之后存档介质是**异步 IndexedDB**，
+  // 刷新时那次写入会被浏览器直接丢弃。现在这里做两件事：
+  //   ① 同步写一份 sessionStorage 草稿（见 _writeDraftSync，唯一来得及的写法）；
+  //   ② 顺手发起一次正式的异步落盘（能完成就完成，完不成也有草稿兜底）。
+  // pagehide 是移动端（iOS Safari 等）在"刷新/关闭/被回收"时更可靠的最后一个事件。
   try { window.addEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
+  try { window.addEventListener('pagehide', _flushPersist) } catch (e) { /* ignore */ }
   // #endif
 })
 
@@ -228,7 +233,7 @@ function loadMoreMessages() {
 }
 
 // ── 流式更新的帧率节流（P2.1 / B1）────────────────────────────
-// 改造前：**每个 chunk** 都替换整个 messages 数组 + 重跑 parseBlocks(全文)——
+// 反例（不要退回这种写法）：**每个 chunk** 都替换整个 messages 数组 + 重跑 parseBlocks(全文)——
 // 长回复是 O(n²) 的重复解析，而且父组件整张消息表都会重渲染。
 // 现在：增量攒进缓冲区，约 30fps 写一次（对齐酒馆 Stopwatch(1000/streaming_fps) 的节流）。
 const STREAM_FLUSH_MS = 33
@@ -354,6 +359,11 @@ function _flushStreamContent() {
     }
   }
 
+  // 流式期间也要落盘（修复：刷新丢掉正在输出的内容）。
+  // 走 500ms 防抖（_persistConversation），最多丢半秒文本；真正"一秒都不能等"的那半秒
+  // 由 _flushPersist 里的 sessionStorage 同步草稿兜底。
+  if (pending) _persistConversation()
+
   if (needMore && !_streamTimer) {
     _streamTimer = setTimeout(_flushStreamContent, STREAM_FLUSH_MS)
   }
@@ -383,7 +393,7 @@ function _scheduleFinalize(index: number, finalText: string, after?: () => void)
  *
  * 渲染管线顺序：**原文 → markdownOnly 正则（显示态）→ BlockParser → 渲染节点**。
  *
- * 改造前的问题：输出侧正则只在"生成结束后"跑一次，而且**从不传 isMarkdown**，
+ * 必须逐帧处理的原因：若输出侧正则只在"生成结束后"跑一次，且**不传 isMarkdown**，
  * 于是勾了「仅 Markdown」的脚本 100% 不生效，流式期间显示的也是未过正则的原文
  * （结束时整段跳变）。对齐酒馆后，显示态正则在**每一帧**都对累积文本跑一遍
  * （referencecode/public/script.js:1809-1813 + :3656），所以流式期间看到的就是最终样式。
@@ -507,7 +517,7 @@ const sessionPresetId = ref('')
 const sessionRegexPresetId = ref('')
 const sessionPersonaId = ref('')
 
-// 世界书限时效果（sticky/cooldown）状态，随会话持久化，P2 阶段新增
+// 世界书限时效果（sticky/cooldown）状态，随会话持久化
 const worldInfoState = ref<{ sticky: Record<string, number>; cooldown: Record<string, number>; round: number }>({ sticky: {}, cooldown: {}, round: 0 })
 
 // TRPG 会话状态（决策 6：随会话持久化），trpgStatus marker + {{hp}}/{{scene}} 等宏的数据源
@@ -535,10 +545,10 @@ const activeCard = computed(() => {
 })
 const characterName = computed(() => activeCard.value?.name || '')
 const characterAvatar = computed(() => (activeCard.value as any)?.avatar || '')
-// TRPG 模块开关：读当前角色卡的 extensions.trpg.modules（默认全关），替代旧的全局 moduleStore
+// TRPG 模块开关：读当前角色卡的 extensions.trpg.modules（默认全关）
 const activeModules = computed(() => (activeCard.value?.extensions?.trpg?.modules) || DEFAULT_TRPG_MODULES)
 
-// 需求 2：系统导航栏标题显示角色卡名称，而不是固定文案"对话"。
+// 需求 2：导航栏标题显示角色卡名称，而不是固定文案"对话"（见模板 .navbar-title，绑定 characterName）。
 // pages.json 里的 navigationBarTitleText 只是静态默认值，运行时用 uni.setNavigationBarTitle 覆盖。
 
 const activePersona = computed(() => {
@@ -579,17 +589,50 @@ onLoad((options: any) => {
 
   if (sessionCardId.value) {
     characterCardStore.setActive(sessionCardId.value)
-    const card = characterCardStore.getById(sessionCardId.value)
-    if (card) itemManager.init((card as any).extensions?.trpg, card.name)
+    // 注意：此刻 store 可能还没 hydrate 完（刷新首帧会读到 null），
+    // 依赖卡片数据的初始化（itemManager.init）统一放到 _bootConversation 里等就绪后再做。
   }
 
   const mode = options?.mode || 'continue'
-  if (mode === 'continue' && sessionCardId.value) {
-    _loadConversation(sessionCardId.value)
-  } else {
-    _startFresh()
-  }
+  _bootConversation(mode)
 })
+
+/**
+ * 进入会话的统一入口（异步：所有"读数据"的前置条件都收在这里）
+ *
+ * ⚠️ mode=new 也要判重：chat 页一直是过渡页用 `mode=new` 进来的，这个参数会留在地址栏里，
+ * 用户按 F5 刷新时 onLoad 拿到的仍是 mode=new。旧代码据此无条件 _startFresh()：清空消息、
+ * 只留开场白，并在 500ms 后把这份"只有 1 条"的列表**覆盖写回存档** —— 几十轮对话是真的
+ * 被删掉，不只是显示丢失。现在改为：已有存档或同步草稿就恢复，确认是全新会话才重开。
+ *
+ * ⚠️ 必须等角色卡 store hydrate 就绪：刷新后的第一帧同步读会拿到 null，
+ * 那样 _startFresh() 连开场白（first_mes）都取不到，页面就是全白。
+ */
+async function _bootConversation(mode: string) {
+  await characterCardStore.ensureLoaded()
+  if (sessionCardId.value) {
+    const card = characterCardStore.getById(sessionCardId.value)
+    // TRPG 道具表依赖卡片 extensions，必须在拿到卡之后再初始化
+    if (card) itemManager.init((card as any).extensions?.trpg, card.name)
+  }
+
+  if (!sessionCardId.value) {
+    _startFresh()
+    return
+  }
+
+  if (mode === 'new') {
+    await conversationManager.init()
+    if (conversationManager.has(sessionCardId.value) || conversationManager.hasDraft(sessionCardId.value)) {
+      await _loadConversation(sessionCardId.value)
+      return
+    }
+    _startFresh()
+    return
+  }
+
+  await _loadConversation(sessionCardId.value)
+}
 
 /**
  * 读档时重建派生数据（P1.4 / A4 的配套）
@@ -620,21 +663,58 @@ function _rehydrateMessages(msgs: any[]): any[] {
   return msgs.map((m, i) => _rehydrateMessage(m, i, total))
 }
 
+/**
+ * 读档/读草稿后的清洗（刷新恢复的正确性保证）
+ *
+ *  1. `isStreaming` 必须落定：刷新时那条消息的流式请求已经不存在了，
+ *     留着 true 会让光标 ▋ 永远闪、swipe 切换箭头也被挡住；
+ *  2. 丢弃**尾部**的空 AI 占位消息：它只是"正在等首字"的容器（发送瞬间就落盘了），
+ *     刷新后没有任何内容可显示，留着就是一个永久空白气泡。
+ */
+function _sanitizeLoadedMessages(msgs: any[]): any[] {
+  const out = (Array.isArray(msgs) ? msgs : []).map(m => (m && typeof m === 'object' ? { ...m, isStreaming: false } : m))
+  while (out.length > 0) {
+    const last: any = out[out.length - 1]
+    const hasText = !!(last && String(last.content || '').trim())
+    const hasSwipe = !!(last && Array.isArray(last.swipes) && last.swipes.some((s: any) => String(s || '').trim()))
+    if (last && last.role === 'assistant' && !hasText && !hasSwipe) out.pop()
+    else break
+  }
+  return out
+}
+
+/** 把一份存档/草稿装进运行时状态（含会话资源绑定与派生数据重建） */
+function _applyRecord(record: any) {
+  // 先恢复会话资源绑定，再重建消息：_segmentsFor 依赖 sessionPresetId/sessionRegexPresetId
+  // 选出的正侧脚本（否则会用错预设的正则去渲染历史消息）。
+  if (record.presetId) sessionPresetId.value = record.presetId
+  if (record.regexPresetId) sessionRegexPresetId.value = record.regexPresetId
+  if (record.personaId) sessionPersonaId.value = record.personaId
+  runtimeStore.setMessages(_rehydrateMessages(_sanitizeLoadedMessages(record.messages)))
+  runtimeStore.localVariables = record.localVariables || {}
+  if (record.worldInfoState) worldInfoState.value = record.worldInfoState
+  if (record.trpgState) trpgState.value = record.trpgState
+  runtimeStore.setLoading(false)
+}
+
 async function _loadConversation(cardId: string) {
   // P5.2：存档已迁到 IndexedDB（异步）。必须先 await init()：
   // 它负责读取列表缓存并执行 v1→v2 老档迁移。
   await conversationManager.init()
+
+  // ① 同步草稿优先：它是"刷新前最后一次内存态"（sessionStorage 同步写入），
+  //    比异步落盘的存档新 —— 最多能补回刷新前 500ms 内的文字。
+  const draft = conversationManager.takeDraft(cardId)
+  if (draft && Array.isArray(draft.messages) && draft.messages.length > 0) {
+    _applyRecord(draft)
+    // 把草稿并回正式存档（异步落盘，失败会走 notifyStorageFailure 提示）
+    _persistConversation({ immediate: true })
+    return
+  }
+
   const record = await conversationManager.load(cardId)
   if (record && Array.isArray(record.messages) && record.messages.length > 0) {
-    // 先恢复会话资源绑定，再重建消息：_segmentsFor 依赖 sessionPresetId/sessionRegexPresetId
-    // 选出的正侧脚本（否则会用错预设的正则去渲染历史消息）。
-    if (record.presetId) sessionPresetId.value = record.presetId
-    if (record.regexPresetId) sessionRegexPresetId.value = record.regexPresetId
-    if (record.personaId) sessionPersonaId.value = record.personaId
-    runtimeStore.setMessages(_rehydrateMessages(record.messages))
-    runtimeStore.localVariables = record.localVariables || {}
-    if (record.worldInfoState) worldInfoState.value = record.worldInfoState
-    if (record.trpgState) trpgState.value = record.trpgState
+    _applyRecord(record)
   } else {
     _startFresh()
   }
@@ -727,11 +807,11 @@ let _persistTimer: ReturnType<typeof setTimeout> | null = null
 /**
  * 存档（D12）
  *
- * 两点与改造前不同：
- *  1. **防抖**：以前每次消息变更都同步序列化整份存档，流式/快速滑动时高频写盘；
- *     现在默认延迟 500ms 合并，离开页面时用 _flushPersist() 兜底立即写入。
+ * 两点行为约束（都是踩过坑后加的，不要去掉）：
+ *  1. **防抖**：若每次消息变更都同步序列化整份存档，流式/快速滑动时会高频写盘；
+ *     因此默认延迟 500ms 合并，离开页面时用 _flushPersist() 兜底立即写入。
  *  2. **失败可见**：save() 返回 false（最常见原因是本地存储配额超限）时必须提示用户，
- *     以前它被静默吞掉 —— 表现为"聊了半天，重进发现内容没保存"。
+ *     不能静默吞掉 —— 否则表现为"聊了半天，重进发现内容没保存"。
  */
 function _persistConversation(opts: { immediate?: boolean } = {}) {
   const card = activeCard.value
@@ -762,9 +842,34 @@ function _persistConversation(opts: { immediate?: boolean } = {}) {
   else _persistTimer = setTimeout(doSave, PERSIST_DEBOUNCE_MS)
 }
 
+/**
+ * 同步落一份草稿（修复：刷新丢内容）
+ *
+ * H5 的 sessionStorage 语义恰好合适：**刷新保留、关标签页丢弃**，而且 API 是同步的 ——
+ * 这是 beforeunload / pagehide 里唯一来得及完成的写法（IndexedDB 的写入会被浏览器丢弃）。
+ * 失败（隐私模式、配额）静默：草稿只是兜底，正式存档仍在走 IndexedDB。
+ */
+function _writeDraftSync() {
+  const card = activeCard.value
+  if (!card) return
+  try {
+    conversationManager.saveDraft({
+      cardId: card.id,
+      presetId: sessionPresetId.value,
+      regexPresetId: sessionRegexPresetId.value,
+      personaId: sessionPersonaId.value,
+      messages: runtimeStore.messages,
+      localVariables: runtimeStore.localVariables,
+      worldInfoState: worldInfoState.value,
+      trpgState: trpgState.value
+    })
+  } catch (e) { /* 草稿失败不影响正式存档 */ }
+}
+
 /** 立即落盘：离开页面 / 页面卸载 / 关键操作后调用，避免防抖窗口内丢写 */
 function _flushPersist() {
   if (_persistTimer) { clearTimeout(_persistTimer); _persistTimer = null }
+  _writeDraftSync()
   _persistConversation({ immediate: true })
 }
 
@@ -774,6 +879,7 @@ onUnmounted(() => {
   _flushPersist()
   // #ifdef H5
   try { window.removeEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
+  try { window.removeEventListener('pagehide', _flushPersist) } catch (e) { /* ignore */ }
   // #endif
 })
 
@@ -924,9 +1030,6 @@ async function handleContinue() {
   // 但**用上游已到达的完整文本**收尾（平滑模式下显示是限速的，不能用显示中的截断文本）
   const m = runtimeStore.messages[aiIndex]
   if (m && m.role === 'assistant') {
-    // 修：原来这里调用的是不存在的 parseBlock()，紧接着又调用不存在的
-    // runtimeStore.forceUpdate() —— 连续两次抛错，导致后面的 setLoading(false)
-    // 与落盘都不执行（续写结束后按钮卡在"停止"、内容不保存）。P1.1 / A1
     const full = _streamTarget.get(aiIndex) || (m.content as string) || ''
     _cancelStreamContent()
     _finalizeMessage(aiIndex, full)
@@ -974,6 +1077,10 @@ async function sendUserMessage(text: string) {
   const aiIndex = runtimeStore.messages.length - 1
 
   runtimeStore.setLoading(true)
+  // 立刻落盘：用户这条消息必须在第一时间进存档（"发完就刷新"不该丢），
+  // 同时流式期间每 500ms 还会再落一次（见 _flushStreamContent）。
+  // 此刻 AI 占位消息是空的，读档时会被 _sanitizeLoadedMessages 丢弃，不会留下空白气泡。
+  _persistConversation({ immediate: true })
 
   const activePresetResolved = _resolvePreset()
   const character = activeCard.value
@@ -1017,6 +1124,8 @@ async function sendUserMessage(text: string) {
         list.splice(aiIndex, 1)
         runtimeStore.setMessages(list)
         runtimeStore.setLoading(false)
+        // 用户自己那条消息留着（登录回来直接重发），所以这里也要落盘
+        _persistConversation({ immediate: true })
         return
       }
       // 把真实错误名称/消息打全，避免只留一句"抱歉，发生了错误，请重试。"看不出根因
@@ -1031,6 +1140,8 @@ async function sendUserMessage(text: string) {
       }
       runtimeStore.setMessages(msgs)
       runtimeStore.setLoading(false)
+      // 错误文案也要进存档，避免"刷新后连报错都没了"
+      _persistConversation({ immediate: true })
     }
   })
 }
@@ -1080,6 +1191,8 @@ async function regenerateSwipe(messageIndex: number) {
   msgs[messageIndex] = { ...msg, swipes: newSwipes, swipe_id: newSwipeId, content: '', isStreaming: true }
   runtimeStore.setMessages(msgs)
   runtimeStore.setLoading(true)
+  // 立刻落盘（同 sendUserMessage）：重新生成时旧内容已被清空，必须马上把新状态写进存档
+  _persistConversation({ immediate: true })
 
   const activePresetResolved = _resolvePreset()
   const character = activeCard.value
@@ -1125,6 +1238,8 @@ async function regenerateSwipe(messageIndex: number) {
         runtimeStore.setMessages(list)
       }
       runtimeStore.setLoading(false)
+      // 失败/中断后同样落盘：否则刷新后会看到一个半截的流式状态
+      _persistConversation({ immediate: true })
     }
   })
 }
@@ -1133,7 +1248,7 @@ function onMessageLongPress(idx: number) {
   const msg = runtimeStore.messages[idx]
   if (!msg) return
   const isAI = msg.role === 'assistant'
-  // 续写：仅当长按的最后一条消息是 AI 消息时才提供（与原先独立“续写”按钮条件一致），
+  // 续写：仅当长按的最后一条消息是 AI 消息时才提供（与原先独立"续写"按钮的条件一致），
   // 表示从这条消息继续生成；其它 AI 消息仍保留“从此处重新生成”。
   const isLastAI = isAI && idx === runtimeStore.messages.length - 1
   const items = ['编辑', '删除']

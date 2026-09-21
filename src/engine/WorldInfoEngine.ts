@@ -8,7 +8,7 @@
 //   P1：递归扫描 + 概率触发 + 互斥分组 + 预算改为百分比+cap
 //   P2：限时效果（sticky/cooldown/delay）+ 状态持久化（newSessionState 由调用方回写）
 //
-// 不修改 utils/lore/lorebookManager.js，TRPG 路径完全不受影响。
+// 只服务 chat 模式，不涉及 TRPG 路径。
 
 import type { LorebookEntry } from '../types/character'
 import { isEntryActivated } from './worldInfoMatcher'
@@ -174,7 +174,7 @@ interface Candidate {
  *   - 本轮以 sticky 免检激活的条目：sticky 计数 -1，归零后若配置了 cooldown 则转入冷却
  *   - 本轮以关键词新激活且配置了 sticky 的条目：写入 sticky 初始值
  *   - 本轮以关键词新激活且未配置 sticky 但配置了 cooldown 的条目：直接进入冷却
- *   - 未被本轮处理的既有 sticky/cooldown：按轮数正常递减
+ *   - 未被本轮处理的既有 sticky：原值保留（不扣减）；既有 cooldown：按轮数 -1
  */
 function advanceSessionState(prevState: WorldInfoSessionState, activated: Candidate[]): WorldInfoSessionState {
   const sticky: Record<string, number> = {}

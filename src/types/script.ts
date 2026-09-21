@@ -5,7 +5,7 @@
  * placement 枚举含义 —— 注意：这是本项目内部精简后的编号，与酒馆原始 regex_placement 编号不同！
  * 酒馆原始编号（referencecode/public/scripts/extensions/regex/engine.js）：
  *   MD_DISPLAY=0, USER_INPUT=1, AI_OUTPUT=2, SLASH_COMMAND=3, WORLD_INFO=5, REASONING=6
- * 本项目内部编号（RegexScriptEngine 只在两处调用：清洗用户输入 / 清洗 AI 回复）：
+ * 本项目内部编号（RegexScriptEngine.applyRegexScripts() 共服务四个场景）：
  * 0 = AI 输出（对应酒馆 AI_OUTPUT=2）
  * 1 = 用户输入（对应酒馆 USER_INPUT=1）
  * 2 = 世界信息内容（对应酒馆 WORLD_INFO=5）

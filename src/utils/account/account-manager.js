@@ -16,7 +16,6 @@ async function initAccount(openid) {
   }
   
   try {
-    // 确保存储初始化（读取一次即可触发初始化）
     const items = collectLegendItems.getCollectedItems(openid);
     const traits = collectTrait.getCollectedTraits(openid);
     

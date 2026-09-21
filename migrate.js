@@ -23,7 +23,7 @@ const STATEMENTS = [
      hash_r          INTEGER NOT NULL DEFAULT 8,
      hash_p          INTEGER NOT NULL DEFAULT 1,
      is_admin        BOOLEAN NOT NULL DEFAULT FALSE,
-     is_test         BOOLEAN NOT NULL DEFAULT TRUE,
+     is_test         BOOLEAN NOT NULL DEFAULT FALSE,
      token_version   INTEGER NOT NULL DEFAULT 0,
      legacy_local_id TEXT,
      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -86,7 +86,18 @@ const STATEMENTS = [
   // pg-mem 不支持匿名块。越界由接口层夹取（server.js 里把 level 限制在 0~999），
   // 属于"可信输入 + 服务端兜底"，不依赖数据库约束。
   `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS level INTEGER NOT NULL DEFAULT 1`,
-  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS xp INTEGER NOT NULL DEFAULT 0`
+  `ALTER TABLE accounts ADD COLUMN IF NOT EXISTS xp INTEGER NOT NULL DEFAULT 0`,
+
+  // ── 测试权限默认值：TRUE -> FALSE（站点公开后的策略调整） ────
+  // 背景：链接公开前"注册即测试账号"，新账号默认就能用内置测试 Key；公开后必须由管理员
+  // 在监控页的「测试管理」里逐个打开。CREATE TABLE IF NOT EXISTS 不会修改已存在的表，
+  // 所以线上老库必须靠这条 ALTER 把列默认值改过来。
+  //
+  // ⚠️ 这里**只改默认值，不改存量数据**：已注册账号的 is_test 保持原样（与需求方确认），
+  //    要收回权限由管理员在监控页关闭。所以这不是"一刀切降权"，而是"新账号不再默认放权"。
+  //    另外 createAccount 一直显式写入 is_test，默认值只是保证"手工 INSERT 或将来新增
+  //    调用方忘记传参时"也拿到安全的那一侧。
+  `ALTER TABLE accounts ALTER COLUMN is_test SET DEFAULT FALSE`
 ];
 
 /**

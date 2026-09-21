@@ -1,6 +1,5 @@
 // src/engine/BlockParser.ts
 // 扫描 AI 回复文本，识别特殊标签块并生成 RenderNode AST
-// 基础解析逻辑迁移自 src/pages/game/game.vue 的 parseReplySegments()
 // 扩展支持酒馆风格标签：<branches> / <meow_FM> / <time_format> / ```html```
 
 import type { RenderNode } from '../types/render'
@@ -16,7 +15,8 @@ const CLOSE_QUOTES = ['\u201d', '\u2019', '"']
 // `<span class="say">…</span>`，由 CSS 决定外观。渲染层必须认得这种片段，
 // 否则它只会以字面文本显示出来。
 //
-// 只认这几个安全标签（与 utils/security.ts 的 DOMPurify 白名单一致），
+// 只认这几个能安全内联的标签（H5 端最终仍会经 utils/security.ts 的 DOMPurify 白名单再洗一遍，
+// font / mark 不在该白名单内，会被剥成纯文字；其余超集标签同理），
 // 且只支持**不嵌套**的同名标签配对；嵌套时外层匹配不上 → 退化成普通文字，不会误吞内容。
 // ─────────────────────────────────────────────────────────────
 const HTML_FRAGMENT_RE = /<(span|div|font|b|i|u|s|em|strong|mark)\b[^>]*>[\s\S]*?<\/\1>/gi
@@ -119,7 +119,7 @@ function extractSpecialBlocks(text: string): { cleanedText: string; blocks: Rend
 }
 
 /**
- * 解析普通叙事文本（speech/damage/narrative），逻辑迁移自 game.vue parseReplySegments
+ * 解析普通叙事文本（speech/damage/narrative）
  */
 function parseNarrativeText(text: string): RenderNode[] {
   if (!text) return []

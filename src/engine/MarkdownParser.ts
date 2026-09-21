@@ -92,12 +92,9 @@ export function detectBlockMarkdown(line: string): BlockMatch | null {
   const imgMatch = trimmed.match(IMAGE_LINE_RE)
   if (imgMatch) return { style: 'image', alt: imgMatch[1] || '', content: imgMatch[2] }
   const trimmedEnd = line.trimEnd()
-  // 标题
   let m = trimmedEnd.match(/^(#{1,6})\s+(.*)$/)
   if (m) return { style: 'heading', level: m[1].length, content: m[2] }
-  // 分隔线
   if (/^\s*(-{3,}|\*{3,}|_{3,})\s*$/.test(trimmedEnd)) return { style: 'hr', content: '' }
-  // 引用
   m = trimmedEnd.match(/^>\s?(.*)$/)
   if (m) return { style: 'quote', content: m[1] }
   // 无序列表

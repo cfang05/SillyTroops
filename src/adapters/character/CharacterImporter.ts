@@ -9,7 +9,7 @@ import { importRegexScripts } from '../preset/PresetImporter'
 
 export interface ImportResult {
   character: CharacterV2
-  /** 角色卡内嵌的世界书条目（已标准化，可直接传给 lorebookManager.matchFull 的 extraEntries） */
+  /** 角色卡内嵌的世界书条目（已标准化，可直接传给 WorldInfoEngine.scan 的 entries） */
   lorebookEntries: LorebookEntry[]
 }
 

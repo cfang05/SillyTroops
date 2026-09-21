@@ -1,12 +1,10 @@
 // utils/items/item-manager.js
-// 物品管理器（纯注册表，无 stateManager 依赖）
+// 物品管理器（纯注册表）
 // 职责：
 //   1. 加载通用物品库 + 当前角色卡物品（card.extensions.trpg.items）
 //   2. 动态物品注册
 //   3. 根据 ID 查找物品完整定义
 //
-// 统一说明：旧版含 giveItem/useItem/equipItem/unequipItem/buildInventoryDisplay 等
-// 直接读写 stateManager（GAME_STATE_*）的方法已移除——它们属于"旧 TRPG 状态并行"的死代码，
 // 运行时物品状态现统一由会话 trpgState.items 承担（见 chat.vue 的 inventoryItems 派生），
 // 单一事实来源为 conversationManager 的 trpgState 字段。
 
@@ -21,7 +19,7 @@ import { COMMON_ITEMS_MAP, getCommonItemDef } from './common-items.js';
 let _registry = {};
 
 /**
- * 当前已加载的角色卡名（避免重复加载）
+ * 当前已加载的角色卡名
  */
 let _currentStoryId = null;
 

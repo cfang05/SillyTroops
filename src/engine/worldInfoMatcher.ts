@@ -1,6 +1,6 @@
 // src/engine/worldInfoMatcher.ts
 // 世界书关键词匹配的纯函数集合，对齐酒馆 world-info.js 的 WorldInfoBuffer#matchKeys / isEntryActivated 逻辑。
-// 仅服务于 chat 模式的新版 WorldInfoEngine，不影响 TRPG 路径的 lorebookManager.js。
+// 仅服务于 chat 模式的新版 WorldInfoEngine，不影响 TRPG 路径。
 
 import type { LorebookEntry } from '../types/character'
 

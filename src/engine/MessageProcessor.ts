@@ -2,9 +2,8 @@
 // 封装消息发送的完整流程：构建 Prompt → 输入侧正则 → 调用 LLM → 输出侧正则 → BlockParser 生成 segments
 // 与 UI 完全解耦，供 pages/chat/chat.vue 等页面调用
 //
-// 注：当前 utils/llm/client.js 未提供真正的 token 级流式接口（生成完成后一次性返回全文），
-// 现有 game.vue 使用"打字机模拟"（simulateStreamOutput）营造流式效果。
-// MessageProcessor 保持同样的策略：generateWithMessages 拿到全文后，通过 onChunk 回调模拟逐字输出。
+// 注：未开启流式、或运行端上游不支持流式（如小程序端一次性返回全文）时，
+// MessageProcessor 采用"打字机模拟"：拿到全文后通过 onChunk 回调模拟逐字输出（见 _simulateStream）。
 
 import type { Preset } from '../types/preset'
 import type { CharacterV2, LorebookEntry } from '../types/character'

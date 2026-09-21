@@ -21,7 +21,7 @@ export function estimateTokenCount(text: string): number {
   return Math.max(1, Math.ceil(cjk * 1.0 + words * 1.3 + punct * 0.5))
 }
 
-/** 注入自定义 token 计数器（返回 false 表示未接受，用于真实 tokenizer 加载失败的兜底） */
+/** 注入自定义 token 计数器（用于按需接入真实 tokenizer；未注入时保持启发式估算） */
 export function setTokenCounter(fn: TokenCounter): void {
   counter = fn
 }

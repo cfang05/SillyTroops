@@ -9,6 +9,8 @@
 // - 数据库只保存 salt + password_hash；明文密码永不落库、永不返回给前端。
 // - is_test 是数据库里的原始标记；「能不能用内置测试 API」= is_admin || is_test，
 //   接口里以 canUseTestApi 单独返回，避免前端再次混用两个概念。
+//   注册的新账号 is_test 一律为 false（站点公开后的策略），要放开由 admin 在监控页开关。
+// - 昵称注册必填且全站唯一（大小写不敏感），重名校验走 nicknameExists（见其注释）。
 
 'use strict';
 
@@ -95,6 +97,11 @@ async function findByLegacyLocalId(pool, legacyLocalId) {
 
 /**
  * 创建账号
+ *
+ * is_test 默认值 = **false**（站点公开后的策略：注册不再默认拥有测试权限，
+ * 必须由管理员在监控页的「测试管理」里显式打开）。调用方要放开权限必须显式传
+ * isTest: true —— 只有 ensureAdminAccount 会这么做（管理员恒有权限）。
+ *
  * @param {object} pool
  * @param {{username:string, password:string, nickname?:string, isAdmin?:boolean, isTest?:boolean, legacyLocalId?:string, id?:string, level?:number, xp?:number}} data
  */
@@ -113,7 +120,7 @@ async function createAccount(pool, data) {
     [
       id,
       String(data.username || '').trim(),
-      data.nickname || '',
+      String(data.nickname == null ? '' : data.nickname).trim().slice(0, 40),
       hashed.hash,
       hashed.salt,
       hashed.algo,
@@ -121,8 +128,8 @@ async function createAccount(pool, data) {
       hashed.r,
       hashed.p,
       !!data.isAdmin,
-      // 决策：注册即测试账号（默认 TRUE）。要关闭只改这一个默认值。
-      data.isTest === undefined ? true : !!data.isTest,
+      // 默认 FALSE：注册的新账号不再自带测试权限（改策略只改这一个默认值）
+      data.isTest === undefined ? false : !!data.isTest,
       data.legacyLocalId || null,
       now,
       now,
@@ -133,11 +140,11 @@ async function createAccount(pool, data) {
   return res.rows[0];
 }
 
-/** 更新昵称（跨设备同步用） */
+/** 更新昵称（跨设备同步用）；重名/非空由接口层先校验（见 nicknameExists） */
 async function updateNickname(pool, id, nickname) {
   const res = await pool.query(
     'UPDATE accounts SET nickname = $2, updated_at = $3 WHERE id = $1 RETURNING *',
-    [id, String(nickname == null ? '' : nickname).slice(0, 40), new Date()]
+    [id, String(nickname == null ? '' : nickname).trim().slice(0, 40), new Date()]
   );
   return res.rows[0] || null;
 }
@@ -227,6 +234,33 @@ async function setPassword(pool, id, password) {
 /** 账号是否已存在（用户名唯一性检查） */
 async function usernameExists(pool, username) {
   const res = await pool.query('SELECT 1 FROM accounts WHERE username = $1', [String(username || '').trim()]);
+  return res.rows.length > 0;
+}
+
+/**
+ * 昵称是否已被占用（大小写不敏感；excludeId 用于"改昵称时排除自己"）。
+ *
+ * ⚠️ 为什么是在接口层查重，而不是加数据库唯一索引
+ * （`CREATE UNIQUE INDEX ... ON accounts (LOWER(nickname)) WHERE nickname <> ''`）：
+ *   1) 昵称曾经是**可选**字段，线上老数据里空串与重名都存在，唯一索引直接建不起来 ——
+ *      而迁移是启动流程的一部分，建不起来就等于启动即失败，代价太大；
+ *   2) accounts.reconcileAdminId 用 `INSERT ... SELECT` 给 admin 换 id，期间新旧两行
+ *      同时存在且昵称相同，在唯一索引下必然自撞，会把 admin id 迁移彻底卡死；
+ *   3) 昵称是**展示身份**而不是权限凭据（权限只看 is_admin/is_test），重名的实际后果是
+ *      "两个人显示同名"，不是越权。
+ * 所以这里用"查一次再写"。极端并发（两个注册请求在同一毫秒竞争）下理论上仍可能写入
+ * 两个同名昵称，出现时由管理员在监控页改名即可 —— 与"加索引会砸掉启动"相比这是划算的取舍。
+ *
+ * 比较用 LOWER()：'Nick' 与 'nick' 视为重名，否则只靠大小写差一个字母就能冒充他人。
+ */
+async function nicknameExists(pool, nickname, excludeId) {
+  const n = String(nickname == null ? '' : nickname).trim();
+  if (!n) return false; // 空昵称不参与唯一性判定（老账号里存在空昵称，且空昵称无法冒充他人）
+  const sql = excludeId
+    ? 'SELECT 1 FROM accounts WHERE LOWER(nickname) = LOWER($1) AND id <> $2 LIMIT 1'
+    : 'SELECT 1 FROM accounts WHERE LOWER(nickname) = LOWER($1) LIMIT 1';
+  const params = excludeId ? [n, String(excludeId)] : [n];
+  const res = await pool.query(sql, params);
   return res.rows.length > 0;
 }
 
@@ -388,6 +422,7 @@ module.exports = {
   setTestFlag: setTestFlag,
   setPassword: setPassword,
   usernameExists: usernameExists,
+  nicknameExists: nicknameExists,
   listAccounts: listAccounts,
   countAccounts: countAccounts,
   ensureAdminAccount: ensureAdminAccount,

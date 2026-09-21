@@ -42,7 +42,7 @@
       <!-- 用户列表 -->
       <view class="section">
         <text class="section-title">账号测试权限</text>
-        <text class="section-sub">开关控制各账号能否使用内置测试 API；admin 恒有权限，不可关闭</text>
+        <text class="section-sub">新注册账号默认关闭测试权限，需在此打开；开关控制各账号能否使用内置测试 API，admin 恒有权限、不可关闭</text>
         <view class="user-list">
           <view v-for="user in userStats" :key="user.userId" class="user-card">
             <view class="user-header">
@@ -149,7 +149,6 @@ export default {
     this.statusBarHeight = 0
     // #endif
 
-    // 检查管理员权限
     if (!userManager.isAdmin()) {
       uni.showToast({ title: '需要管理员权限', icon: 'none' })
       setTimeout(() => uni.navigateBack(), 1500)
@@ -187,7 +186,6 @@ export default {
         this.dailyStats = []
       }
 
-      // 计算统计数据
       this.calculateStats()
 
       uni.showToast({ title: '数据已刷新', icon: 'success', duration: 1000 })

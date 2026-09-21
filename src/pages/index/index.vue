@@ -525,7 +525,7 @@ export default {
   z-index: 1;
 }
 
-/* 底部导航栏样式已迁移到 components/common/TabBar.vue（全局共用一套），
+/* 底部导航栏样式统一收在 components/common/TabBar.vue（全局共用一套），
    这里不再保留 .tabbar/.tab/.fab 的局部副本，避免两处样式各自漂移。 */
 
 .notif-modal {

@@ -7,7 +7,7 @@
 //   - EFFECT_DURATION 定义"持续多久"（持续时长）
 //
 // 使用方式：
-//   const { EFFECT_TYPE, EFFECT_TRIGGER, EFFECT_DURATION } = require('../effects/effect-types.js');
+//   import { EFFECT_TYPE, EFFECT_TRIGGER, EFFECT_DURATION } from '../effects/effect-types.js';
 
 // ════════════════════════════════════════════════════════════════
 // EFFECT_TRIGGER — 触发时机

@@ -56,7 +56,7 @@ export const REASONING_DELIMITERS: Array<[string, string]> = [
   ['[思考过程]', '[/思考过程]']
 ]
 
-/** 默认配置：关闭（关掉时行为与改造前完全一致） */
+/** 默认配置：关闭（关闭时不做任何思考切分，正文原样返回） */
 export function defaultReasoningConfig(): ReasoningSplitConfig {
   return { enabled: false }
 }

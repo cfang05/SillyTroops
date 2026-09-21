@@ -1,5 +1,5 @@
 // src/types/message.ts
-// 聊天消息类型定义，兼容现有 game.vue 消息结构并扩展 Swipe 支持
+// 聊天消息类型定义，扩展 Swipe 支持
 
 import type { RenderNode } from './render'
 

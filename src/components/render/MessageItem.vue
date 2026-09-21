@@ -16,7 +16,7 @@
         <text v-else class="avatar-text">AI</text>
       </view>
       <view class="ai-bubble-col">
-        <!-- 思考折叠块（P6.3）：没有思考时不渲染，界面与改造前一致 -->
+        <!-- 思考折叠块（P6.3）：没有思考时不渲染 -->
         <ReasoningBlock
           v-if="reasoningText"
           :text="reasoningText"

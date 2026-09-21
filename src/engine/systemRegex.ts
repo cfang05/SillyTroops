@@ -34,8 +34,7 @@ const AI_OUTPUT = 0 as const
  * 长度 ≥ 6 个字，或包含句读标点 —— 太短的引用（如“好”）不当台词，避免满屏高亮。
  *
  * ⚠️ 必须把**闭合引号**一起传进来组成字符类：形如 `[^”]{6,}`。
- * 早期版本写成 `{6,}`（漏了字符类）会被 JS 当作字面量 `{6,}`，规则永远匹配不到 ——
- * 这是 scripts/tmp-p4-check.js 的运行时断言抓出来的。
+ * 早期版本写成 `{6,}`（漏了字符类）会被 JS 当作字面量 `{6,}`，规则永远匹配不到。
  */
 function meaningful(closeQuote: string): string {
   const notClose = `[^${closeQuote}]`

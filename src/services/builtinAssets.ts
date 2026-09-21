@@ -20,6 +20,16 @@ const BUILTIN_CHARACTERS = [
   { name: 'DM_v2', file: '/assets/characters/DM_v2.png' }
 ]
 
+/**
+ * 内置资源清单的**版本号**（角色卡重复导入 Bug 的修复配套）。
+ *
+ * ⚠️ 只要 BUILTIN_CHARACTERS 增删/替换文件，就**必须**把它 +1：
+ * 这个数字会被写进本地标记（scopedKey('builtin_cards_imported')），
+ * 标记版本与它一致且清单里的卡都在 → 直接跳过导入检查（连 PNG 都不 fetch）；
+ * 版本提高 → 下次打开任意页面时按 builtinKey 逐项补齐缺失的那几张（已有的不会重复导入）。
+ */
+export const BUILTIN_ASSETS_VERSION = 1
+
 // ══════════════════════════════════════════════════════════════
 // 加载函数
 // ══════════════════════════════════════════════════════════════

@@ -1,7 +1,7 @@
 // src/stores/runtimeStore.ts
 // 当前对话运行时状态（响应式）。
 // 统一说明：场景/数值等 TRPG 运行时状态已由会话 conversation.trpgState 承担（chat.vue 的 trpgState ref），
-// 本 store 不再桥接旧 stateManager（已删除），只保留对话流本身的响应式状态。
+// 本 store 只保留对话流本身的响应式状态。
 
 import { defineStore } from 'pinia'
 import type { ChatMessage } from '../types/message'

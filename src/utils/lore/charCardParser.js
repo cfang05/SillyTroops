@@ -43,7 +43,7 @@ function safeParseJSON(input) {
 }
 
 /**
- * 规范化一个 WorldInfo/CharBook 条目为 lorebookManager 标准格式
+ * 规范化一个 WorldInfo/CharBook 条目为标准 lorebook entry 格式（对齐 types/character.ts 的 LorebookEntry）
  * @param {Object} raw   - 原始条目（V1/V2 格式均可）
  * @param {number} index - 在源列表中的索引（用于生成 id）
  * @returns {Object|null}
@@ -61,13 +61,11 @@ function normalizeEntry(raw, index) {
     keys = raw.keys.split(',').map(function(k) { return k.trim(); }).filter(Boolean);
   }
 
-  // content 字段
   var content = raw.content || raw.value || raw.text || '';
   if (!content && typeof raw.content !== 'string') {
     return null; // 没有内容的条目跳过
   }
 
-  // enabled
   var enabled = (raw.enabled !== false && raw.disable !== true);
 
   // constant（ST 叫 selective 的反面；或 constant 字段）
@@ -107,13 +105,11 @@ function normalizeEntry(raw, index) {
     : (typeof raw.order === 'number') ? raw.order
     : index;
 
-  // 生成 id
   var id = raw.id || raw.uid || ('entry_' + index);
 
   // comment / name
   var comment = raw.comment || raw.name || '';
 
-  // regex
   var regex = null;
   if (raw.use_regex && raw.keys_regex) {
     regex = raw.keys_regex;
@@ -369,7 +365,7 @@ function parseWorldInfo(input) {
  * @param {string|Object} charCardInput  - 角色卡 JSON
  * @param {string|Object} [worldInfoInput] - 可选：额外的独立世界书 JSON
  * @returns {{
- *   charCard: Object,     // 解析后的角色卡（可直接当 characterCard 传给 gameAI）
+ *   charCard: Object,     // 解析后的角色卡
  *   worldInfo: Array,     // 合并的 lorebook entries
  *   systemPrompt: string, // 角色卡内嵌的 system prompt（可替换故事 systemPrompt）
  * }|null}

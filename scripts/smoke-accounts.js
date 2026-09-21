@@ -160,25 +160,64 @@ async function main() {
   const expiredRes = await req('/api/auth/me', { headers: bearer(expiredToken) });
   expect('过期 token 被拒绝', expiredRes.status === 401);
 
-  console.log('\n=== 3. 注册（注册即测试账号） ===');
+  console.log('\n=== 3. 注册（昵称必填 + 全站唯一 + 默认无测试权限） ===');
   const reg = await req('/api/auth/register', { method: 'POST', body: { username: 'smoke_user', password: 'userpass123', nickname: '冒烟用户' } });
   expect('注册成功', reg.status === 200 && !!reg.json.token, reg.text.slice(0, 200));
-  expect('新账号 is_test 默认为 true', reg.json.user.isTest === true);
+  expect('新账号 is_test 默认为 false（不再"注册即测试账号"）', reg.json.user.isTest === false);
   expect('新账号不是管理员', reg.json.user.isAdmin === false);
-  expect('新账号 canUseTestApi 为 true', reg.json.user.canUseTestApi === true);
+  expect('新账号 canUseTestApi 为 false', reg.json.user.canUseTestApi === false);
   const userToken = reg.json.token;
 
-  const dup = await req('/api/auth/register', { method: 'POST', body: { username: 'smoke_user', password: 'userpass123' } });
+  const noNick = await req('/api/auth/register', { method: 'POST', body: { username: 'nickless_user', password: 'userpass123' } });
+  expect('不填昵称注册返回 400', noNick.status === 400, noNick.text.slice(0, 120));
+  expect('缺昵称的提示明确', noNick.json && noNick.json.error === '昵称不能为空', noNick.json);
+
+  const blankNick = await req('/api/auth/register', { method: 'POST', body: { username: 'blanknick_user', password: 'userpass123', nickname: '   ' } });
+  expect('纯空白昵称按未填处理（400）', blankNick.status === 400, blankNick.text.slice(0, 120));
+
+  const dupNick = await req('/api/auth/register', { method: 'POST', body: { username: 'dupnick_user', password: 'userpass123', nickname: '冒烟用户' } });
+  expect('昵称与他人重复返回 409', dupNick.status === 409, dupNick.text.slice(0, 120));
+
+  const adminNickTaken = await req('/api/auth/register', { method: 'POST', body: { username: 'adminnick_user', password: 'userpass123', nickname: '管理员' } });
+  expect('昵称不能冒用管理员昵称（409）', adminNickTaken.status === 409, adminNickTaken.text.slice(0, 120));
+
+  const caseA = await req('/api/auth/register', { method: 'POST', body: { username: 'case_a', password: 'userpass123', nickname: 'SmokeCase' } });
+  expect('大小写不同的昵称可正常注册（先占位）', caseA.status === 200, caseA.text.slice(0, 120));
+  const caseB = await req('/api/auth/register', { method: 'POST', body: { username: 'case_b', password: 'userpass123', nickname: 'smokecase' } });
+  expect('重名校验大小写不敏感（SmokeCase / smokecase 视为重名）', caseB.status === 409, caseB.text.slice(0, 120));
+
+  const dup = await req('/api/auth/register', { method: 'POST', body: { username: 'smoke_user', password: 'userpass123', nickname: '另一个昵称' } });
   expect('重复用户名返回 409', dup.status === 409);
 
-  const weak = await req('/api/auth/register', { method: 'POST', body: { username: 'weak_user', password: '123' } });
+  const weak = await req('/api/auth/register', { method: 'POST', body: { username: 'weak_user', password: '123', nickname: '弱密码用户' } });
   expect('过短密码返回 400', weak.status === 400);
 
-  console.log('\n=== 4. 昵称跨设备同步 ===');
+  const forgedRegister = await req('/api/auth/register', { method: 'POST', body: { username: 'forged_priv', password: 'userpass123', nickname: '伪权限用户', isAdmin: true, isTest: true } });
+  expect('注册请求体里伪造的 isAdmin/isTest 被忽略（仍是普通账号）', forgedRegister.status === 200 && forgedRegister.json.user.isAdmin === false && forgedRegister.json.user.isTest === false, forgedRegister.json && forgedRegister.json.user);
+
+  console.log('\n=== 3.1 默认没有测试权限 -> 管理员在「测试管理」打开后才可用 ===');
+  const blockedByDefault = await req('/api/chat/test', { method: 'POST', headers: bearer(userToken), body: { messages: [{ role: 'user', content: 'hi' }] } });
+  expect('未开通测试权限时内置测试通道返回 403', blockedByDefault.status === 403, blockedByDefault.text.slice(0, 120));
+
+  const grant = await req('/api/admin/set-test', { method: 'POST', headers: bearer(adminToken), body: { userId: reg.json.user.id, isTest: true } });
+  expect('管理员打开测试权限开关成功', grant.status === 200 && grant.json.user.isTest === true, grant.text.slice(0, 120));
+  const meAfterGrant = await req('/api/auth/me', { headers: bearer(userToken) });
+  expect('开通后 canUseTestApi 立即变为 true（无需重新登录）', meAfterGrant.json.user.canUseTestApi === true);
+
+  console.log('\n=== 4. 昵称跨设备同步（含改昵称的重名/空值校验） ===');
   const patchRes = await req('/api/auth/me', { method: 'PATCH', headers: bearer(userToken), body: { nickname: '改名后的昵称' } });
   expect('修改昵称成功', patchRes.status === 200 && patchRes.json.user.nickname === '改名后的昵称');
   const me2 = await req('/api/auth/me', { headers: bearer(userToken) });
   expect('再次读取昵称已更新（等价于另一台设备登录后可见）', me2.json.user.nickname === '改名后的昵称');
+
+  const patchEmpty = await req('/api/auth/me', { method: 'PATCH', headers: bearer(userToken), body: { nickname: '  ' } });
+  expect('把昵称改成空值返回 400', patchEmpty.status === 400, patchEmpty.text.slice(0, 120));
+
+  const patchDup = await req('/api/auth/me', { method: 'PATCH', headers: bearer(userToken), body: { nickname: '管理员' } });
+  expect('把昵称改成他人的昵称返回 409', patchDup.status === 409, patchDup.text.slice(0, 120));
+
+  const patchSelf = await req('/api/auth/me', { method: 'PATCH', headers: bearer(userToken), body: { nickname: '改名后的昵称' } });
+  expect('重名校验排除自己（改成自己当前昵称不报错）', patchSelf.status === 200, patchSelf.text.slice(0, 120));
 
   console.log('\n=== 5. 测试通道（模型由服务端决定 + 采样参数透传） ===');
   const cfg = await req('/api/test-api/config');
@@ -282,18 +321,36 @@ async function main() {
   const relogin = await req('/api/auth/login', { method: 'POST', body: { username: 'admin', password: 'Admin#99999' } });
   expect('新密码可登录', relogin.status === 200 && !!relogin.json.token);
 
-  console.log('\n=== 9. 老账号认领 ===');
+  console.log('\n=== 9. 老账号认领（不带来任何权限 + 昵称自动兜底） ===');
   const claim = await req('/api/auth/claim', {
     method: 'POST',
-    body: { username: 'legacy_user', password: 'legacypass', nickname: '老用户', legacyLocalId: 'user_legacy_abc123', isTest: true }
+    // 故意伪造 isAdmin/isTest：认领接口是公开的，服务端必须一律忽略
+    body: { username: 'legacy_user', password: 'legacypass', nickname: '老用户', legacyLocalId: 'user_legacy_abc123', isAdmin: true, isTest: true }
   });
   expect('认领成功', claim.status === 200 && !!claim.json.token, claim.text.slice(0, 200));
   expect('认领后沿用老 userId（本地业务数据不失联）', claim.json.user && claim.json.user.id === 'user_legacy_abc123', claim.json && claim.json.user);
+  expect('认领请求体里伪造的 isAdmin 被忽略', claim.json.user && claim.json.user.isAdmin === false, claim.json && claim.json.user);
+  expect('认领请求体里伪造的 isTest 被忽略（无测试权限）', claim.json.user && claim.json.user.isTest === false && claim.json.user.canUseTestApi === false, claim.json && claim.json.user);
   const claimedRow = await accounts.findByLegacyLocalId(pool, 'user_legacy_abc123');
   expect('legacy_local_id 已入库', !!claimedRow);
 
   const claimDup = await req('/api/auth/claim', { method: 'POST', body: { username: 'smoke_user', password: 'whatever123' } });
   expect('认领已存在的用户名返回 409', claimDup.status === 409);
+
+  // 老本地昵称可能为空（迁移前昵称可选），也可能与库里已有账号重名（迁移前不查重）；
+  // 认领是登录 401 后自动触发的，不能因为昵称冲突让老用户卡死，服务端应自动兜底
+  const claimNickConflict = await req('/api/auth/claim', {
+    method: 'POST',
+    body: { username: 'legacy_conflict', password: 'legacypass2', nickname: '管理员', legacyLocalId: 'user_legacy_conflict' }
+  });
+  expect('老昵称被占用时认领仍然成功（自动换一个可用昵称）', claimNickConflict.status === 200, claimNickConflict.text.slice(0, 160));
+  expect('兜底昵称非空且不等于被占用的那个', !!(claimNickConflict.json.user && claimNickConflict.json.user.nickname) && claimNickConflict.json.user.nickname !== '管理员', claimNickConflict.json && claimNickConflict.json.user && claimNickConflict.json.user.nickname);
+
+  const claimNoNick = await req('/api/auth/claim', {
+    method: 'POST',
+    body: { username: 'legacy_nonick', password: 'legacypass3', legacyLocalId: 'user_legacy_nonick' }
+  });
+  expect('老账号没有昵称时也能认领（回退用用户名）', claimNoNick.status === 200 && claimNoNick.json.user.nickname === 'legacy_nonick', claimNoNick.text.slice(0, 160));
 
   console.log('\n=== 10. 未配置数据库时的降级 ===');
   expect('isConfigured() 为 true（注入了内存库）', db.isConfigured() === true);

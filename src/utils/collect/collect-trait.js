@@ -34,19 +34,11 @@ function getStorageKey(openid) {
  * - rarity:           稀有度 'common'|'uncommon'|'rare'|'epic'
  *
  * passiveEffects:     游戏开始时自动施加的效果（格式与 EFFECT_TYPE 一致）
- *   - type:           见 item-types.js EFFECT_TYPE
+ *   - type:           见 utils/effects/effect-types.js 的 EFFECT_TYPE
  *   - value:          数值
  *   - stat / attr:    目标属性
  *   - duration:       'permanent'（特性效果始终为永久）
  *   - description:    可读描述
- *
- * combatBonus:        战斗系统直接读取的数值加成（combatManager 使用）
- *   - attackBonus:    攻击命中加值（累加到 d20）
- *   - damageBonus:    伤害加值（累加到伤害骰）
- *   - acBonus:        AC 加值
- *   - initiative:     先攻加值
- *   - critMin:        暴击最低骰点（默认 20，设为 19 = 19-20 皆暴击）
- *   - diceBonus:      所有检定通用加值
  */
 const TRAITS = [
   // ── 默认解锁（所有玩家都有）──────────────────────────────────────
@@ -79,7 +71,6 @@ const TRAITS = [
       { type: 'attack_bonus', value: 2, attackType: 'melee', duration: 'permanent', description: '近战攻击+2' }
     ],
     combatBonus: { attackBonus: 2, damageBonus: 2 },
-    // 低血量额外加成由 combatManager 动态处理
     lowHpBonus: { threshold: 0.5, attackBonus: 2, damageBonus: 2 }
   },
   {

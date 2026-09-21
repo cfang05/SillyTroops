@@ -10,7 +10,7 @@
 // 变量分层（对齐酒馆）：
 //   - 局部变量：runtimeStore.localVariables（随对话存档）
 //   - 全局变量：storage[u_{userId}_global_variables]（按用户隔离，跨对话持久化）
-//     注：迁移前是不带前缀的 global_variables（所有人共用一份），按既定决策作废重置。
+//     注：不带前缀的 global_variables（所有人共用一份）已按既定决策作废重置。
 
 import { useRuntimeStore } from '../stores/runtimeStore'
 import storage from '../utils/storage.js'

@@ -236,7 +236,7 @@ export function applyRegexScripts(
 }
 
 /**
- * 校验脚本的 findRegex 是否为合法正则（用于预设编辑页做输入校验）
+ * 校验给定的正则字符串是否合法
  */
 export function isValidRegex(pattern: string): boolean {
   try {

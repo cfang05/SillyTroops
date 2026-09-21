@@ -77,6 +77,10 @@ async function _refresh() {
   presetStore.load()
   regexPresetStore.load()
   personaStore.load()
+  // 刷新的第一帧 IndexedDB 往往还没 hydrate 完，loadAll 的同步读会拿到空列表
+  // （store 内部会在 hydrate 完成后自行修正）。这里等它就绪再取计数，
+  // 否则刷新后概览会显示 0 张卡 / 0 个预设。
+  await cardStore.ensureLoaded()
   // P5.2：对话列表改为从 IndexedDB 读取（getList 走内存缓存，需先 init 一次）
   await conversationManager.init()
   conversations.value = conversationManager.getList()
@@ -104,7 +108,9 @@ function formatTime(ts: number): string {
   return date.toLocaleDateString('zh-CN')
 }
 
-function onNewConversation() {
+async function onNewConversation() {
+  // 先确保卡片列表已就绪（刷新的第一帧可能是空的），否则会误报"还没有角色卡"
+  try { await cardStore.ensureLoaded() } catch (e) { /* 读失败就按当前内存状态判断 */ }
   if (cardStore.cards.length === 0) {
     uni.showModal({
       title: '还没有角色卡',

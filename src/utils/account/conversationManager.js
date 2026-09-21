@@ -483,6 +483,105 @@ async function _persistList() {
 }
 
 // ─────────────────────────────────────────────────────────────
+// 同步草稿（修复：刷新页面丢掉正在流式输出的内容）
+// ─────────────────────────────────────────────────────────────
+//
+// 为什么需要：存档介质是 **异步** IndexedDB，浏览器刷新/关页时那次写入会被直接丢弃，
+// 而流式输出期间内存里可能已经有半截回复。
+//
+// 为什么用 sessionStorage 而不是 localStorage：
+//   · **刷新保留、关标签页丢弃** —— 正好是"草稿"该有的生命周期，
+//     不会像 localStorage 那样把一份可能很大的副本长期留在设备上；
+//   · **同步 API** —— beforeunload/pagehide 里唯一来得及的写法；
+//   · **按标签页隔离** —— 两个标签页开同一个角色不会互相覆盖。
+//
+// 消费语义：takeDraft() 读一次就删（下次进入页面不会误用旧内容）；
+// 用户主动"新建对话"时由 clear() 一并清掉，不会把旧对话又捞回来。
+
+const DRAFT_PREFIX = 'chat_draft_';
+/** 草稿体积上限（字符数）：超过就放弃写草稿，宁可丢草稿也不要把 sessionStorage 撑爆 */
+const DRAFT_MAX_CHARS = 2000000;
+
+/** sessionStorage 句柄；隐私模式等不可用时返回 null（草稿只是兜底，失败不影响主流程） */
+function _sessionStore() {
+  try {
+    if (typeof sessionStorage === 'undefined') return null;
+    return sessionStorage;
+  } catch (e) {
+    return null;
+  }
+}
+
+function _draftKey(cardId) { return DRAFT_PREFIX + cardId; }
+
+/**
+ * 同步写入一份草稿（页面卸载/刷新前调用）
+ * @returns {boolean} 是否真的写入
+ */
+function saveDraft(data) {
+  const ss = _sessionStore();
+  if (!ss || !data || !data.cardId) return false;
+  try {
+    const payload = {
+      cardId: String(data.cardId),
+      updatedAt: Date.now(),
+      presetId: data.presetId || '',
+      regexPresetId: data.regexPresetId || '',
+      personaId: data.personaId || '',
+      messages: Array.isArray(data.messages) ? data.messages : [],
+      localVariables: data.localVariables || {},
+      worldInfoState: data.worldInfoState || null,
+      trpgState: data.trpgState || null
+    };
+    const json = JSON.stringify(payload);
+    if (json.length > DRAFT_MAX_CHARS) {
+      console.warn('[ConversationManager] 草稿过大（' + json.length + ' 字符），跳过同步草稿');
+      return false;
+    }
+    ss.setItem(_draftKey(payload.cardId), json);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/** 是否存在草稿（只探测，不消费） */
+function hasDraft(cardId) {
+  const ss = _sessionStore();
+  if (!ss || !cardId) return false;
+  try {
+    return !!ss.getItem(_draftKey(cardId));
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * 取出并**删除**草稿（消费掉，避免下次误用旧内容）
+ * @returns {{messages:any[]}|null}
+ */
+function takeDraft(cardId) {
+  const ss = _sessionStore();
+  if (!ss || !cardId) return null;
+  try {
+    const raw = ss.getItem(_draftKey(cardId));
+    if (!raw) return null;
+    ss.removeItem(_draftKey(cardId));
+    const parsed = JSON.parse(raw);
+    return (parsed && Array.isArray(parsed.messages) && parsed.messages.length > 0) ? parsed : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/** 删除草稿（"新建对话"清空存档时必须一起清，否则新对话会把旧内容捞回来） */
+function clearDraft(cardId) {
+  const ss = _sessionStore();
+  if (!ss || !cardId) return;
+  try { ss.removeItem(_draftKey(cardId)); } catch (e) { /* ignore */ }
+}
+
+// ─────────────────────────────────────────────────────────────
 // 列表与生命周期（同步 API 基于内存缓存）
 // ─────────────────────────────────────────────────────────────
 
@@ -531,6 +630,9 @@ function init() {
 async function clear(cardId) {
   if (!cardId) return false;
   _ensureFreshUid();
+  // 同步草稿也必须一起清掉：否则用户点"新建对话"清空存档后进入 chat，
+  // chat 会把刷新前的旧草稿当成"已有内容"重新加载回来（清空等于没清）。
+  clearDraft(cardId);
   const adapter = _getAdapter();
   const header = await adapter.get(_headerKey(cardId)).catch(() => null);
   const pages = Number((header && header.pageCount) || 0);
@@ -549,7 +651,7 @@ function remove(cardId) {
   return clear(cardId);
 }
 
-/** 重置内存缓存并重新初始化（导入备份后需要，确保读到新数据；账号切换也走它） */
+/** 重置内存缓存并重新初始化（导入备份后需要，确保读到新数据） */
 function reload() {
   _initPromise = null;
   _listCache = [];
@@ -575,6 +677,11 @@ export default {
   save: save,
   clear: clear,
   remove: remove,
+  /** 同步草稿（H5 sessionStorage）：刷新前兜底写、进入页面时 takeDraft 消费 */
+  saveDraft: saveDraft,
+  hasDraft: hasDraft,
+  takeDraft: takeDraft,
+  clearDraft: clearDraft,
   /** D20：把其他账号遗留在本地存储里的 v1 存档也搬进 IndexedDB（启动时调用一次即可） */
   migrateForeignLegacy: migrateForeignLegacy
 };

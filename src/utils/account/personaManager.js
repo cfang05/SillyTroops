@@ -3,7 +3,7 @@
 //   Persona 是"玩家自己"在对话中的身份，绑定 {{user}} 宏（名字）与描述。
 //   支持创建多个 Persona，其中一个为"当前出场"，按用户 ID 隔离存储。
 //
-// 与 TRPG 的 character-manager.js（六维属性角色）不同：Persona 只承载对话身份（名字/头像/描述），
+// 与 TRPG 的数值档案（utils/persona/trpgProfile.js，六维属性角色）不同：Persona 只承载对话身份（名字/头像/描述），
 // 保留现有 TRPG 结构不动，这里是在其之上新增的酒馆式身份层。
 //
 // 存储结构（按用户隔离）：

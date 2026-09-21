@@ -93,7 +93,7 @@ export class LocalStorageAdapter implements StorageAdapter {
 }
 
 // ─────────────────────────────────────────────────────────────
-// IndexedDbAdapter：单对象仓库的 KV 实现（P5 才会真正接管业务数据）
+// IndexedDbAdapter：单对象仓库的 KV 实现（对话/角色卡/预设/Persona 等业务数据的落盘介质）
 // ─────────────────────────────────────────────────────────────
 const IDB_STORE = 'kv'
 

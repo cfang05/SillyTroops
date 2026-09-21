@@ -1,6 +1,6 @@
 // src/stores/moduleStore.ts
-// 功能模块开关 —— 合并后数据源 = 当前角色卡的 extensions.trpg.modules（默认全关）
-// 不再是全局持久化配置；toggle / applyPreset 写回 characterCardStore.update（深合并）。
+// 功能模块开关 —— 数据源 = 当前角色卡的 extensions.trpg.modules（默认全关）
+// 不做全局持久化；toggle / applyPreset 写回 characterCardStore.update（深合并）。
 //
 // 字段（与 types/character.ts 的 TrpgModules 对齐）：
 //   intentDetection / combat / inventory / characterStatus / dicePanel / stats / adventure

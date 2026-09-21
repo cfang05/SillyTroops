@@ -16,8 +16,8 @@ export interface LorebookEntry {
    * 注入位置，对齐酒馆 world_info_position：
    *   before_context / after_context —— 历史前 / 用户输入前
    *   at_depth                       —— 插入历史消息中间指定深度
-   *   an_top / an_bottom             —— 作者注上方/下方（预留，P2+ 后续功能）
-   *   em_top / em_bottom             —— 示例消息上方/下方（预留，P2+ 后续功能）
+   *   an_top / an_bottom             —— 作者注上方/下方
+   *   em_top / em_bottom             —— 示例消息上方/下方
    *   outlet                         —— 自定义出口点（预留）
    *   system                         —— 兼容旧数据，等价 after_context
    */
@@ -120,15 +120,15 @@ export const DEFAULT_TRPG_MODULES: TrpgModules = {
   adventure: false
 }
 
-/** TRPG 配置块（原 story.initialState/scenes/items/quests 等故事数据的迁移归宿） */
+/** TRPG 配置块（故事初始场景、标记、物品、任务等数据的存放处） */
 export interface TrpgConfig {
   modules: TrpgModules
-  /** 原 story.initialState.scene */
+  /** 初始场景 */
   initialScene?: string
-  /** 原 story.initialState.flags */
+  /** 初始标记 */
   initialFlags?: Record<string, any>
   startingItems?: { id: string; quantity: number }[]
-  /** 初始快捷操作（原 story.initialQuickActions，供聊天页建议行动 UI） */
+  /** 初始快捷操作（供聊天页建议行动 UI） */
   initialQuickActions?: string[]
   /** 故事专属物品定义（供 itemManager 使用） */
   items?: Record<string, any>
@@ -215,8 +215,8 @@ export interface CharacterV2 {
 }
 
 /**
- * 内部使用的角色运行时数据（对齐现有 character-manager.js 的存储结构）
- * 用于 characterStore，兼容现有的扁平字段（六维属性等）
+ * 内部使用的角色运行时数据
+ * 兼容现有的扁平字段（六维属性等）
  */
 export interface CharacterRuntime {
   id: string

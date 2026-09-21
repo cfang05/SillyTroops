@@ -411,8 +411,8 @@ export default {
   pointer-events: none;
 }
 
-/* 顶部导航改用公共 NavBar 组件后，这里不再保留 .mkt-head/.mkt-exit 的局部副本，
-   避免与 NavBar 的返回键样式各自漂移（返回键统一由 components/common/NavBar.vue 提供）。 */
+/* 顶部导航与返回键样式统一由 components/common/NavBar.vue 提供，
+   本页不重复定义局部副本，避免两边样式各自漂移。 */
 
 /* 分类 Tab */
 .mkt-tabs {

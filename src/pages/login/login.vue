@@ -29,8 +29,8 @@
         <input class="input" type="text" :password="true" placeholder="请输入密码" v-model="password" />
       </view>
       <view class="field" v-if="isRegisterMode">
-        <text class="label">昵称（可选）</text>
-        <input class="input" type="text" placeholder="展示用昵称" v-model="nickname" />
+        <text class="label">昵称<text class="required">*</text></text>
+        <input class="input" type="text" placeholder="请输入昵称（全站唯一，不可与他人重复）" v-model="nickname" maxlength="40" />
       </view>
 
       <button class="btn-primary" :loading="submitting" :disabled="submitting" @tap="onSubmit">{{ isRegisterMode ? '注册并登录' : '登录' }}</button>
@@ -116,16 +116,29 @@ function toggleMode() {
 async function onSubmit() {
   const u = username.value.trim()
   const p = password.value.trim()
+  const n = nickname.value.trim()
   if (!u || !p) {
     uni.showToast({ title: '请输入用户名和密码', icon: 'none' })
     return
+  }
+  // 注册昵称必填（服务端也会校验，这里先挡一道，避免白跑一次请求才报错）。
+  // 长度上限与 auth.js 的 NICKNAME_MAX_LENGTH 一致（40）。
+  if (isRegisterMode.value) {
+    if (!n) {
+      uni.showToast({ title: '请填写昵称', icon: 'none' })
+      return
+    }
+    if (n.length > 40) {
+      uni.showToast({ title: '昵称不能超过 40 个字符', icon: 'none' })
+      return
+    }
   }
   if (submitting.value) return
   submitting.value = true
 
   try {
     if (isRegisterMode.value) {
-      const res = await userStore.register(u, p, nickname.value.trim())
+      const res = await userStore.register(u, p, n)
       if (!res.success) {
         uni.showToast({ title: res.message || '注册失败', icon: 'none' })
         return
@@ -211,6 +224,8 @@ function _afterLoginSuccess() {
 .form { flex: 1; }
 .field { margin-bottom: 28rpx; }
 .label { display: block; font-size: 23rpx; color: var(--fg-soft); margin-bottom: 14rpx; letter-spacing: .01em; }
+/* 必填星号：昵称是注册必填项，和"可选"时期相比必须有可辨识的视觉差 */
+.required { color: var(--accent); font-size: 23rpx; margin-left: 6rpx; }
 .input {
   width: 100%;
   background: var(--surface);

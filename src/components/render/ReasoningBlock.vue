@@ -1,6 +1,6 @@
 <template>
   <!-- 思考内容折叠块（P6.3 / D17）
-       只在有思考时出现；没有思考的消息完全不渲染它，界面与改造前一致。
+       只在有思考时出现；没有思考的消息完全不渲染它。
        默认展开，**正文一开始出现就自动折叠一次**（用户手动点过之后不再自动折叠）。 -->
   <view class="reason-box" :class="{ 'reason-box-streaming': streaming }">
     <view class="reason-head" @tap="toggle">

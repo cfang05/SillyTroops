@@ -195,7 +195,7 @@ export function createCachedStore(opts: CachedStoreOptions): CachedStore {
     if (hydrated) {
       return (cache.has(key) ? cache.get(key) : null) as T | null
     }
-    // 迁移完成前：同步回落到本地存储（= 改造前的行为）
+    // 迁移完成前：同步回落到本地存储
     try {
       const v = uni.getStorageSync(key)
       if (v === '' || v === undefined || v === null) return null

@@ -1,11 +1,13 @@
 // src/stores/characterCardStore.ts
-// AI 角色卡（Character Card）状态管理，与 characterStore（玩家 Role）完全独立
+// AI 角色卡（Character Card）状态管理，与 TRPG 数值档案（utils/persona/trpgProfile.js）完全独立
 // 包装 utils/character_card/characterCardManager.js
 
 import { defineStore } from 'pinia'
 import characterCardManager from '../utils/character_card/characterCardManager.js'
 // @ts-ignore
 import poolImport from '../utils/character_card/poolImport.js'
+// @ts-ignore
+import { scopedKey } from '../utils/account/userScope.js'
 import type { CharacterV2Data, LorebookEntry } from '../types/character'
 
 export interface CharacterCardRecord extends CharacterV2Data {
@@ -24,6 +26,36 @@ export interface CharacterCardRecord extends CharacterV2Data {
 // 列表存储（uni.setStorageSync）出现并发写竞态，互相覆盖导致丢卡。
 let _builtinCardsLoadPromise: Promise<void> | null = null
 
+/**
+ * 「内置角色卡已导入」的持久化标记键（按账号隔离）。
+ *
+ * 修复的 Bug：刷新页面时内置角色卡（beth / DM_v2）被反复导入，卡池里越刷越多。
+ * 标记里带**版本号**：只有版本与 builtinAssets.BUILTIN_ASSETS_VERSION 一致、
+ * 且清单里的卡都在时，才跳过导入检查；清单更新时版本 +1 即自动失效重查。
+ */
+function _builtinMarkerKey(): string { return scopedKey('builtin_cards_imported') }
+
+/** 读标记；读不到/格式不对都当"没有标记"处理（下次老实检查一遍） */
+function _readBuiltinMarker(): { version: number; keys: string[] } | null {
+  try {
+    const raw = uni.getStorageSync(_builtinMarkerKey())
+    if (!raw || typeof raw !== 'object') return null
+    const keys = Array.isArray((raw as any).keys) ? (raw as any).keys.map((k: any) => String(k)) : []
+    return { version: Number((raw as any).version) || 0, keys }
+  } catch (e) {
+    return null
+  }
+}
+
+/** 写标记。失败不影响本次结果（只是下次多检查一遍），所以静默 */
+function _writeBuiltinMarker(version: number, keys: string[]) {
+  try {
+    uni.setStorageSync(_builtinMarkerKey(), { version, keys, at: Date.now() })
+  } catch (e) {
+    console.warn('[characterCardStore] 内置卡导入标记写入失败（下次会重新检查）:', e)
+  }
+}
+
 export const useCharacterCardStore = defineStore('characterCard', {
   state: () => ({
     cards: [] as CharacterCardRecord[],
@@ -41,8 +73,22 @@ export const useCharacterCardStore = defineStore('characterCard', {
       this.cards = characterCardManager.getAllCards() as CharacterCardRecord[]
       this.activeCardId = characterCardManager.getActiveCard()
 
-      // 自动加载内置角色卡（如果尚未导入），全局单例保证不会并发重复导入
+      // 自动加载内置角色卡（如果尚未导入），全局单例保证不会并发重复导入。
+      // ⚠️ 刷新的第一帧 IndexedDB 可能还没 hydrate 完，上面这次同步读会拿到空列表；
+      // _loadBuiltinCards 会在 hydrate 完成后把 this.cards 重新读一遍（见该方法内注释）。
       this._loadBuiltinCards()
+    },
+
+    /**
+     * 等「hydrate + 内置卡检查」全部就绪，然后刷新列表。
+     *
+     * 页面在**刷新后的第一帧**就要用真实卡列表时（会话页计数、新建对话页默认选中卡）
+     * 需要 await 它 —— 否则会先看到 0 张卡，等下一次 loadAll 才补上。
+     */
+    async ensureLoaded(): Promise<void> {
+      await this._loadBuiltinCards()
+      this.cards = characterCardManager.getAllCards() as CharacterCardRecord[]
+      this.activeCardId = characterCardManager.getActiveCard()
     },
 
     /**
@@ -176,29 +222,55 @@ export const useCharacterCardStore = defineStore('characterCard', {
     },
 
     /** 自动加载内置角色卡（仅H5端；用全局单例 Promise 确保多页面并发调用时只真正执行一次）
-     *  按"缺哪张就补哪张"的逐项比对，而不是"有任意一张内置卡就整体跳过"——
-     *  避免此前并发覆盖 bug 导致的部分导入残留状态，让后续启动时把剩余缺失的内置卡补齐。
-     *  判重用 extensions.builtinKey（稳定的文件标识符，如 'beth'/'DM_v2'），
-     *  而不是比较角色卡里解析出来的显示名字（显示名字来自 PNG 元数据，与文件名完全不同，
-     *  之前用"[内置] + manifest.name"去匹配"[内置] + 角色卡里的真实name"永远匹配不上，
-     *  导致每次启动都判定为全部缺失、重复导入）。 */
+     *
+     *  为什么"缺哪张就补哪张"：不再用"有任意一张内置卡就整体跳过"，避免此前并发覆盖 bug
+     *  导致的部分导入残留状态，让后续启动时把剩余缺失的内置卡补齐。
+     *  判重用 extensions.builtinKey（稳定的文件标识符，如 'beth'/'DM_v2'），而不是角色卡里
+     *  解析出来的显示名字（显示名字来自 PNG 元数据，与文件名完全不同）。
+     *
+     *  ⚠️ 修复的 Bug（刷新页面重复导入内置卡）：
+     *  判重原本直接依赖 this.cards，而 loadAll() 是同步的 —— 刷新后的第一帧 IndexedDB 还没
+     *  hydrate，同步读会回落到本地存储（迁移后已被清空）拿到 **空列表**，于是每次都判定
+     *  "两张内置卡都缺失" → 重复导入。现在改为：先 await ensureReady() 再重新读全量卡列表，
+     *  外加一个带版本号的持久化标记（见 _builtinMarkerKey），双重保险。
+     */
     _loadBuiltinCards(): Promise<void> {
       if (_builtinCardsLoadPromise) return _builtinCardsLoadPromise
 
       _builtinCardsLoadPromise = (async () => {
         // #ifdef H5
         try {
-          const { getBuiltinCharacterList, loadBuiltinCharacters } = await import('../services/builtinAssets')
+          const { getBuiltinCharacterList, loadBuiltinCharacters, BUILTIN_ASSETS_VERSION } =
+            await import('../services/builtinAssets')
           const manifest = getBuiltinCharacterList()
+          const manifestKeys = manifest.map(m => m.name)
 
-          // 逐项比对：哪些内置卡（按 extensions.builtinKey 精确匹配）已经存在，只补缺失的部分
+          // ① 必须等 hydrate 完成再判重（见方法头注释）。之后重新读一次全量列表，
+          //    既让判重拿到真实数据，也顺手把 this.cards 从"刷新首帧的空列表"修正过来。
+          await characterCardManager.ensureReady()
+          this.cards = characterCardManager.getAllCards() as CharacterCardRecord[]
+          this.activeCardId = characterCardManager.getActiveCard()
+
+          // ② 自愈去重：历史上已经被重复导入出来的同 key 卡片，只保留最早的那一张
+          this._dedupeBuiltinCards(manifestKeys)
+
           const existingKeys = new Set(
             this.cards
               .map(c => c.extensions && (c.extensions as any).builtinKey)
               .filter(Boolean)
           )
+
+          // ③ 版本一致 + 清单齐全 → 直接跳过（连 PNG 都不用 fetch，省流量省时间）
+          const marker = _readBuiltinMarker()
+          const allPresent = manifestKeys.every(k => existingKeys.has(k))
+          if (marker && marker.version === BUILTIN_ASSETS_VERSION && allPresent) {
+            console.log('[characterCardStore] 内置角色卡已导入且版本一致，跳过检查')
+            return
+          }
+
           const missing = manifest.filter(m => !existingKeys.has(m.name))
           if (missing.length === 0) {
+            _writeBuiltinMarker(BUILTIN_ASSETS_VERSION, manifestKeys)
             console.log('[characterCardStore] 内置角色卡已全部存在，无需补充')
             return
           }
@@ -238,6 +310,17 @@ export const useCharacterCardStore = defineStore('characterCard', {
             this.cards = characterCardManager.getAllCards() as CharacterCardRecord[]
             console.log(`[characterCardStore] 本轮已补充 ${loadedCount} 张内置角色卡，当前共 ${this.cards.length} 张卡`)
           }
+
+          // ④ 只有确认清单齐全才写标记：某张卡 fetch/落盘失败时标记不写，
+          //    下次进页面还能再试（否则会把"没导成功"永久记成"已导入"）。
+          const keysNow = new Set(
+            this.cards
+              .map(c => c.extensions && (c.extensions as any).builtinKey)
+              .filter(Boolean)
+          )
+          if (manifestKeys.every(k => keysNow.has(k))) {
+            _writeBuiltinMarker(BUILTIN_ASSETS_VERSION, manifestKeys)
+          }
         } catch (e) {
           console.warn('[characterCardStore] 内置角色卡加载失败:', e)
         }
@@ -245,6 +328,48 @@ export const useCharacterCardStore = defineStore('characterCard', {
       })()
 
       return _builtinCardsLoadPromise
+    },
+
+    /**
+     * 清理**重复导入**出来的内置卡（同一个 builtinKey 只留最早的一张）。
+     *
+     * 为什么需要：在修好判重之前，每次刷新都会多出两张 [内置] 卡，这些脏数据不会自己消失。
+     * 保留 createdAt 最早的那张（最接近"原始导入"），删除其余重复项；被删掉的若是当前激活卡，
+     * 由 characterCardManager.deleteCard 顺带清掉激活标记。
+     *
+     * @param manifestKeys 内置清单里的 key（只处理这些，用户自己导入的同名卡不动）
+     * @returns 删除的重复卡数量
+     */
+    _dedupeBuiltinCards(manifestKeys: string[]): number {
+      const byKey = new Map<string, CharacterCardRecord[]>()
+      for (const c of this.cards) {
+        const key = c.extensions && (c.extensions as any).builtinKey
+        if (!key || manifestKeys.indexOf(String(key)) === -1) continue
+        const list = byKey.get(String(key)) || []
+        list.push(c)
+        byKey.set(String(key), list)
+      }
+
+      let removed = 0
+      byKey.forEach((list, key) => {
+        if (list.length < 2) return
+        list.sort((a, b) => (a.createdAt || 0) - (b.createdAt || 0))
+        for (const dup of list.slice(1)) {
+          try {
+            characterCardManager.deleteCard(dup.id)
+            removed++
+          } catch (e) {
+            console.warn('[characterCardStore] 删除重复内置卡失败:', dup.id, e)
+          }
+        }
+        console.log(`[characterCardStore] 内置卡 ${key} 有 ${list.length} 张重复，已清理 ${list.length - 1} 张`)
+      })
+
+      if (removed > 0) {
+        this.cards = characterCardManager.getAllCards() as CharacterCardRecord[]
+        this.activeCardId = characterCardManager.getActiveCard()
+      }
+      return removed
     }
   }
 })

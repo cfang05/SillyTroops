@@ -269,7 +269,6 @@ export default {
       }
     },
 
-    // 加载本地 openid
     loadOpenid() {
       try {
         const openid = uni.getStorageSync('openid')
@@ -277,7 +276,6 @@ export default {
       } catch (e) { console.error('加载 openid 失败:', e) }
     },
 
-    // 检查登录状态
     checkLoginStatus() {
       return !!this.globalData.openid
     },

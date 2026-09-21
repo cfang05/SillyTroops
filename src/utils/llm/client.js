@@ -252,18 +252,14 @@ class LLMClient {
       try {
         console.log(`[LLMClient] 结构化生成尝试 ${attempt}/${this.maxRetries}`);
         
-        // 调用底层 API
         const responseText = await this._callAPI([
           { role: 'user', content: enhancedPrompt }
         ]);
 
-        // 解析 JSON
         const parsedObject = this._parseJSON(responseText);
 
-        // 验证字段完整性
         this._validateSchema(parsedObject, schema);
 
-        // 禁止词检测
         this._checkForbiddenWords(responseText);
 
         console.log('[LLMClient] 结构化生成成功', parsedObject);
@@ -285,7 +281,6 @@ class LLMClient {
       }
     }
 
-    // 所有重试都失败
     console.error('[LLMClient] 结构化生成失败，重试耗尽');
     throw new Error(`结构化生成失败（已重试 ${this.maxRetries} 次）: ${lastError.message}`);
   }
@@ -307,12 +302,10 @@ class LLMClient {
       try {
         console.log(`[LLMClient] 文本生成尝试 ${attempt}/${this.maxRetries}`);
 
-        // 调用底层 API
         const responseText = await this._callAPI([
           { role: 'user', content: prompt }
         ]);
 
-        // 禁止词检测
         this._checkForbiddenWords(responseText);
 
         console.log('[LLMClient] 文本生成成功', { 
@@ -336,7 +329,6 @@ class LLMClient {
       }
     }
 
-    // 所有重试都失败
     console.error('[LLMClient] 文本生成失败，重试耗尽');
     throw new Error(`文本生成失败（已重试 ${this.maxRetries} 次）: ${lastError.message}`);
   }
@@ -424,7 +416,7 @@ class LLMClient {
     const isTestAccount = await userManager.isTestAccountChecked();
     const wantsTestModel = userConfig.model === 'test';
     if (wantsTestModel && !isTestAccount) {
-      throw new Error('内置测试 API 仅测试账号可用，请在设置中选择其他模型');
+      throw new Error('内置测试 API 需要管理员开通测试权限，请在设置中选择其他模型');
     }
 
     // 显式选择"测试模型"：走内置测试通道。
@@ -876,10 +868,11 @@ class LLMClient {
     // 测试权限以服务器为权威：发请求前异步核对
     const isTestAccount = await userManager.isTestAccountChecked();
 
-    // 安全兜底：测试模型仅测试账号（含 admin）可用，非测试账号即使本地配置被篡改为 test 也会被拒绝
+    // 安全兜底：测试模型需要管理员开通的测试权限（含 admin 恒有），
+    // 非测试账号即使本地配置被篡改为 test 也会被拒绝
     const wantsTestModel = userConfig.model === 'test';
     if (wantsTestModel && !isTestAccount) {
-      throw new Error('内置测试 API 仅测试账号可用，请在设置中选择其他模型');
+      throw new Error('内置测试 API 需要管理员开通测试权限，请在设置中选择其他模型');
     }
 
     // 显式选择"测试模型"：走内置测试通道（模型/Key 全部在服务端，前端只带登录 token）
@@ -963,7 +956,7 @@ class LLMClient {
     if (typeof params.topP === 'number') requestBody.top_p = params.topP;
     if (typeof params.presencePenalty === 'number') requestBody.presence_penalty = params.presencePenalty;
     if (typeof params.frequencyPenalty === 'number') requestBody.frequency_penalty = params.frequencyPenalty;
-    // 以下几项酒馆预设字段（Sprint：预设编辑页补齐字段后新增），OpenAI 兼容接口按需支持，
+    // 以下几项酒馆预设字段，OpenAI 兼容接口按需支持，
     // 不是所有第三方端点都认识 top_k/seed/n，但带上去不会破坏标准 OpenAI 请求格式
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
@@ -1071,12 +1064,10 @@ class LLMClient {
   async _callCloudAI(model, messages) {
     console.log('[LLMClient] 调用云开发 AI', { model });
 
-    // 检查云开发 AI 功能是否可用
     if (!uni.cloud || !uni.cloud.extend || !uni.cloud.extend.AI) {
       throw new Error('云开发 AI 功能不可用，请检查配置');
     }
 
-    // 创建模型实例
     const aiModel = uni.cloud.extend.AI.createModel('hunyuan-exp');
 
     // 尝试多个模型（使用原 ai-helper.js 的成功经验）
@@ -1105,7 +1096,6 @@ class LLMClient {
       }
     }
 
-    // 所有模型都失败
     throw new Error(`所有模型都失败: ${lastError?.message || '未知错误'}`);
   }
 
@@ -1126,7 +1116,6 @@ class LLMClient {
    */
   _parseJSON(text) {
     try {
-      // 尝试直接解析
       return JSON.parse(text);
     } catch (e) {
       // 尝试提取 JSON（去除 Markdown 代码块）

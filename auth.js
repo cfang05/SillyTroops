@@ -29,6 +29,15 @@ const PASSWORD_MAX_LENGTH = 128;
 const USERNAME_MIN_LENGTH = 2;
 const USERNAME_MAX_LENGTH = 24;
 
+// ── 昵称规则 ─────────────────────────────────────────────────
+// 昵称曾是"可选、可重名"的展示字段；站点公开后它变成**注册必填 + 全站唯一**：
+//   - 必填：注册时就确定展示身份，避免大量空昵称导致评论/排行榜里只能显示登录名
+//   - 唯一：昵称是用户互相看到的身份，重名即可以假乱真（冒充他人发言）
+// 上限沿用历史存储口径（40，见 accounts.updateNickname 的 slice），不新增更严的限制，
+// 免得已存在长昵称的账号改不动自己的昵称。
+const NICKNAME_MIN_LENGTH = 1;
+const NICKNAME_MAX_LENGTH = 40;
+
 // ── token 有效期 ─────────────────────────────────────────────
 const DEFAULT_TOKEN_TTL_DAYS = 7;
 
@@ -146,7 +155,7 @@ async function verifyPassword(password, accountRow) {
   return crypto.timingSafeEqual(derived, stored);
 }
 
-// ── 用户名/密码格式校验 ───────────────────────────────────────
+// ── 用户名/密码/昵称格式校验 ──────────────────────────────────
 
 /**
  * @returns {{ ok: boolean, message?: string, username?: string, password?: string }}
@@ -165,6 +174,29 @@ function validateCredentials(username, password) {
     return { ok: false, message: `密码长度需在 ${PASSWORD_MIN_LENGTH}-${PASSWORD_MAX_LENGTH} 个字符之间` };
   }
   return { ok: true, username: u, password: p };
+}
+
+/**
+ * 校验昵称（注册必填；改昵称同样走这里）。
+ *
+ * 拒绝控制字符而不是替换：昵称会出现在评论列表、排行榜、监控页等地方，
+ * 里面混进换行/回车会在渲染时把一行内容撑成多行，看起来像"另一个人另起一行发言"，
+ * 属于低成本的身份伪造，直接在入口挡掉。
+ *
+ * ⚠️ 这里只做"格式"校验，**重名校验不在这里**（需要查库，见 accounts.nicknameExists）。
+ *
+ * @returns {{ ok: boolean, message?: string, nickname?: string }}
+ */
+function validateNickname(raw) {
+  const n = String(raw == null ? '' : raw).trim();
+  if (n.length < NICKNAME_MIN_LENGTH) return { ok: false, message: '昵称不能为空' };
+  if (n.length > NICKNAME_MAX_LENGTH) {
+    return { ok: false, message: `昵称长度不能超过 ${NICKNAME_MAX_LENGTH} 个字符` };
+  }
+  if (/[\u0000-\u001f\u007f]/.test(n)) {
+    return { ok: false, message: '昵称不能包含换行或控制字符' };
+  }
+  return { ok: true, nickname: n };
 }
 
 // ── token 签发 / 校验 ────────────────────────────────────────
@@ -240,6 +272,7 @@ module.exports = {
   hashPassword: hashPassword,
   verifyPassword: verifyPassword,
   validateCredentials: validateCredentials,
+  validateNickname: validateNickname,
   signToken: signToken,
   verifyToken: verifyToken,
   extractBearer: extractBearer,
@@ -249,6 +282,8 @@ module.exports = {
     PASSWORD_MAX_LENGTH: PASSWORD_MAX_LENGTH,
     USERNAME_MIN_LENGTH: USERNAME_MIN_LENGTH,
     USERNAME_MAX_LENGTH: USERNAME_MAX_LENGTH,
+    NICKNAME_MIN_LENGTH: NICKNAME_MIN_LENGTH,
+    NICKNAME_MAX_LENGTH: NICKNAME_MAX_LENGTH,
     SCRYPT_N: SCRYPT_N,
     SCRYPT_R: SCRYPT_R,
     SCRYPT_P: SCRYPT_P

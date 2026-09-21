@@ -176,7 +176,6 @@
               </view>
             </view>
             <view v-if="expandedId === item.identifier" class="prompt-item-body" @tap.stop="() => {}">
-              <!-- marker 提示词说明 -->
               <view v-if="isMarkerPrompt(item.identifier)" class="marker-hint">
                 <text class="marker-hint-text">⚠️ 系统必需 Prompt：内容由角色卡/世界书/对话历史等运行时自动填充，无法编辑。可调整注入位置和顺序。</text>
               </view>

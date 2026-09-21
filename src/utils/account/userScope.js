@@ -19,7 +19,7 @@ export function scopedKey(baseKey) {
 }
 
 /**
- * 生成指定用户的隔离存储键（用于跨用户读取，如管理场景）
+ * 生成指定用户的隔离存储键（用于跨账号迁移：读写他人 uid 名下的遗留存档）
  */
 export function scopedKeyFor(userId, baseKey) {
   return 'u_' + (userId || 'guest') + '_' + baseKey;

@@ -3,7 +3,6 @@
     <NavBar title="模型设置" subtitle="配置 AI 模型参数" />
 
     <scroll-view class="content" scroll-y="true" :style="{ paddingTop: (navBarHeight + 16) + 'px' }">
-      <!-- 使用说明 -->
       <view class="section info-section">
         <view class="info-card">
           <view class="info-icon-wrap">
@@ -21,7 +20,6 @@
         </view>
       </view>
 
-      <!-- 模型选择 -->
       <view class="section">
         <text class="section-title">选择模型</text>
         <view class="model-list">
@@ -43,7 +41,6 @@
         </view>
       </view>
 
-      <!-- API配置 -->
       <view class="section" v-if="currentModel !== 'default' && currentModel !== 'test'" >
         <text class="section-title">API配置</text>
 
@@ -92,6 +89,13 @@
       <view class="section" v-if="currentModel === 'test'">
         <text class="section-subtitle" v-if="testApiInfo.enabled">已使用内置测试接口（{{ testApiInfo.label }}）：模型与 Key 由服务端统一配置，无需填写</text>
         <text class="section-subtitle" v-else>内置测试接口当前不可用，请选择其他模型并填写自己的 API Key</text>
+      </view>
+
+      <!-- 没有测试权限时的说明：新注册账号默认没有测试权限（is_test=false），
+           上面列表里不会出现「测试 API（内置）」。这里明确说清"为什么没有"和"怎么拿到"，
+           否则用户会以为功能坏了（这个选项以前是人人都有的）。 -->
+      <view class="section" v-if="!isTestAccount && testApiInfo.enabled">
+        <text class="section-subtitle">「测试 API（内置）」需要管理员开通测试权限后才会出现在上方列表；开通后重新进入本页即可选择。你也可以直接填写自己的 API Key 使用其他模型。</text>
       </view>
 
       <!-- 渲染开关 -->
@@ -356,6 +360,9 @@ export default {
     this.navBarHeight = getNavBarHeight().navBarHeight
     this._initModelList()
     this.loadSettings()
+    // 测试权限可能刚被管理员打开/关闭：向服务端核一次并据此重建模型列表。
+    // 新账号注册时默认没有测试权限，用户"等管理员开权限"期间不必重新登录/清缓存。
+    this._refreshTestPermission()
     this._loadTestApiInfo()
     this._initPluginAndModuleStores()
     this._initNoteStore()
@@ -486,6 +493,27 @@ export default {
       }
     },
 
+    /**
+     * 向服务端核验测试权限，并据此重建模型列表。
+     *
+     * 为什么需要：新注册账号默认 is_test=false，用户往往是在"等管理员开权限"的状态下
+     * 打开设置页的。权限判定以服务端为权威（见 userManager.isTestAccountChecked），
+     * 这样管理员一打开开关，用户重进设置页就能看到「测试 API（内置）」，不必重新登录。
+     */
+    async _refreshTestPermission() {
+      const before = this.isTestAccount
+      let after = before
+      try {
+        after = await userManager.isTestAccountChecked()
+      } catch (e) {
+        return // 服务端不可达：保留本地缓存值，不打断设置页
+      }
+      if (after === before) return
+      this.isTestAccount = after
+      this._initModelList()
+      this.loadSettings()
+    },
+
     _initModelList() {
       this.isTestAccount = userManager.isTestAccount()
       // #ifdef MP-WEIXIN
@@ -523,7 +551,12 @@ export default {
           this.currentModel = (settings.model && settings.model !== 'test') ? settings.model : 'default'
           // #endif
           // #ifndef MP-WEIXIN
-          this.currentModel = settings.model || (this.isTestAccount ? 'test' : 'hunyuan')
+          // 本地残留 model='test' 但当前账号没有测试权限（管理员刚关掉、或本机换过账号）时，
+          // 回落到需要自配 Key 的模型：否则设置页会显示"已使用内置测试接口"，
+          // 而真正发请求时被 client.js 的权限兜底拒绝，用户只看到一句报错、不知道是权限问题。
+          this.currentModel = (settings.model === 'test' && !this.isTestAccount)
+            ? 'hunyuan'
+            : (settings.model || (this.isTestAccount ? 'test' : 'hunyuan'))
           // #endif
           this.apiKey = settings.apiKey || ''
           this.apiUrl = settings.apiUrl || ''
@@ -537,7 +570,7 @@ export default {
     onSelectModel(e) {
       const modelId = e.currentTarget.dataset.id
       if (modelId === 'test' && !this.isTestAccount) {
-        uni.showToast({ title: '内置测试 API 仅测试账号可用', icon: 'none' })
+        uni.showToast({ title: '内置测试 API 需要管理员开通测试权限', icon: 'none' })
         return
       }
       this.currentModel = modelId
@@ -568,7 +601,7 @@ export default {
       }
 
       if (currentModel === 'test' && !isTestAccount) {
-        uni.showToast({ title: '内置测试 API 仅测试账号可用', icon: 'none' })
+        uni.showToast({ title: '内置测试 API 需要管理员开通测试权限', icon: 'none' })
         return
       }
 

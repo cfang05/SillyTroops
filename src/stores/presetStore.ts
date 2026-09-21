@@ -1,6 +1,4 @@
 // src/stores/presetStore.ts
-// 预设库状态管理（新建，无现有对应实现）
-// Sprint 1.7
 
 import { defineStore } from 'pinia'
 // @ts-ignore
@@ -50,9 +48,6 @@ export const usePresetStore = defineStore('preset', {
       // 2) 每次启动都重新植入并排在最前，因此不需要持久化也能被 activePresetId 正确引用（id 固定）。
       this.presets = this.presets.filter(p => p && p.id !== SYSTEM_PRESET_ID)
       this.presets.unshift(createSystemPreset())
-
-      // 注：内置预设的自动加载已按 D7/P4.7 移除（打包资源一并删除）。
-      // 现在默认走代码内置的「系统预设」（见上方植入逻辑）。
 
       try {
         // activePresetId 之前只存在内存里，刷新页面/重开小程序后就丢失，导致默认预设形同虚设。

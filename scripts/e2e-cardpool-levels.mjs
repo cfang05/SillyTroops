@@ -315,8 +315,9 @@ try {
     return false;
   }
 
-  // 真 token 写进 localStorage（非字符串要包 type/data —— H5 的 uni.setStorageSync 就是这格式）
-  const profileObj = { id: userId, username: 'level_user', nickname: '改个昵称', avatar: '', isAdmin: false, isTest: true, level: 12, xp: 0 };
+  // 真 token 写进 localStorage（非字符串要包 type/data —— H5 的 uni.setStorageSync 就是这格式）。
+  // isTest:false 与当前服务端一致：注册的新账号默认没有测试权限（本用例只验证评论里的等级，不涉及测试通道）
+  const profileObj = { id: userId, username: 'level_user', nickname: '改个昵称', avatar: '', isAdmin: false, isTest: false, level: 12, xp: 0 };
   await send('Page.navigate', { url: BASE + '/' }, sessionId);
   await sleep(1500);
   await evaluate(`

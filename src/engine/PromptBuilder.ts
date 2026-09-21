@@ -176,7 +176,7 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   const buckets = scanResult.buckets
 
   // 世界书内容统一走 WORLD_INFO 正则（内部 placement=2，对齐酒馆 regex_placement.WORLD_INFO）
-  // 修复：传入 vars（供 substituteRegex/trimStrings/replaceString 宏替换）
+  // 传入 vars（供 substituteRegex/trimStrings/replaceString 宏替换）
   const wiRegex = (t: string, depth?: number) => applyRegexScripts(
     t,
     preset.regexScripts || [],
@@ -298,7 +298,7 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
 
   history = _insertAbsoluteItems(history, absoluteItems, vars)
   // atDepth 世界书条目内容同样走 WORLD_INFO 正则后，按 depth+role 注入历史深处
-  // 修复：传入每个条目自己的 depth（供 minDepth/maxDepth 过滤）
+  // 传入每个条目自己的 depth（供 minDepth/maxDepth 过滤）
   const atDepthEntries = buckets.atDepth.map(e => ({ ...e, content: wiRegex(e.content, e.depth) }))
   history = _insertAtDepthEntries(history, atDepthEntries)
   // IN_CHAT 作者注：按 depth+role 注入历史深处
