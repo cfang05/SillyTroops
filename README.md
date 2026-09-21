@@ -3,7 +3,6 @@
 [![License](https://img.shields.io/badge/License-Proprietary-red.svg)](#许可证)
 [![Platform](https://img.shields.io/badge/Platform-H5%20%7C%20WeChat%20Mini%20Program-07C160?logo=wechat&logoColor=white)](#技术栈)
 [![Vue 3](https://img.shields.io/badge/Vue-3-4FC08D?logo=vue.js&logoColor=white)](https://vuejs.org/)
-[![uni-app](https://img.shields.io/badge/uni-app-Vue%203%20CLI-2B9939)](https://uniapp.dcloud.net.cn/)
 [![Node.js](https://img.shields.io/badge/Node.js-%E2%89%A518-5FA04E?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![Express](https://img.shields.io/badge/Express-4-000000?logo=express&logoColor=white)](https://expressjs.com/)
 [![PostgreSQL](https://img.shields.io/badge/PostgreSQL-Neon-4169E1?logo=postgresql&logoColor=white)](https://neon.tech/)
@@ -94,27 +93,6 @@
 - **卡池导入。** 从卡池导入的卡片会在角色卡库与选择页同时显示「新导入」标识（24 小时内），并记录来源卡片 id 以判断是否已导入。
 - **等级榜。** 按等级倒序、同级按经验倒序的公开榜单接口，供社区类页面使用。
 
-### 五、账号、权限与统计
-
-- **服务端账号体系。** 注册 / 登录 / 改昵称 / 认领老本地账号，密码以 `scrypt` + 每账号独立 salt 哈希入库，明文永不落库、永不返回前端；前端只保存签名 token 与脱敏用户信息。登录态带 `token_version`，管理员重置密码后旧 token 立即失效。
-- **服务端裁决的权限。** 能否使用内置测试通道由数据库中的 `is_admin || is_test` 决定，客户端无法自授；管理员可在监控页随时开关任意账号的测试权限，下一次请求即生效。新注册账号默认即为测试账号。
-- **老数据迁移。** 迁移前存在于浏览器本地、含明文密码的老账号，首次登录时用本地旧密码校验通过后自动「认领」到服务端；历史用量以 `GREATEST` 语义一次性导入，重复导入不会翻倍。老账号沿用原有 `user_*` id，保证历史业务数据仍可读取。
-- **使用统计。** 累计表与按天表双写，按 **Asia/Shanghai** 切分日期；时长口径为**活跃时长**（仅在真实交互时累计，空闲 5 分钟以上不计、切后台不计），监控页总时长为历史老口径值与新活跃时长之和。
-- **监控页。** 管理员可查看用户总数、今日活跃、总时长、token 用量与登录事件流水，并支持按天与按用户维度查询。
-
-### 六、模型接入
-
-- **内置测试通道（Key 不出服务端）。** 前端只声明「我要用测试通道」，Key、目标地址、模型名与协议参数全部由服务端持有。官方改模型名时只需改服务端变量，前端无需改代码或重新发版。采样参数（`temperature`、`max_tokens`、`top_p`、`top_k`、`presence_penalty`、`frequency_penalty`、`seed`、`n`、`stream_options`）由前端预设决定并原样透传；针对 DeepSeek 系目标，服务端会自动注入 `thinking: { type: 'disabled' }` 等协议参数。
-- **用户自配 Key 通道。** 支持腾讯混元、OpenAI GPT、Claude 以及任意 OpenAI 兼容端点。H5 下前端不直接跨域请求，而是把配置放进 `X-API-Base` / `X-API-Key` 请求头交给同源后端代理；小程序端没有 `/api` 代理，直接调用真实 API。
-- **服务端代理。** `/api/*` 默认转发到用户指定或环境变量指定的 OpenAI 兼容目标，SSE 响应边收边写不做缓冲，客户端断开（停止生成 / 关闭页面）时立刻中断上游以免继续计费。代理路径**刻意跳过** JSON 解析，避免请求体被消费导致上游空 body。
-- **小程序内置模型。** 小程序端可走云端内置的腾讯混元模型，无需用户自配 Key。
-
-### 七、前端工程基础
-
-- **双端条件编译。** 通过 `#ifdef H5` / `#ifndef MP-WEIXIN` 等条件编译隔离平台专有依赖（如 `js-tiktoken`、自定义 HTML 渲染），保证小程序端打包不引入 Web 专属库。
-- **真实 tokenizer 与估算双轨。** H5 端接入 `js-tiktoken`（`cl100k_base`）做真实 token 计数，小程序端保留启发式估算。
-- **调试与可观测。** 内置调试日志与调试页，支持查看提示词构建、世界书命中、正则改写过程。
-- **设计令牌体系。** 全站颜色基于 OKLCh 色彩空间的令牌，配合毛玻璃面板、发丝线边框与模块强调色，形成统一的暗金幻想风格。
 
 ## 技术栈
 
