@@ -122,7 +122,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onUnmounted, onMounted, nextTick } from 'vue'
-import { onLoad, onShow } from '@dcloudio/uni-app'
+import { onLoad, onShow, onPageScroll } from '@dcloudio/uni-app'
 import { useRuntimeStore } from '../../stores/runtimeStore'
 import { useCharacterCardStore } from '../../stores/characterCardStore'
 import { usePresetStore } from '../../stores/presetStore'
@@ -210,14 +210,206 @@ onMounted(() => {
 onShow(() => {
   _pacing.value = loadPacingConfig()
   _reasoningCfg.value = loadReasoningConfig()
+  // 从「对话设置」等页面返回时补一次置底，并恢复"贴底跟随"（原因见下面置底那一节的说明）。
+  // 首次进入时 onShow 早于 _bootConversation 完成（那时连消息都还没有），
+  // 置底交给 _bootConversation 自己负责，避免滚了个空页面。
+  if (_bootCompleted) _pinToBottom([0, 120])
 })
 
-// ── 视口滚动：不再做任何程序化操作 ──────────────────
-// 之前版本用"位置驱动跟随 + 手势锁"等机制试图在流式输出时自动把视口钉在底部，
-// 但无论如何调整，只要 LLM 开始输出就会在某个时机把视口拉/锁到某个位置，
-// 用户完全无法在生成过程中自由滚动。现在彻底移除这一整套自动滚动逻辑：
-// 页面滚动完全交给系统原生行为，任何时候都可以自由上下滑动，代码不再调用
-// uni.pageScrollTo，也不再监听 onPageScroll/手势事件来"纠正"视口位置。
+// ── 视口滚动：贴底跟随 + 进入/返回时置底 ──────────────────────────────
+//
+// 历史教训（不要退回这种写法）：老版本用"位置驱动跟随 + 手势锁"，无条件把视口钉在底部，
+// 结果生成期间用户完全没法往上翻 —— 于是整套跟随被删掉了。但删干净又带来另一个问题：
+// 进入/返回聊天页时停在**能显示的最早一条**上（见下）。
+//
+// 现在两件事一起做，互不冲突：
+//   ① 进入 / 回到聊天页 → 置底（用户要求"进到页面里能看到最新的信息"）；
+//   ② 流式输出时**有条件**跟随：只有用户当前正贴着底部才跟随；他一旦往上滑就立刻停，
+//      滑回底部再自动恢复。这样"想跟的时候跟得动、想翻的时候翻得动"。
+//
+// 为什么会停在不该停的位置（历史现象，记录原因免得又被改回去）：
+//   1. 列表只渲染最近 100 条（MESSAGE_PAGE_SIZE），页面初始 scrollTop = 0，
+//      于是正对着"能显示的最早的那条"（不是会话第一条，是渲染窗口的第一条）；
+//   2. H5 端 navigateTo 会把当前页隐藏，navigateBack 再显示时浏览器把滚动位置重置为 0
+//      —— 所以返回聊天页必然回到顶部。
+/** 置底的补偿时间点（毫秒）：消息是富文本（卡片/代码块/图片）渲染的，高度异步撑开，只滚一次会差一点到底 */
+const SCROLL_BOTTOM_RETRIES = [0, 150, 420]
+/** 距底部多少像素以内算"贴着底部"。留余量：亚像素取整、滚动条宽度差都不该被判成"用户滑走了" */
+const BOTTOM_STICK_THRESHOLD = 60
+/** 流式跟随的最小间隔（毫秒）：30fps 的写入没必要每帧都真的滚一次 */
+const FOLLOW_THROTTLE_MS = 100
+/** 我们自己发起的滚动：忽略紧随其后的那次 scroll 事件（消费一次即失效） */
+const SELF_SCROLL_GUARD_MS = 80
+
+let _scrollTimers: Array<ReturnType<typeof setTimeout>> = []
+/** 会话是否已经装载完成（区分"首次进入"与"从别的页面返回"） */
+let _bootCompleted = false
+
+/**
+ * 是否跟随流式输出（true = 视口保持贴底）
+ *
+ * 初值 true：刚进页面时本来就该在底部。
+ * 由 onPageScroll 维护：离开底部 → false；滑回底部 → true。
+ */
+let _stickToBottom = true
+/** onPageScroll 给的最近一次 scrollTop（非 H5 端读不到同步值时也靠它） */
+let _lastScrollTop = 0
+/** 最近一次测得的最大可滚动位置（非 H5 端读不到同步值，用这个缓存） */
+let _cachedMaxScrollTop = 0
+/** 我们自己发起滚动的时刻（用于识别随之而来的那次 scroll 事件） */
+let _selfScrollAt = 0
+/** 上一次流式跟随的时刻（节流用） */
+let _lastFollowAt = 0
+/** 非 H5 端最近一次异步测量 scrollHeight 的时刻 */
+let _lastMeasureAt = 0
+
+function _clearScrollTimers() {
+  _scrollTimers.forEach(t => clearTimeout(t))
+  _scrollTimers = []
+}
+
+/**
+ * 读取"最大可滚动位置"
+ *
+ * 坐标系与 uni-app 的 onPageScroll 保持一致（它回调的是 window.pageYOffset），
+ * 底部判定也照抄 uni 自己的算法（documentElement.scrollHeight - window.innerHeight）。
+ * H5 能同步读到；其它端返回缓存值，由 _measurePageMax() 定期刷新。
+ *
+ * ⚠️ 这里**不要**顺手更新 _lastScrollTop —— 那个值必须只由滚动回调维护，
+ * 否则"用户是不是在往上滑"的判断会拿当前值和自己比，永远判不出来。
+ */
+function _readPageMetrics(): number {
+  // #ifdef H5
+  try {
+    const docEl = document.documentElement
+    _cachedMaxScrollTop = Math.max(0, (docEl.scrollHeight || 0) - (window.innerHeight || 0))
+  } catch (e) { /* 落到缓存值 */ }
+  // #endif
+  return _cachedMaxScrollTop
+}
+
+/**
+ * 非 H5 端：异步量一次"最大可滚动位置"（内部按 300ms 节流）
+ *
+ * H5 走 _readPageMetrics 的同步分支，这里被条件编译成空函数。
+ */
+function _measurePageMax() {
+  // #ifndef H5
+  const now = Date.now()
+  if (now - _lastMeasureAt < 300) return
+  _lastMeasureAt = now
+  try {
+    uni.createSelectorQuery().selectViewport().scrollOffset().exec((res: any[]) => {
+      const info = res && res[0]
+      if (!info) return
+      const win: any = uni.getSystemInfoSync ? uni.getSystemInfoSync() : {}
+      _cachedMaxScrollTop = Math.max(0, (Number(info.scrollHeight) || 0) - (win.windowHeight || 0))
+    })
+  } catch (e) { /* 量不到就维持原缓存：最坏结果是判定偏保守 */ }
+  // #endif
+}
+
+/** 真正执行一次"滚到最底部"（幂等：无论调几次都是去同一个位置） */
+function _doScrollBottom() {
+  _selfScrollAt = Date.now()
+  // 用超大 scrollTop，让运行时自己钳到最大可滚动位置。
+  // 不去自己读 scrollHeight —— 富文本（卡片/代码块/图片）撑开高度是异步的，量到的值常常偏小。
+  //
+  // 这里直接用 uni.pageScrollTo 而不是手写 window.scrollTo：uni-app H5 的实现
+  // （uni-shared 的 scrollTo()）会先按 documentElement 的 scrollHeight/clientHeight 做钳制，
+  // 再同时写 documentElement.scrollTop 与 body.scrollTop —— 正好覆盖"个别浏览器要用 body 控制滚动"
+  // 的情况；这也是本文件 loadMoreMessages 已经在用的同一套 API。
+  uni.pageScrollTo({ scrollTop: 9999999, duration: 0 })
+}
+
+/**
+ * 滚到页面最底部（= 最新一条消息）
+ *
+ * 每一步都会重新确认 `_stickToBottom`：置底后用户如果在补偿窗口内往上滑了，
+ * 后面几次补偿就不再执行，不会把他拽回来。
+ *
+ * @param opts.delays 补偿滚动的执行时间点（毫秒）。默认用于"刚载入会话"——
+ *   那时富文本还在陆续撑开高度，一次滚不到底；而"用户主动发送那一下"只需要滚一次。
+ */
+function _scrollToBottom(opts: { delays?: number[] } = {}) {
+  _clearScrollTimers()
+  const delays = (opts.delays && opts.delays.length) ? opts.delays : SCROLL_BOTTOM_RETRIES
+  delays.forEach((delay, i) => {
+    const timer = setTimeout(() => {
+      _scrollTimers = _scrollTimers.filter(t => t !== timer)
+      const run = () => { if (_stickToBottom) _doScrollBottom() }
+      if (i === 0) nextTick(run)
+      else run()
+    }, delay)
+    _scrollTimers.push(timer)
+  })
+}
+
+/** 强制"贴底 + 滚到底"（进入页面 / 从别的页面返回时用，带补偿） */
+function _pinToBottom(delays?: number[]) {
+  _stickToBottom = true
+  _scrollToBottom(delays ? { delays } : {})
+}
+
+/** 强制"贴底 + 滚到底"，只滚一次（发送 / 自动回复每一轮 / 编辑后重新生成） */
+function _pinToBottomOnce() {
+  _stickToBottom = true
+  _scrollToBottom({ delays: [0] })
+}
+
+/**
+ * 流式输出的跟随（节流）
+ *
+ * 只在 `_stickToBottom` 为真时被调用；nextTick 里再确认一次，
+ * 避免"排队的这一帧"在用户已经往上滑之后才落地。
+ */
+function _followStreaming() {
+  const now = Date.now()
+  if (now - _lastFollowAt < FOLLOW_THROTTLE_MS) return
+  _lastFollowAt = now
+  nextTick(() => { if (_stickToBottom) _doScrollBottom() })
+}
+
+/**
+ * 用户滚动 → 维护"是否贴底跟随"
+ *
+ * 关键点：我们自己程序化滚到底也会触发这个回调，如果不加区分，
+ * 就会出现"用户刚往上滑、我们立刻又把他拽回底部"的死循环（老版本的病根）。
+ * 所以两重保护：
+ *   ① 我们自己滚动的 80ms 内忽略滚动事件；
+ *   ② 只要 scrollTop 是**变小**的（用户往上滑），无条件停止跟随，不等滑出阈值 ——
+ *      否则惯性滚动刚开始的那几帧还在阈值内，会被我们往回拽一下。
+ */
+onPageScroll((e: any) => {
+  const scrollTop = Number(e && e.scrollTop) || 0
+  const now = Date.now()
+  const movedUp = scrollTop < _lastScrollTop - 1
+  // 非 H5 端先排一次异步测量（H5 里这个函数被条件编译成空实现）
+  _measurePageMax()
+  const max = _readPageMetrics()
+  const atBottom = (max - scrollTop) <= BOTTOM_STICK_THRESHOLD
+
+  // 区分"我们自己滚的"与"用户滚的"（老版本就是死在这里：不区分的话，
+  // 用户刚往上滑、我们随后落地的滚动又会把他粘回底部，变成翻不动）。
+  //   ① 只有"没往上滑 + 已经在底部"的事件才可能是我们滚出来的 —— 用户往上滑的事件永不忽略；
+  //   ② 消费一次即失效（_selfScrollAt 清零），否则会顺手吃掉用户"滑回底部"的正常操作；
+  //   ③ 还有 80ms 时间窗，避免把很久之后的滚动误判成我们自己的。
+  const selfScroll = atBottom && !movedUp && (now - _selfScrollAt) < SELF_SCROLL_GUARD_MS
+  _lastScrollTop = scrollTop
+  if (selfScroll) {
+    _selfScrollAt = 0
+    return
+  }
+
+  if (movedUp) {
+    // 用户往上滑：立刻停止跟随，并取消还没落地的补偿滚动
+    _stickToBottom = false
+    _clearScrollTimers()
+  } else {
+    // 滑回底部 → 恢复跟随；停在中间 → 不跟随
+    _stickToBottom = atBottom
+  }
+})
 
 const processor = new MessageProcessor()
 
@@ -425,6 +617,11 @@ function _flushStreamContent() {
   // 由 _flushPersist 里的 sessionStorage 同步草稿兜底。
   if (pending) _persistConversation()
 
+  // 流式跟随（用户要求）：只有"用户当前正贴着底部"时才把视口保持在最新文字处。
+  // 他往上滑的那一刻 onPageScroll 就把 _stickToBottom 置 false 了，这里自然不再跟随，
+  // 所以不会出现老版本"生成期间视口被抢走、翻不动"的问题。
+  if (_stickToBottom) _followStreaming()
+
   if (needMore && !_streamTimer) {
     _streamTimer = setTimeout(_flushStreamContent, STREAM_FLUSH_MS)
   }
@@ -526,6 +723,9 @@ function _finalizeMessage(index: number, finalText: string) {
   }
   runtimeStore.setMessages(next)
   _reasoningStart.delete(index)
+  // 收尾后再补一次跟随：最后一帧可能被节流挡掉，不然结尾会停在折叠线以下看不见。
+  // 用户已经往上翻时 _stickToBottom 为 false，这里不会打扰他。
+  if (_stickToBottom) nextTick(() => { if (_stickToBottom) _doScrollBottom() })
 }
 
 /**
@@ -679,6 +879,8 @@ async function _bootConversation(mode: string) {
 
   if (!sessionCardId.value) {
     _startFresh()
+    _bootCompleted = true
+    _pinToBottom()
     return
   }
 
@@ -686,13 +888,21 @@ async function _bootConversation(mode: string) {
     await conversationManager.init()
     if (conversationManager.has(sessionCardId.value) || conversationManager.hasDraft(sessionCardId.value)) {
       await _loadConversation(sessionCardId.value)
+      _bootCompleted = true
+      _pinToBottom()
       return
     }
     _startFresh()
+    _bootCompleted = true
+    _pinToBottom()
     return
   }
 
   await _loadConversation(sessionCardId.value)
+  // 会话载入完成后置底：进入历史对话时应该停在**最新一条**，而不是渲染窗口的第一条。
+  // 同时把"贴底跟随"恢复成 true —— 刚进页面本来就该跟着最新内容走。
+  _bootCompleted = true
+  _pinToBottom()
 }
 
 /**
@@ -952,6 +1162,7 @@ onUnmounted(() => {
   autoMode.value = false
   _clearHoldTimer()
   _clearAutoTimer()
+  _clearScrollTimers()
   _flushPersist()
   // #ifdef H5
   try { window.removeEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
@@ -1032,6 +1243,8 @@ async function _autoStep() {
   runtimeStore.appendMessage({ role: 'user', content: text, hidden: true } as ChatMessage)
   runtimeStore.appendMessage({ role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 } as ChatMessage)
   const aiIndex = runtimeStore.messages.length - 1
+  // 自动回复的每一轮同样置底一次，否则新输出会落在折叠线以下、看着像"没反应"
+  _pinToBottomOnce()
 
   const ok = await new Promise<boolean>((resolve) => {
     _requestReply(aiIndex, text, resolve)
@@ -1347,6 +1560,11 @@ async function sendUserMessage(text: string) {
   runtimeStore.appendMessage(aiMsg)
   const aiIndex = runtimeStore.messages.length - 1
 
+  // 发送后置底一次：消息是加在**末尾**的，视口不跟着动的话，用户刚发的那条和
+  // 接下来说话的位置都会落在折叠线以下。只在用户主动发送这一下滚一次，
+  // 生成期间依然不跟随（那是被刻意移除的机制）。
+  _pinToBottomOnce()
+
   await _requestReply(aiIndex, text)
 }
 
@@ -1527,6 +1745,8 @@ function editLastUserMessage(idx: number) {
 
       runtimeStore.appendMessage({ role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 } as ChatMessage)
       const aiIndex = runtimeStore.messages.length - 1
+      // 截断后页面变短、新回复又加在末尾：置底一次让用户看到重新生成的起点
+      _pinToBottomOnce()
       _requestReply(aiIndex, text)
     }
   })
