@@ -13,18 +13,20 @@
 // 世界书注入：由 WorldInfoEngine.scan() 完成匹配/递归/概率/分组/预算/限时，产出 before/after/atDepth
 // 桶，再由本文件按 worldInfoBefore/worldInfoAfter marker 位置与 atDepth 深度注入。
 
-import type { Preset, PromptItem } from '../types/preset'
+import type { Preset, PromptItem, GenerationParams } from '../types/preset'
 import type { CharacterV2, LorebookEntry } from '../types/character'
 import type { AuthorsNoteConfig } from '../types/note'
 import { substituteVariables, setTrpgContext } from './VariableEngine'
 import { DEBUG_ENABLED } from './DebugLogger'
 import { scan as scanWorldInfo, createEmptySessionState, type WorldInfoSessionState, type WorldInfoBucket } from './WorldInfoEngine'
 import { applyRegexScripts } from './RegexScriptEngine'
-import { estimateTokenCount } from './tokenizer'
+import { estimateTokenCount, countMessageTokens, sumMessageTokens, TOKENS_PER_REQUEST_PADDING } from './tokenizer'
 
 export interface ChatHistoryItem {
   role: 'user' | 'assistant'
   content: string
+  /** 该轮 assistant 的思考内容（来自上游 reasoning_content，或正文定界符切出的那份） */
+  reasoning?: string
 }
 
 export interface BuildContext {
@@ -44,11 +46,25 @@ export interface BuildContext {
   trpgState?: Record<string, any>
   /** 作者注（Author's Note）配置 */
   authorsNote?: AuthorsNoteConfig
+  /**
+   * `userMessage` 是否已经跑过 prompt 态正则（placement=1）。
+   *
+   * MessageProcessor 会在调用 buildMessages 之前先跑一次输入侧正则，所以要置 true；
+   * 直接调用 buildMessages 的路径（重新生成 / 切换 swipe 等）留空即可，由本文件兜底执行。
+   * 不声明时会重复套用脚本（典型表现：`<user_input>` 被包两层）。
+   */
+  userMessagePreProcessed?: boolean
 }
 
 export interface BuiltMessage {
   role: 'system' | 'user' | 'assistant'
   content: string
+  /**
+   * 可选的 `name` 字段（对齐酒馆 Message.name）。
+   * 目前只有对话示例会用到：`example_user` / `example_assistant`。
+   * 注意：酒馆的 squashSystemMessages 会跳过**带 name 的** system 消息，此字段参与该判定。
+   */
+  name?: string
 }
 
 /** 上下文构成里的一个"段"（P3.3：供分项面板展示） */
@@ -151,12 +167,25 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   setTrpgContext(ctx.trpgState || null)
 
   // ══════════ 世界书扫描 ══════════
+  // 扫描深度 / 递归开关全部读预设的全局设置（由 PresetImporter 从酒馆 world_info_* 字段导入）。
+  // ⚠️ 默认值必须跟酒馆一致（深度 2、不递归），否则同一个预设会激活不同数量的条目：
+  //   改造前这里既不传 defaultScanDepth（引擎默认 0 = 扫全部历史）也不传 recursive（引擎默认开），
+  //   而酒馆默认是"只看最近 2 条消息、不做递归"。
+  // 显式标注类型：`preset.generationParams || {}` 会被推断成 `{} | GenerationParams`，
+  // 新加的可选字段在上面取属性会报 TS2339。
+  const genParamsForWi: GenerationParams = preset.generationParams || ({} as GenerationParams)
   const sessionState = ctx.worldInfoSessionState || createEmptySessionState()
   const scanResult = scanWorldInfo({
     entries: lorebookEntries || [],
     chatHistory,
     userMessage,
     sessionState,
+    defaultScanDepth: typeof genParamsForWi.worldInfoDepth === 'number' ? genParamsForWi.worldInfoDepth : 2,
+    recursive: genParamsForWi.worldInfoRecursive === true,
+    maxRecursionSteps: typeof genParamsForWi.worldInfoMaxRecursionSteps === 'number' ? genParamsForWi.worldInfoMaxRecursionSteps : 0,
+    // 关键词匹配时带上说话人名字（对齐酒馆 world_info_include_names 默认 true）
+    includeNames: true,
+    characterName: character?.data?.name || '',
     budget: {
       maxContext: preset.generationParams?.maxContext || 4000,
       percent: 25,
@@ -185,11 +214,16 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   )
 
   // ══════════ marker 内容映射 ══════════
+  // wi_format：酒馆用 formatWorldInfo() 给世界书正文包一层（默认 "{0}" = 不包装）
+  const wiFormat = genParamsForWi.worldInfoFormat
   const emTop = buckets.emTop.map(t => wiRegex(t.trim())).filter(Boolean)
   const emBottom = buckets.emBottom.map(t => wiRegex(t.trim())).filter(Boolean)
+  const dialogueExampleMessages = _dialogueExampleMessages(character?.data?.mes_example || '', vars)
+  // markerContents 里的 dialogueExamples 只是"供分项统计/兜底注入"的合并文本；
+  // 真正的注入形态是多条带 name 的 system 消息（见下面组装循环里的 dialogueExamples 分支）
   const dialogueExamples = [
     ...emTop,
-    _formatDialogueExamples(character?.data?.mes_example || '', vars),
+    ...dialogueExampleMessages.map(m => (m.name === 'example_user' ? '{{user}}: ' : '{{char}}: ') + m.content),
     ...emBottom
   ].filter(Boolean).join('\n\n')
 
@@ -199,8 +233,8 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     scenario: character?.data?.scenario || '',
     dialogueExamples,
     personaDescription: ctx.personaDescription || '',
-    worldInfoBefore: buckets.before.map(t => wiRegex(t.trim())).filter(Boolean).join('\n\n'),
-    worldInfoAfter: buckets.after.map(t => wiRegex(t.trim())).filter(Boolean).join('\n\n'),
+    worldInfoBefore: _formatWorldInfo(buckets.before.map(t => wiRegex(t.trim())).filter(Boolean).join('\n\n'), wiFormat),
+    worldInfoAfter: _formatWorldInfo(buckets.after.map(t => wiRegex(t.trim())).filter(Boolean).join('\n\n'), wiFormat),
     trpgStatus: _buildTrpgStatusText(ctx.trpgState)
   }
 
@@ -213,6 +247,21 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
 
   for (const item of orderedItems) {
     if (item.identifier === 'chatHistory') continue // 历史单独处理（在系统块之后）
+
+    // 对话示例：按酒馆形态展开成多条带 name 的 system 消息（对齐 openai.js populateDialogueExamples）
+    // 世界书 EM 桶（emTop/emBottom）在酒馆里也是插进示例序列的，这里保持同样的相对顺序。
+    if (item.identifier === 'dialogueExamples') {
+      if (item.injectionPosition === 1) {
+        // 示例被设成深度注入：退化为一条文本（酒馆不会这么配，这里只保证不丢内容）
+        const text = [emTop, ...dialogueExampleMessages.map(m => m.content), emBottom].filter(Boolean).join('\n\n')
+        if (text.trim()) absoluteItems.push({ role: item.role, depth: item.injectionDepth, content: substituteVariables(text, vars) })
+      } else {
+        emTop.forEach(t => systemBlock.push({ role: 'system', content: substituteVariables(t, vars) }))
+        dialogueExampleMessages.forEach(m => systemBlock.push({ role: m.role, name: m.name, content: substituteVariables(m.content, vars) }))
+        emBottom.forEach(t => systemBlock.push({ role: 'system', content: substituteVariables(t, vars) }))
+      }
+      continue
+    }
 
     // 1. 解析内容：marker → 运行时内容；普通 → prompt.content
     const source = Object.prototype.hasOwnProperty.call(markerContents, item.identifier)
@@ -230,7 +279,8 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
       // ABSOLUTE=1：按 injectionDepth 注入历史深处
       absoluteItems.push({ role: item.role, depth: item.injectionDepth, content: resolved })
     } else {
-      // RELATIVE=0：系统块，按 promptOrder 顺序
+      // RELATIVE=0：系统块，按 promptOrder 顺序；role 用预设里写的那个
+      // （酒馆 marker 常写 role:'user'，改造前这里被强制成 system）
       systemBlock.push({ role: item.role, content: resolved })
     }
     if (item.identifier === 'trpgStatus') trpgStatusInjected = true
@@ -287,7 +337,17 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   // ══════════ 组装最终 messages ══════════
   const result: BuiltMessage[] = [...systemBlock]
 
-  let history = _applyNamesBehavior(chatHistory, character, preset)
+  // _applyNamesBehavior 会保留 reasoning（整体 spread），因此这里用带 reasoning 的扩展类型
+  let history: (BuiltMessage & { reasoning?: string })[] = _applyNamesBehavior(chatHistory, character, preset)
+
+  // 宏替换（对齐酒馆 script.js:4447 / openai.js:946 的 substituteParams）：
+  // 历史与本次用户消息进 prompt 前都要过一遍宏，否则历史里遗留的 `{{...}}` 会以字面量发出去。
+  history = _substituteMessageMacros(history, vars)
+
+  // ══════════ 思考链回灌（对齐酒馆 PromptReasoning）══════════
+  // 只带**最近一轮**有思考的 assistant 消息 —— 与酒馆默认行为一致
+  // （`power-user.js:283` max_additions=1，`script.js:4473-4498` 反向遍历、注入一条即停）。
+  history = _injectPromptReasoning(history)
 
   // ══════════ prompt 态正则（P4.1 / D5 三态分离）══════════
   // 对齐酒馆 script.js:4445 —— 历史消息进 prompt 前，逐条按 `{ isPrompt: true }` 跑一遍正则：
@@ -324,18 +384,32 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
   const safetyMargin = Math.min(512, Math.max(96, Math.round(maxContext * 0.02)))
   const budget = Math.max(0, maxContext - reservedResponse - safetyMargin)
 
-  const tokensOf = (msgs: BuiltMessage[]) => msgs.reduce((n, m) => n + estimateTokenCount(m.content || ''), 0)
+  // token 计数按**整条消息**算（role + content + name + 每条框架开销），
+  // 逐字对齐酒馆服务端（src/endpoints/tokenizers.js:998-1017）。
+  // 改造前只累加 content，系统性少算 → 裁剪点偏晚。
+  // ⚠️ 用 sumMessageTokens（不含请求级 padding）：padding 每请求只算一次，
+  //    分项里各算一次会重复计数。
+  const tokensOf = (msgs: BuiltMessage[]) => sumMessageTokens(msgs)
   const systemTokens = tokensOf(systemBlock)
 
   const tailUserRaw = (userMessage && (result.length === 0 || result[result.length - 1].content !== userMessage)) ? userMessage : ''
-  // 本次用户消息同样走 prompt 态正则（P4.1）：只影响这次请求，存档里仍是用户原文
+  // 本次用户消息同样走 prompt 态正则（P4.1）：只影响这次请求，存档里仍是用户原文。
+  // ⚠️ MessageProcessor 在调用之前已经对同一条消息跑过一次 placement=1 正则
+  //   （见 MessageProcessor.send 第 1 步），这里再跑一次会让形如
+  //   `^([\s\S]*)$ → "<user_input>\n$1\n</user_input>"` 的脚本套两层（酒馆只套一层）。
+  //   因此由调用方用 ctx.userMessagePreProcessed 声明"已处理过"，此处只做兜底。
+  // 之后再过一遍宏替换，对齐酒馆 `sendMessageAsUser` 的 `substituteParams(messageText)`
+  // （否则用户打的 `{{char}}` 会以字面量进 prompt）。
   const tailUser = tailUserRaw
-    ? (_applyPromptRegex([{ role: 'user', content: tailUserRaw }], preset, vars)[0]?.content || tailUserRaw)
+    ? substituteVariables(
+      ctx.userMessagePreProcessed ? tailUserRaw : _applyPromptRegexToUser(tailUserRaw, preset, vars),
+      vars
+    )
     : ''
-  const userTokens = tailUser ? estimateTokenCount(tailUser) : 0
+  const userTokens = tailUser ? countMessageTokens({ role: 'user', content: tailUser }) : 0
 
-  // 强制项：系统提示块（含世界书/作者注等已解析内容）+ 本次用户消息
-  const mandatoryTokens = systemTokens + userTokens
+  // 强制项：系统提示块 + 本次用户消息 + 请求级 padding（每请求一次）
+  const mandatoryTokens = systemTokens + userTokens + TOKENS_PER_REQUEST_PADDING
   const overflowMandatory = mandatoryTokens > budget
   const historyBudget = Math.max(0, budget - mandatoryTokens)
 
@@ -345,7 +419,7 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     let acc = 0
     let startIdx = history.length
     for (let i = history.length - 1; i >= 0; i--) {
-      const t = estimateTokenCount(history[i].content || '')
+      const t = countMessageTokens(history[i])
       if (acc + t > historyBudget) break
       acc += t
       startIdx = i
@@ -372,6 +446,13 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     result.push({ role: 'user', content: tailUser })
   }
 
+  // ══════════ 合并连续 system 消息（对齐酒馆 squashSystemMessages）══════════
+  // 酒馆在 `prepareOpenAIMessages` 的 finally 里、**裁剪完成后**才合并，
+  // 所以 token 统计与裁剪都基于合并前的消息列表（这里保持一致：sections 里用的还是 systemBlock）。
+  const messages: BuiltMessage[] = genParamsForWi.squashSystemMessages === true
+    ? _squashSystemMessages(result)
+    : result
+
   // ══════════ 上下文构成快照（P3.3）══════════
   const historyKeptTokens = tokensOf(historyKept)
   const keptTexts = new Set(historyKept.map(m => m.content))
@@ -391,6 +472,7 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     mkSection('系统提示词', systemTokens, systemBlock.length),
     mkSection('聊天历史', historyKeptTokens, historyKept.length),
     ...(tailUser ? [mkSection('本次用户消息', userTokens, 1)] : []),
+    mkSection('消息框架开销', TOKENS_PER_REQUEST_PADDING, 0),
     mkSection('回复预留', reservedResponse, 0),
     mkSection('安全余量', safetyMargin, 0),
     // 「其中」类子项：说明占比来源，**不参与上面的分区求和**
@@ -405,24 +487,25 @@ export function buildMessages(ctx: BuildContext): BuildMessagesResult {
     reservedResponse,
     safetyMargin,
     budget,
-    used: systemTokens + historyKeptTokens + userTokens,
+    // 与上面的强制项/预算口径保持一致：含回复起手开销，否则面板各项之和会对不上 used
+    used: systemTokens + historyKeptTokens + userTokens + TOKENS_PER_REQUEST_PADDING,
     sections,
     historyKept: historyKept.length,
     historyTotal: history.length,
     historyDropped,
     overflowMandatory,
-    rawPrompt: result.map(m => `### ${m.role}\n${m.content}`).join('\n\n'),
+    rawPrompt: messages.map(m => `### ${m.role}${m.name ? ' (' + m.name + ')' : ''}\n${m.content}`).join('\n\n'),
     createdAt: Date.now()
   }
 
   if (DEBUG_ENABLED) {
-    console.log(`[PromptBuilder] FINAL MESSAGES 摘要 (共 ${result.length} 条):`)
-    result.forEach((m, idx) => {
-      console.log(`  [${idx}] role=${m.role} | preview="${m.content.slice(0, 40).replace(/\n/g, '\\n')}"`)
+    console.log(`[PromptBuilder] FINAL MESSAGES 摘要 (共 ${messages.length} 条${messages.length !== result.length ? `，合并前 ${result.length} 条` : ''}):`)
+    messages.forEach((m, idx) => {
+      console.log(`  [${idx}] role=${m.role}${m.name ? ' name=' + m.name : ''} | preview="${m.content.slice(0, 40).replace(/\n/g, '\\n')}"`)
     })
   }
 
-  return { messages: result, worldInfoState: scanResult.newSessionState, promptInfo }
+  return { messages, worldInfoState: scanResult.newSessionState, promptInfo }
 }
 
 // ─────────────────────────────────────────────────────────────
@@ -463,54 +546,63 @@ function _applyOverrides(
 }
 
 /**
- * 将角色卡 mes_example 格式化为 few-shot 示例块。
- * 对齐酒馆 parseMesExamples + parseExampleIntoIndividual：
- *   1. 按 <START> 切块；
- *   2. 每块内按行解析说话人前缀（{{user}}/{{char}} 或实际用户名/角色名），把连续发言归为同一轮；
- *   3. 输出统一使用 {{user}}: / {{char}}: 前缀（后续由 substituteVariables 替换为真实名字）。
+ * 将角色卡 mes_example 转换为**多条**对话示例消息，对齐酒馆：
+ *   `script.js:3442 parseMesExamples` → `openai.js:647 setOpenAIMessageExamples`
+ *   → `openai.js:720 parseExampleIntoIndividual`
+ *
+ * 酒馆的实际形态是：
+ *   · 每个 `<START>` 块拆成若干条**独立消息**，放在 dialogueExamples marker 的位置；
+ *   · role 一律是 `system`，`name` 是 `example_user` / `example_assistant`；
+ *   · 正文里不带 `名字:` 前缀（前缀只用于识别说话人，识别完就剥掉）；
+ *   · 每块的第 1 行（`This is how {{char}} should talk` 之类的引导语）**直接丢弃**。
+ *
+ * 改造前这里把整块拼成一条 `[Example messages]...` 字符串，与酒馆完全不是一个形态
+ * （条数、role、name 全不同），示例的引导作用也随之走样。
+ *
+ * @param mesExample 角色卡 data.mes_example
+ * @param vars 已解析的变量表（用于把 `{{char}}`/`{{user}}` 落成真实名字）
+ * @returns 示例消息数组；没有可用示例时返回空数组
  */
-function _formatDialogueExamples(mesExample: string, vars: Record<string, string>): string {
-  if (!mesExample || !mesExample.trim()) return ''
-  const userName = vars.user || ''
-  const charName = vars.char || ''
+function _dialogueExampleMessages(mesExample: string, vars: Record<string, string>): BuiltMessage[] {
+  if (!mesExample || !mesExample.trim()) return []
+  const userNames = [vars.user, '{{user}}'].filter(Boolean) as string[]
+  const charNames = [vars.char, '{{char}}'].filter(Boolean) as string[]
 
   const blocks = mesExample.split(/<START>/gi).map(b => b.trim()).filter(Boolean)
-  if (!blocks.length) return ''
+  const out: BuiltMessage[] = []
 
-  const output: string[] = []
   for (const block of blocks) {
-    const turns: string[] = []
-    let current: 'user' | 'char' | null = null
+    const lines = block.replace(/\r/g, '').split('\n')
+    let current: 'example_user' | 'example_assistant' | null = null
     let buf: string[] = []
 
     const flush = () => {
-      if (current && buf.length) {
-        const text = buf.join('\n').trim()
-        if (text) turns.push(current === 'user' ? '{{user}}: ' + text : '{{char}}: ' + text)
-      }
+      const text = buf.join('\n').trim()
       buf = []
+      if (!current || !text) return
+      out.push({ role: 'system', content: text, name: current })
     }
 
-    for (const line of block.split('\n')) {
-      const userPrefix = _matchNamePrefix(line, '{{user}}', userName)
-      const charPrefix = _matchNamePrefix(line, '{{char}}', charName)
+    // 酒馆的循环从 i=1 开始（跳过第一行引导语），这里保持一致
+    for (let i = 1; i < lines.length; i++) {
+      const line = lines[i]
+      const userPrefix = _matchNamePrefix(line, ...userNames)
+      const charPrefix = _matchNamePrefix(line, ...charNames)
       if (userPrefix || charPrefix) {
         flush()
-        current = userPrefix ? 'user' : 'char'
-        const prefix = userPrefix || charPrefix
-        buf.push(line.slice(prefix.length + 1).trim())
+        current = userPrefix ? 'example_user' : 'example_assistant'
+        const prefix = (userPrefix || charPrefix) as string
+        // 只剥掉行首那一处前缀（酒馆是 replace(name + ':', '')，同样只替第一处）
+        buf.push(line.slice(prefix.length + 1))
       } else if (current) {
         buf.push(line)
       }
-      // 未进入任何说话人前的叙述行（如酒馆的 "This is how {{char}} should talk" 引导语）忽略
+      // 进入任何说话人之前的叙述行忽略（与酒馆 in_user/in_bot 初始为 false 一致）
     }
     flush()
-
-    if (turns.length) output.push('<START>\n' + turns.join('\n'))
   }
 
-  if (!output.length) return ''
-  return '[Example messages]\n' + output.join('\n\n')
+  return out
 }
 
 /** 检测行首是否为说话人前缀（{{user}}/{{char}} 或实际名字），命中则返回前缀字符串，否则 null */
@@ -551,23 +643,44 @@ function _buildTrpgStatusText(trpgState: Record<string, any> | undefined): strin
   return '【TRPG 状态】\n' + lines.join('\n')
 }
 
-/** namesBehavior=2（CONTENT）时把角色名拼进 assistant 消息正文开头 */
+/**
+ * 角色名称注入行为，对齐酒馆 `character_names_behavior`（`openai.js:586-601`）：
+ *   -1 NONE       → 什么都不做
+ *    0 DEFAULT    → 不加（群聊/旁白场景才加，本项目不支持群聊）
+ *    1 COMPLETION → assistant 消息带**独立的 `name` 字段**（不写进正文）
+ *    2 CONTENT    → 把角色名拼进 assistant 消息**正文开头**
+ *
+ * ⚠️ `1` 是"供应商特定"的：`name` 是 OpenAI Chat Completions 的可选字段，
+ * 各家兼容端点支持度差别很大（OpenAI 官方已 deprecated 且多数新模型忽略它，
+ * 部分自建端点会用，也有端点直接 400）。酒馆同样把它单列成开关、默认不用。
+ *
+ * 注意：整体 spread 原消息，因此 `reasoning` 等字段会一并保留（思考回灌要用）。
+ */
 function _applyNamesBehavior(
   history: ChatHistoryItem[],
   character: CharacterV2 | null,
   preset: Preset
-): BuiltMessage[] {
+): (BuiltMessage & { reasoning?: string })[] {
   const namesBehavior = preset.generationParams?.namesBehavior
   const charName = character?.data?.name
-  if (namesBehavior !== 2 || !charName) {
-    return history.map(h => ({ role: h.role as BuiltMessage['role'], content: h.content }))
-  }
-  return history.map(h => {
-    if (h.role === 'assistant' && !h.content.startsWith(charName + ':')) {
-      return { role: h.role as BuiltMessage['role'], content: charName + ': ' + h.content }
-    }
-    return { role: h.role as BuiltMessage['role'], content: h.content }
+  const base = history.map(h => {
+    const item: BuiltMessage & { reasoning?: string } = { role: h.role, content: h.content }
+    if (h.reasoning && h.reasoning.trim()) item.reasoning = h.reasoning
+    return item
   })
+  if (!charName || (namesBehavior !== 1 && namesBehavior !== 2)) return base
+
+  if (namesBehavior === 1) {
+    // COMPLETION：只给 assistant 消息加 name 字段，正文保持原样
+    return base.map(m => (m.role === 'assistant' ? { ...m, name: charName } : m))
+  }
+
+  // CONTENT：拼进正文（已带前缀的不重复拼）
+  return base.map(m => (
+    m.role === 'assistant' && !m.content.startsWith(charName + ':')
+      ? { ...m, content: charName + ': ' + m.content }
+      : m
+  ))
 }
 
 /** ABSOLUTE 提示词：按 injectionDepth 插入到"倒数第 N 条之前" */
@@ -589,20 +702,42 @@ function _insertAbsoluteItems(
   return result
 }
 
-/** 世界书 atDepth 条目：按 depth 插入历史 */
+/**
+ * 世界书 atDepth 条目：先按 (depth, role) **合并成一条**，再插到"倒数第 depth 条之前"。
+ *
+ * 为什么要合并（对齐酒馆 `world-info.js:5117-5121`）：
+ *   酒馆把相同 `(depth ?? 4, role ?? SYSTEM)` 的条目累积到同一个 `WIDepthEntries` 桶里，
+ *   用 `\n` 连成**一条**注入（见 `script.js:4610-4612`）。本项目改造前是逐条 splice，
+ *   同一个深度上有 3 个条目时，酒馆发 1 条、本项目发 3 条，消息结构直接对不上。
+ */
 function _insertAtDepthEntries(
   history: BuiltMessage[],
-  atDepthEntries: WorldInfoBucket['atDepth']
+  atDepthEntries: WorldInfoBucket['atDepth'],
+  separator = '\n'
 ): BuiltMessage[] {
   if (!atDepthEntries || !atDepthEntries.length) return history
-  const result = [...history]
+
+  // 先分组（保持出现顺序：Map 的键序 = 首次出现顺序）
+  const groups = new Map<string, { depth: number; role: BuiltMessage['role']; contents: string[] }>()
   atDepthEntries.forEach(entry => {
     const content = entry.content.trim()
     if (!content) return
     const depth = Math.max(0, entry.depth)
+    const role: BuiltMessage['role'] = (entry.role === 'user' || entry.role === 'assistant' || entry.role === 'system')
+      ? entry.role
+      : 'system'
+    const key = `${depth}::${role}`
+    const g = groups.get(key)
+    if (g) g.contents.push(content)
+    else groups.set(key, { depth, role, contents: [content] })
+  })
+
+  const result = [...history]
+  // depth 大的先插入（离末尾更远），避免互相影响位置
+  const ordered = [...groups.values()].sort((a, b) => b.depth - a.depth)
+  ordered.forEach(({ depth, role, contents }) => {
     const insertIndex = Math.max(0, result.length - depth)
-    const role = (entry.role === 'user' || entry.role === 'assistant' || entry.role === 'system') ? entry.role : 'system'
-    result.splice(insertIndex, 0, { role, content })
+    result.splice(insertIndex, 0, { role, content: contents.join(separator) })
   })
   return result
 }
@@ -618,7 +753,7 @@ function _buildAuthorsNoteText(
   if (!authorsNote) return ''
   const anTop = buckets.anTop.map(t => wiRegex(t.trim())).filter(Boolean)
   const anBottom = buckets.anBottom.map(t => wiRegex(t.trim())).filter(Boolean)
-  const notePrompt = authorsNote.prompt ? substituteVariables(authorsNote.prompt, vars) : ''
+  const notePrompt = authorsNote.promptText ? substituteVariables(authorsNote.promptText, vars) : ''
   const body = [...anTop, notePrompt, ...anBottom].filter(t => t && t.trim()).join('\n').trim()
   if (!body) return ''
 
@@ -658,3 +793,80 @@ function _buildVariableMap(ctx: BuildContext): Record<string, string> {
   if (ctx.variables) Object.assign(map, ctx.variables)
   return map
 }
+
+/** 本次用户消息的 prompt 态正则结果（已处理过就原样返回，见 BuildContext.userMessagePreProcessed） */
+function _applyPromptRegexToUser(raw: string, preset: Preset, vars: Record<string, string>): string {
+  return _applyPromptRegex([{ role: 'user', content: raw }], preset, vars)[0]?.content ?? raw
+}
+
+/**
+ * 世界书内容的外层包装（对齐酒馆 `formatWorldInfo` → `stringFormat(wi_format, value)`）。
+ * 酒馆默认 `wi_format` 是 `"{0}"`（等于不包装）；`{0}` 缺失时原样返回内容。
+ */
+function _formatWorldInfo(value: string, format: string | undefined): string {
+  if (!value) return ''
+  const fmt = typeof format === 'string' ? format : '{0}'
+  const trimmed = fmt.trim()
+  if (!trimmed || !trimmed.includes('{0}')) return value
+  return trimmed.split('{0}').join(value)
+}
+
+/** 把消息数组的 role/content/name 统一过一遍宏替换 */
+function _substituteMessageMacros(messages: BuiltMessage[], vars: Record<string, string>): BuiltMessage[] {
+  return messages.map(m =>
+    (m.content && m.content.includes('{{')) ? { ...m, content: substituteVariables(m.content, vars) } : m
+  )
+}
+
+/**
+ * 思考链回灌：把**最近一轮**带思考的 assistant 消息的思考拼回正文前面。
+ *
+ * 语义逐条对齐酒馆 `PromptReasoning`（`scripts/reasoning.js:645-760` +
+ * `script.js:4472-4498`）：
+ *   · **从最新往旧**找，注入一条就停（默认 `max_additions = 1`）；
+ *   · 没有思考的消息**直接跳过、不消耗配额**（所以是"最近 1 条**有思考**的消息"）；
+ *   · 思考拼在角色名之后、正文之前。
+ *
+ * 本项目不加开关（对齐酒馆默认行为）：`reasoning` 只在"上游真的返回了思考"或
+ * "用户自己开了正文定界符切分"时才有值，两种情况下都只有**最近一轮**会被带上，
+ * 不存在"每轮思考都灌进上下文"的形态。
+ *
+ * 格式：直接用 `reasoning` 原文（项目切分时保留的定界符，如 `<think>…</think>`），
+ * 因此不会产出酒馆那种"prefix + 内容 + 空 suffix"的半截标签。
+ * 酒馆完整格式是 `prefix + reasoning + suffix + separator`（默认 `<think>`/`</think>`/`\n`）。
+ */
+function _injectPromptReasoning<T extends BuiltMessage & { reasoning?: string }>(history: T[]): T[] {
+  for (let i = history.length - 1; i >= 0; i--) {
+    const reason = history[i]?.reasoning
+    if (!reason || !reason.trim()) continue
+    if (history[i].role !== 'assistant') continue
+    const out = [...history]
+    out[i] = { ...out[i], content: reason.trim() + '\n\n' + out[i].content }
+    return out
+  }
+  return history
+}
+
+/**
+ * 合并连续的 system 消息（对齐酒馆 `ChatCompletion.squashSystemMessages`，`openai.js:3827-3859`）：
+ *   · 只合并 role === 'system' **且没有 name** 的消息（带 name 的示例消息、以及 tool 消息不参与）；
+ *   · 直接首尾相接，用 `\n` 连接；
+ *   · 顺带丢掉空的 system 消息（酒馆 `getChat()` 也不会输出空消息）。
+ *
+ * 开关是预设的 `squashSystemMessages`（对应酒馆 `squash_system_messages`）。
+ */
+function _squashSystemMessages(messages: BuiltMessage[]): BuiltMessage[] {
+  const out: BuiltMessage[] = []
+  for (const m of messages) {
+    if (m.role === 'system' && !m.content) continue
+    const isSquashable = m.role === 'system' && !m.name
+    const prev = out.length ? out[out.length - 1] : null
+    if (isSquashable && prev && prev.role === 'system' && !prev.name) {
+      prev.content += '\n' + m.content
+    } else {
+      out.push({ ...m })
+    }
+  }
+  return out
+}
+

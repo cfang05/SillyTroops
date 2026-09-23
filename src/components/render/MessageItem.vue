@@ -3,7 +3,7 @@
        从 chat.vue 抽出来的目的：流式更新时只让"正在变化的那一条"重新渲染。
        配合 onChunk 的帧率节流（P2.1）与"就地修改消息对象"，父组件的 v-for
        不再读取 item.content，因此父级不会因为每个 chunk 而整体重渲染。 -->
-  <view class="message-wrapper" :id="'msg-' + index">
+  <view v-if="!message.hidden" class="message-wrapper" :id="'msg-' + index">
     <!-- 系统消息 -->
     <view class="message-system" v-if="message.role === 'system'">
       <view class="system-content"><text>{{ message.content }}</text></view>

@@ -1,0 +1,1 @@
+"use strict";exports.DEFAULT_AUTO_REPLY_TEXT="继续",exports.normalizeAutoReply=function(t){const e=t&&"object"==typeof t?t:{};return{enabled:!1!==e.enabled,useCustomText:!1!==e.useCustomText,customText:"string"==typeof e.customText?e.customText:"继续"}};

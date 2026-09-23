@@ -4,6 +4,7 @@
 import storage from '../storage.js';
 import { scopedKey } from '../account/userScope.js';
 import userManager from '../account/userManager.js';
+import { collectStopStrings } from './stopStrings';
 const { STORAGE_KEYS } = storage;
 
 // #ifndef MP-WEIXIN
@@ -53,6 +54,9 @@ let _testApiConfigCache = null;
  */
 function _httpError(status, message) {
   const err = new Error(`HTTP ${status}: ${message || '请求失败'}`);
+  // 保留状态码：上层重试逻辑据此区分"重试有意义"（5xx / 429 / 网络）与
+  // "重试没意义"（400 参数错、403 无权限）—— 后者连续打三次只是让用户多等。
+  err.status = status;
   if (status === 401) {
     err.sessionExpired = true;
     try { userManager.handleUnauthorized(); } catch (e) { /* 通知失败不影响抛错 */ }
@@ -99,6 +103,20 @@ function _isDeepSeekLike(endpoint, model) {
   const host = String(endpoint || '').toLowerCase();
   const mdl = String(model || '').toLowerCase();
   return host.includes('deepseek.com') || host.includes('deepseek') || mdl.startsWith('deepseek-v4') || mdl === 'deepseek-chat' || mdl === 'deepseek-reasoner';
+}
+
+/** 酒馆对 OpenAI 兼容源最多发 4 条自定义停止串（openai.js:142 openai_max_stop_strings） */
+/**
+ * 整理自定义停止串（对齐酒馆 getCustomStoppingStrings(4)，power-user.js:3072）。
+ *
+ * 实现已抽到 ./stopStrings.ts（纯函数，可被回归脚本直接验证）；
+ * 这里保留同名包装，避免调用点散落 import。
+ *
+ * @param {object} [params] 预设的 generationParams
+ * @returns {string[]|null} 可直接放进请求体的数组；无有效项时返回 null
+ */
+function _collectStopStrings(params) {
+  return collectStopStrings(params && params.customStopStrings);
 }
 
 /**
@@ -282,7 +300,9 @@ class LLMClient {
     }
 
     console.error('[LLMClient] 结构化生成失败，重试耗尽');
-    throw new Error(`结构化生成失败（已重试 ${this.maxRetries} 次）: ${lastError.message}`);
+    // 抛原始错误：不把"重试过"写进 message —— 那句话会一路显示到前端气泡里，
+    // 与"重试对用户无感"的要求冲突。
+    throw lastError;
   }
 
   /**
@@ -330,7 +350,8 @@ class LLMClient {
     }
 
     console.error('[LLMClient] 文本生成失败，重试耗尽');
-    throw new Error(`文本生成失败（已重试 ${this.maxRetries} 次）: ${lastError.message}`);
+    // 同上：抛原始错误，不把重试次数写进给用户看的文案
+    throw lastError;
   }
 
   /**
@@ -389,7 +410,63 @@ class LLMClient {
       }
     }
 
-    throw new Error(`generateWithMessages 失败（已重试 ${this.maxRetries} 次）: ${lastError.message}`);
+    console.error('[LLMClient] generateWithMessages 失败，重试耗尽');
+    // 同上：抛原始错误，不把重试次数写进给用户看的文案
+    throw lastError;
+  }
+
+  /**
+   * 带重试地执行一次生成调用（用户反馈：上游偶发失败时前端直接报错，手动再点一次就能成功）
+   *
+   * ⚠️ **重试对用户完全不可见**（用户明确要求"做到用户无感"）：
+   *   · 这里只往 console 打日志，绝不调用任何 toast / modal / notify，也不改对话内容；
+   *   · 期间上层的"生成中"状态保持不动，用户看到的就是正常的持续生成；
+   *   · 只有**所有尝试都失败**时才把最后一次的真实错误抛给上层去展示。
+   *     所以抛出的必须是原始错误对象本身（不能包一层"已重试 N 次"的文案）——
+   *     否则用户会从报错里读到重试这件事，等于把内部细节暴露到了前端。
+   *
+   * 其它规则：
+   *   · 最多尝试 maxRetries 次（默认 3 = 首次 + 2 次重试），指数退避 1s / 2s；
+   *   · **已经吐字了就不再重试** —— 否则重复正文会接在已经显示的内容后面；
+   *   · 用户主动"停止生成"（AbortError）不重试；
+   *   · 登录态失效（401）不重试，交给 App 层跳登录页；
+   *   · 4xx（除 429 限流）属于参数/权限问题，重试也不会好，直接抛出；
+   *   · 5xx / 429 / 网络中断（fetch 直接抛异常）才走重试。
+   *
+   * @private
+   * @param {string} label 日志用的通道名
+   * @param {(onChunk?:Function, onReasoning?:Function) => Promise<string>} run 实际调用
+   */
+  async _withRetry(label, run, onChunk, onReasoning) {
+    const maxAttempts = Math.max(1, this.maxRetries || 3);
+    let lastError;
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      let emitted = false;
+      const chunk = onChunk ? (text) => { emitted = true; onChunk(text); } : undefined;
+      const reasoning = onReasoning ? (text) => { emitted = true; onReasoning(text); } : undefined;
+      // 每次尝试都清掉上一次可能留下的统计 / 思考 / 真流式标记，避免读到过期数据
+      this._lastUsage = null;
+      this._lastReasoning = '';
+      this._lastWasRealStream = false;
+      try {
+        return await run(chunk, reasoning);
+      } catch (error) {
+        lastError = error;
+        if (error && error.sessionExpired) throw error;
+        if (error && error.name === 'AbortError') throw error;
+        if (emitted) throw error;
+        const status = Number(error && error.status);
+        if (Number.isFinite(status) && status >= 400 && status < 500 && status !== 429) throw error;
+        if (attempt >= maxAttempts) break;
+        const delay = this.baseDelay * Math.pow(2, attempt - 1);
+        // 只进 console（开发者排查用），不进任何 UI
+        console.warn(`[LLMClient] ${label} 第 ${attempt}/${maxAttempts} 次失败，${delay}ms 后静默重试:`, error && error.message);
+        await this._sleep(delay);
+      }
+    }
+    console.error(`[LLMClient] ${label} 连续 ${maxAttempts} 次失败，上报原始错误`);
+    // 关键：抛原始错误（含 HTTP 状态码与上游原文），不带任何"重试过几次"的包装
+    throw lastError;
   }
 
   /**
@@ -426,22 +503,34 @@ class LLMClient {
       throw new Error('小程序端不支持内置测试 API，请在「设置」页填写自己的 API Key');
       // #endif
       // #ifndef MP-WEIXIN
-      return await this._streamTestApi(messages, genParams, onChunk, onReasoning);
+      return await this._withRetry(
+        '内置测试通道',
+        (chunk, reasoning) => this._streamTestApi(messages, genParams, chunk, reasoning),
+        onChunk,
+        onReasoning
+      );
       // #endif
     }
 
     let apiKey = userConfig.apiKey || this.fallbackApiKey;
     let endpoint = userConfig.apiUrl || this.fallbackEndpoint;
-    let modelName = userConfig.modelName || (userConfig.model && userConfig.model !== 'default' ? userConfig.model : null);
+    let modelName = userConfig.modelName || (userConfig.model && userConfig.model !== 'test' ? userConfig.model : null);
 
     // #ifdef MP-WEIXIN
-    if (!modelName) modelName = DEFAULT_CONFIG.MODEL;
-    let full;
-    if (endpoint && apiKey) {
-      full = await this._callCustomAPI(endpoint, apiKey, modelName, messages, genParams);
-    } else {
-      full = await this._callCloudAI(modelName, messages);
+    // 小程序端的「默认模型」（腾讯云开发 AI 通道）已失效下线：不再做任何"无 Key 兜底"，
+    // 没配 Key 就直接告诉用户去哪儿配 —— 否则会撞上一条打不通的通道，报错还看不懂。
+    if (!apiKey) {
+      throw new Error('未配置 API Key，请在「设置」页填写 API Key 后再对话');
     }
+    if (!endpoint) endpoint = DEFAULT_CONFIG.ENDPOINT;
+    if (!modelName) modelName = DEFAULT_CONFIG.MODEL;
+    // 小程序端同样重试：uni.request 失败（网络抖动 / 上游 5xx）时不该让用户看到一次就报错
+    const full = await this._withRetry(
+      '小程序生成通道',
+      () => this._callCustomAPI(endpoint, apiKey, modelName, messages, genParams),
+      onChunk,
+      onReasoning
+    );
     // 小程序端拿不到增量（uni.request 不支持流式），**不要**在这里回调 onChunk：
     // 交给 MessageProcessor 的打字机逐帧展示（D19），否则内容会整段一次性蹦出来。
     // 标记为非真流式，让上层据此选择打字机路径。
@@ -455,11 +544,21 @@ class LLMClient {
     if (!apiKey) {
       // 测试账号兜底：未配置 Key 时走内置测试通道（Key 与模型都在服务端）
       if (isTestAccount) {
-        return await this._streamTestApi(messages, genParams, onChunk, onReasoning);
+        return await this._withRetry(
+          '内置测试通道',
+          (chunk, reasoning) => this._streamTestApi(messages, genParams, chunk, reasoning),
+          onChunk,
+          onReasoning
+        );
       }
       throw new Error('未配置 API Key，请在「设置」页填写 API Key 后再对话');
     }
-    return await this._streamWithFetch(endpoint, apiKey, modelName, messages, genParams, onChunk, onReasoning);
+    return await this._withRetry(
+      '流式请求',
+      (chunk, reasoning) => this._streamWithFetch(endpoint, apiKey, modelName, messages, genParams, chunk, reasoning),
+      onChunk,
+      onReasoning
+    );
     // #endif
   }
 
@@ -500,6 +599,8 @@ class LLMClient {
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
     if (typeof params.n === 'number' && params.n > 1) requestBody.n = params.n;
+    const stopStrings = _collectStopStrings(params);
+    if (stopStrings) requestBody.stop = stopStrings;
     // DeepSeek V4：thinking 默认 enabled（思考模式会让正文之前的推理进入 reasoning_content，
     // 且 max_tokens 可能被推理吃光导致 content 为空）。是否开启由用户决定（D17 / P6.6）：
     // 默认关闭 —— 开思考会增加 token 消耗与首字延迟。
@@ -710,6 +811,8 @@ class LLMClient {
     if (typeof p.topK === 'number' && p.topK > 0) out.top_k = p.topK;
     if (typeof p.seed === 'number' && p.seed >= 0) out.seed = p.seed;
     if (typeof p.n === 'number' && p.n > 1) out.n = p.n;
+    const stopStrings = _collectStopStrings(p);
+    if (stopStrings) out.stop = stopStrings;
     return out;
   }
 
@@ -731,7 +834,7 @@ class LLMClient {
       // 同用户自配 Key 通道：让上游在最后一个数据块带回真实 usage（D13）。
       // 服务端需在 PASSTHROUGH_PARAMS 白名单里放行该字段，否则会被丢掉。
       stream_options: { include_usage: true }
-    }, this._collectSamplingParams(genParams));
+    }, this._collectSamplingParams(genParams));   // 含 stop（自定义停止串）
 
     const controller = new AbortController();
     this._abortController = controller;
@@ -891,18 +994,18 @@ class LLMClient {
     let modelName = userConfig.modelName || (userConfig.model && userConfig.model !== 'default' ? userConfig.model : null);
 
     // #ifdef MP-WEIXIN
-    // 小程序端：无用户配置时走腾讯云开发 AI
+    // 小程序端：与流式路径一致 —— 内置默认模型已下线，必须自配 API Key
+    if (!apiKey) {
+      throw new Error('未配置 API Key，请在「设置」页填写 API Key 后再对话');
+    }
+    if (!endpoint) endpoint = DEFAULT_CONFIG.ENDPOINT;
     if (!modelName) modelName = DEFAULT_CONFIG.MODEL;
     console.log('[LLMClient] API 配置（小程序）', {
       hasUserConfig: !!userConfig.apiKey,
-      endpoint: endpoint || '(使用云开发)',
+      endpoint: endpoint,
       model: modelName
     });
-    if (endpoint && apiKey) {
-      return await this._callCustomAPI(endpoint, apiKey, modelName, messages, genParams);
-    } else {
-      return await this._callCloudAI(modelName, messages);
-    }
+    return await this._callCustomAPI(endpoint, apiKey, modelName, messages, genParams);
     // #endif
 
     // #ifndef MP-WEIXIN
@@ -961,6 +1064,8 @@ class LLMClient {
     if (typeof params.topK === 'number' && params.topK > 0) requestBody.top_k = params.topK;
     if (typeof params.seed === 'number' && params.seed >= 0) requestBody.seed = params.seed;
     if (typeof params.n === 'number' && params.n > 1) requestBody.n = params.n;
+    const stopStrings = _collectStopStrings(params);
+    if (stopStrings) requestBody.stop = stopStrings;
     // DeepSeek V4：thinking 是否开启由用户决定（D17 / P6.6），默认关闭
     if (_isDeepSeekLike(endpoint, model)) {
       requestBody.thinking = { type: _thinkingEnabled() ? 'enabled' : 'disabled' };
@@ -1058,8 +1163,15 @@ class LLMClient {
   }
 
   /**
-   * 调用腾讯云开发 AI（默认方式）
+   * 调用腾讯云开发 AI
+   *
+   * ⚠️ 已废弃（用户确认"小程序端的默认模型已经失效了"）：
+   * 设置页里的「默认模型」选项已删除，这里也不再作为兜底通道被调用 ——
+   * 小程序端没有填 API Key 时直接给出明确指引，而不是去撞一个已经打不通的通道、
+   * 让用户看到一句看不懂的云开发报错。
+   * 保留方法体只是为了不破坏可能存在的历史调用方，正常流程不会走到。
    * @private
+   * @deprecated
    */
   async _callCloudAI(model, messages) {
     console.log('[LLMClient] 调用云开发 AI', { model });

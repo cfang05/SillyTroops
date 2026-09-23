@@ -8,6 +8,7 @@
 //        scenario/personaDescription）content 留空，由 PromptBuilder 运行时填充（见 MARKER_IDS）。
 
 import type { Preset, PromptItem, PromptOrderItem } from '../../types/preset'
+import { normalizeAutoReply } from '../../types/preset'
 
 const DEFAULT_PROMPTS: PromptItem[] = [
   {
@@ -180,8 +181,18 @@ export function createDefaultPreset(): Preset {
       n: 1,
       namesBehavior: 0,
       squashSystemMessages: false,
-      continuePrefill: false
-    }
+      continuePrefill: false,
+      // 世界书扫描默认值对齐酒馆 world-info.js：深度 2、不递归。
+      // 若默认 0（扫全部历史）+ 默认开递归，同一个预设在本项目会激活远比酒馆多的条目。
+      worldInfoDepth: 2,
+      worldInfoRecursive: false,
+      worldInfoMaxRecursionSteps: 0,
+      // 酒馆默认 wi_format 是 "{0}"（等于不包装）
+      worldInfoFormat: '{0}',
+      customStopStrings: []
+    },
+    // 自动回复：几个开关默认全部打开（用户要求"开箱即用"，不必先保存设置）
+    autoReply: normalizeAutoReply(null)
   }
 }
 

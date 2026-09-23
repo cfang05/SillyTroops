@@ -1,0 +1,1 @@
+"use strict";const e=require("../../common/vendor.js"),t=e.defineComponent({__name:"BranchSelector",props:{options:{}},emits:["select"],setup(t,{emit:o}){const n=o;return(t,o)=>({a:e.f(t.options,(t,o,s)=>({a:e.t(t),b:o,c:e.o(e=>function(e){n("select",e)}(t),o)}))})}}),o=e._export_sfc(t,[["__scopeId","data-v-0e7e8f62"]]);wx.createComponent(o);

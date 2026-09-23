@@ -18,7 +18,6 @@ export interface RendererState {
   time: boolean
   /** 自定义 HTML 渲染，H5 默认关闭需用户手动开启；小程序端强制 false */
   html: boolean
-  music: boolean
 }
 
 export const usePluginStore = defineStore('plugin', {
@@ -27,8 +26,7 @@ export const usePluginStore = defineStore('plugin', {
       branch: true,
       summary: true,
       time: true,
-      html: false,
-      music: false
+      html: false
     } as RendererState
   }),
 

@@ -1,0 +1,1 @@
+"use strict";const t=require("../common/vendor.js");exports.getNavBarHeight=function(){let e=0;try{e=t.index.getSystemInfoSync().statusBarHeight||0}catch(r){}return{statusBarHeight:e,navBarHeight:e+54}};

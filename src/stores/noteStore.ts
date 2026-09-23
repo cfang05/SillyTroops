@@ -6,22 +6,20 @@ import { defineStore } from 'pinia'
 import storage from '../utils/storage.js'
 // @ts-ignore
 import { scopedKey } from '../utils/account/userScope.js'
-import { createDefaultAuthorsNote, type AuthorsNoteConfig } from '../types/note'
+import { normalizeAuthorsNote, type AuthorsNoteConfig } from '../types/note'
 
 function NOTE_KEY() { return scopedKey('authors_note') }
 
 export const useNoteStore = defineStore('note', {
   state: () => ({
-    config: createDefaultAuthorsNote() as AuthorsNoteConfig
+    config: normalizeAuthorsNote(null) as AuthorsNoteConfig
   }),
 
   actions: {
     load() {
       try {
-        const saved = storage.get(NOTE_KEY())
-        if (saved && typeof saved === 'object') {
-          this.config = { ...createDefaultAuthorsNote(), ...saved }
-        }
+        // normalizeAuthorsNote 负责旧字段迁移（旧的 `prompt` → 新的 `promptText`）
+        this.config = normalizeAuthorsNote(storage.get(NOTE_KEY()))
       } catch (e) {
         console.warn('[noteStore] load 失败:', e)
       }

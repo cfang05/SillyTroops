@@ -456,7 +456,13 @@ function _leanMessage(m) {
 /** 构造一条列表项（纯函数，不含任何内存态 —— 跨账号迁移也要用它） */
 function _buildListItem(cardId, record) {
   const msgs = record.messages || [];
-  const lastMsg = msgs.length > 0 ? msgs[msgs.length - 1] : null;
+  // 预览取"最后一条**可见**消息"：自动回复会插入 hidden:true 的替身用户消息，
+  // 直接取数组末尾会把这条玩家根本没看见的文本当成对话预览。
+  let lastMsg = null;
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const m = msgs[i];
+    if (m && !m.hidden && m.content && String(m.content).trim()) { lastMsg = m; break; }
+  }
   return {
     cardId: cardId,
     cardName: record.header.cardName || '',

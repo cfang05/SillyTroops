@@ -3,6 +3,7 @@
 // 参考 referencecode/PromptManager.js 的 prompts/prompt_order 结构
 
 import type { Preset, PromptItem, PromptOrderItem, GenerationParams } from '../../types/preset'
+import { normalizeAutoReply } from '../../types/preset'
 
 /**
  * 从酒馆预设 JSON 导入为内部 Preset
@@ -35,7 +36,21 @@ export function importFromSillyTavern(json: any, fileName?: string): Preset {
     n: typeof json.n === 'number' ? json.n : 1,
     namesBehavior: [-1, 0, 1, 2].includes(json.names_behavior) ? json.names_behavior : 0,
     squashSystemMessages: typeof json.squash_system_messages === 'boolean' ? json.squash_system_messages : false,
-    continuePrefill: typeof json.continue_prefill === 'boolean' ? json.continue_prefill : false
+    continuePrefill: typeof json.continue_prefill === 'boolean' ? json.continue_prefill : false,
+    // 世界书扫描的三个全局设置（对齐酒馆 world-info.js 的默认值）。
+    // ⚠️ 默认值必须跟酒馆一致：改造前本项目"没传扫描深度"= 扫描全部历史，
+    // 而酒馆默认 world_info_depth = 2（只看最近 2 条消息）。两边默认值不同时，
+    // 同一个角色卡 + 同一个预设会长对话里激活完全不同数量的条目。
+    worldInfoDepth: typeof json.world_info_depth === 'number' && json.world_info_depth >= 0 ? json.world_info_depth : 2,
+    worldInfoRecursive: typeof json.world_info_recursive === 'boolean' ? json.world_info_recursive : false,
+    worldInfoMaxRecursionSteps: typeof json.world_info_max_recursion_steps === 'number' && json.world_info_max_recursion_steps >= 0
+      ? json.world_info_max_recursion_steps
+      : 0,
+    // 世界书外层包装模板（酒馆 formatWorldInfo 用 stringFormat(wi_format, value) 包一层）
+    worldInfoFormat: typeof json.wi_format === 'string' ? json.wi_format : '{0}',
+    // 自定义停止串：酒馆的 power_user.custom_stopping_strings 是一个 JSON 字符串数组；
+    // 有些预设把它整包带在 JSON 里。两种形态都认。空白项直接丢弃。
+    customStopStrings: _extractStopStrings(json)
   }
 
   // 酒馆预设 JSON 常把正则脚本内嵌在 extensions.regex_scripts 里（而不是单独的正侧文件），
@@ -52,6 +67,8 @@ export function importFromSillyTavern(json: any, fileName?: string): Preset {
     globalVariables: {},
     regexScripts: embeddedRegexScripts,
     generationParams,
+    // 自动回复不属于酒馆预设格式，一律取默认值（几个开关默认打开，可在"对话设置"里改）
+    autoReply: normalizeAutoReply(null),
     fileName: fileName || undefined
   }
 }
@@ -123,8 +140,32 @@ function _normalizePromptItem(p: any): PromptItem {
     content: p.content || '',
     injectionPosition: p.injection_position === 1 ? 1 : 0,
     injectionDepth: typeof p.injection_depth === 'number' ? p.injection_depth : 4,
-    injectionOrder: typeof p.injection_order === 'number' ? p.injection_order : 100
+    injectionOrder: typeof p.injection_order === 'number' ? p.injection_order : 100,
+    // 保真存储（当前不参与组装，见 types/preset.ts 的字段注释）
+    systemPrompt: p.system_prompt === true,
+    injectionTrigger: Array.isArray(p.injection_trigger) ? p.injection_trigger.filter((x: any) => typeof x === 'string') : []
   }
+}
+
+/**
+ * 从预设 JSON 里抽自定义停止串。
+ *
+ * 酒馆的自定义停止串属于 power_user 设置（`custom_stopping_strings`，JSON 字符串），
+ * 不在预设文件里；但少数预设/整合包会把它一并塞进 JSON。两种形态都认：
+ *   - 数组：["User:", "Assistant:"]
+ *   - JSON 字符串：'["User:","Assistant:"]'
+ */
+function _extractStopStrings(json: any): string[] {
+  const raw = json?.custom_stopping_strings ?? json?.custom_stop_strings
+  let list: any = raw
+  if (typeof raw === 'string') {
+    try { list = JSON.parse(raw) } catch (e) { list = [] }
+  }
+  if (!Array.isArray(list)) return []
+  return list
+    .filter((s: any) => typeof s === 'string')
+    .map((s: string) => s.replace(/\r/g, ''))
+    .filter((s: string) => s.length > 0)
 }
 
 function _extractPromptOrder(promptOrder: any): PromptOrderItem[] {

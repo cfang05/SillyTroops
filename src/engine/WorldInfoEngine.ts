@@ -14,6 +14,15 @@ import type { LorebookEntry } from '../types/character'
 import { isEntryActivated } from './worldInfoMatcher'
 import { estimateTokenCount } from './tokenizer'
 
+/**
+ * 递归扫描的硬性安全上限。
+ *
+ * 酒馆的 `world_info_max_recursion_steps = 0` 表示"不额外限制"（它靠 token 预算自然收敛），
+ * 但本项目是同步 for 循环，必须有硬上限兜底，否则一个互相引用的世界书就能把主线程卡死。
+ * 取值远大于实际可用的递归轮数（受世界书预算约束），因此正常情况下不会先撞到这个上限。
+ */
+const MAX_SAFE_RECURSION_STEPS = 100
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 类型定义
 // ─────────────────────────────────────────────────────────────────────────────
@@ -52,16 +61,21 @@ export interface WorldInfoGlobalScanData {
 export interface WorldInfoScanInput {
   /** 角色卡内嵌世界书条目（唯一来源） */
   entries: LorebookEntry[]
-  /** 对话历史（正序） */
-  chatHistory: { role: string; content: string }[]
+  /** 对话历史（正序）。`name` 可选，用于 `includeNames` 时拼接「说话人: 内容」 */
+  chatHistory: { role: string; content: string; name?: string }[]
   userMessage: string
   sessionState?: WorldInfoSessionState
   budget?: Partial<WorldInfoBudgetConfig>
-  /** 全局递归开关，默认开启 */
+  /**
+   * 全局递归开关，**默认关闭**（对齐酒馆 world_info_recursive 默认 false）。
+   *
+   * 注意：改造前这里是"默认开启"，而酒馆默认是关闭的 —— 同一个预设、同一个角色卡，
+   * 本项目会多跑最多 5 轮递归、激活一批酒馆不会激活的条目。要递归必须在预设里显式打开。
+   */
   recursive?: boolean
-  /** 最大递归步数，防止死循环 */
+  /** 最大递归步数，防止死循环。仅在 recursive 为 true 时生效；0/未传 = 只用安全上限兜底 */
   maxRecursionSteps?: number
-  /** 默认扫描深度（消息条数），0 = 不限制（取全部历史） */
+  /** 默认扫描深度（消息条数），0 = 不限制（取全部历史）。酒馆默认是 2 */
   defaultScanDepth?: number
   /** 全局大小写敏感开关，条目可覆盖 */
   caseSensitive?: boolean
@@ -69,6 +83,13 @@ export interface WorldInfoScanInput {
   matchWholeWords?: boolean
   /** 全局扫描源（对齐酒馆 globalScanData 六源，配合条目 match_* 开关） */
   globalScanData?: WorldInfoGlobalScanData
+  /**
+   * 关键词匹配时是否把「说话人名字」一起写进扫描文本，对齐酒馆 `world_info_include_names`。
+   * **默认 true**（酒馆默认值），否则拿角色名当关键词的条目会全部命中不了。
+   */
+  includeNames?: boolean
+  /** 角色名：历史项自身没带 `name` 时，给 assistant 侧兜底用 */
+  characterName?: string
 }
 
 export interface WorldInfoBucket {
@@ -92,18 +113,36 @@ export interface WorldInfoScanResult {
 // 内部工具
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 构建单个条目的扫描文本：最近 scanDepth 条历史 + 当前输入 + 递归缓冲区 + 命中的全局扫描源 */
+/**
+ * 构建单个条目的扫描文本：最近 scanDepth 条历史 + 当前输入 + 递归缓冲区 + 命中的全局扫描源。
+ *
+ * `includeNames` 对齐酒馆 `world_info_include_names`（**默认 true**，
+ * `world-info.js:74` + `script.js:4624`）：历史每一行前面加上「说话人名字: 」再参与关键词匹配。
+ * 不加名字的话，拿角色名当关键词的条目（key = `Beth` 这种很常见的写法）在本项目永远命中不了，
+ * 而酒馆会命中。
+ */
 function buildScanTextForEntry(
   userMessage: string,
-  chatHistory: { role: string; content: string }[],
+  chatHistory: { role: string; content: string; name?: string }[],
   scanDepth: number,
   recurseBuffer: string,
   entry: LorebookEntry,
-  globalScanData?: WorldInfoGlobalScanData
+  globalScanData?: WorldInfoGlobalScanData,
+  includeNames: boolean = true,
+  characterName?: string
 ): string {
   const depth = scanDepth > 0 ? Math.min(scanDepth, chatHistory.length) : chatHistory.length
   const recent = chatHistory.slice(chatHistory.length - depth)
-  const parts = [userMessage, ...recent.map(m => m.content), recurseBuffer]
+  const parts = [
+    userMessage,
+    ...recent.map(m => {
+      if (!includeNames) return m.content
+      // 历史项没带名字时，用角色名兜底（assistant 侧；user 侧无从得知，保持原文）
+      const speaker = m.name || (m.role === 'assistant' ? characterName : '')
+      return speaker ? `${speaker}: ${m.content}` : m.content
+    }),
+    recurseBuffer
+  ]
 
   // 对齐酒馆 WorldInfoBuffer#get：按条目的 match_* 开关追加全局扫描源
   if (globalScanData) {
@@ -219,9 +258,15 @@ export function scan(input: WorldInfoScanInput): WorldInfoScanResult {
   const chatHistory = input.chatHistory || []
   const userMessage = input.userMessage || ''
   const sessionState = input.sessionState || createEmptySessionState()
-  const recursive = input.recursive !== false
-  const maxSteps = input.maxRecursionSteps ?? 5
-  const defaultScanDepth = input.defaultScanDepth ?? 0
+  // 递归默认**关闭**（对齐酒馆 world_info_recursive 默认 false）。
+  const recursive = input.recursive === true
+  // 酒馆的 world_info_max_recursion_steps 默认是 0 = 不设上限（靠 token 预算兜底）。
+  // 这里不能真的"无上限"（本项目是同步循环，需要硬上限防死循环），
+  // 所以用户传 0 时退到一个足够大的安全上限；传正数则按用户值。
+  const maxSteps = (typeof input.maxRecursionSteps === 'number' && input.maxRecursionSteps > 0)
+    ? input.maxRecursionSteps
+    : MAX_SAFE_RECURSION_STEPS
+  const defaultScanDepth = input.defaultScanDepth ?? 2
   const globalScanData = input.globalScanData
 
   const maxContext = input.budget?.maxContext ?? 4000
@@ -274,7 +319,10 @@ export function scan(input: WorldInfoScanInput): WorldInfoScanResult {
       }
 
       const scanDepth = (typeof entry.scanDepth === 'number' && entry.scanDepth > 0) ? entry.scanDepth : defaultScanDepth
-      const scanText = buildScanTextForEntry(userMessage, chatHistory, scanDepth, recurseBuffer, entry, globalScanData)
+      const scanText = buildScanTextForEntry(
+        userMessage, chatHistory, scanDepth, recurseBuffer, entry, globalScanData,
+        input.includeNames !== false, input.characterName
+      )
 
       const result = isEntryActivated(entry, scanText, {
         isSticky,

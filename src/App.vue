@@ -3,6 +3,11 @@ import accountManager from './utils/account/account-manager.js'
 import userManager from './utils/account/userManager.js'
 import conversationManager from './utils/account/conversationManager.js'
 import { migrateForeignUserKeys } from './utils/storage/cachedStore'
+// #ifdef H5
+// 真实 tokenizer（cl100k_base）：**后台加载**，加载完成后 PromptBuilder 的计数自动从
+// 启发式估算切换到真实编码（两者共用同步 API，裁剪逻辑不需要 await）。
+import { enableRealTokenizer } from './engine/tokenizer'
+// #endif
 
 export default {
   // uni-app 用 globalData 挂载到 getApp() 上
@@ -23,6 +28,17 @@ export default {
     // —— 活跃时长统计因此一直是坏的（已实测确认）。
     userManager.ensureAdminSeed()
     this.loadOpenid()
+    // #ifdef H5
+    // 真实 tokenizer 后台加载：**不 await**（BPE 词表有几百 KB，不能阻塞首屏），
+    // 加载失败会自动保留启发式估算。首次进入对话时它通常已经就绪。
+    try {
+      enableRealTokenizer()
+        .then(ok => console.log('[App] 真实 tokenizer 就绪:', ok))
+        .catch(e => console.warn('[App] 真实 tokenizer 加载异常（已回退启发式估算）:', e))
+    } catch (e) {
+      console.warn('[App] 真实 tokenizer 启动失败:', e)
+    }
+    // #endif
     // ── 全账号旧档一次性迁移（D20）──
     // 本地存储是**全 origin 共享**的，键名里刻着账号（u_{uid}_…），而 cachedStore/对话的
     // 常规 hydrate 只扫"当前登录账号"的键 → 同一台设备上其他账号的角色卡/世界书/预设/对话

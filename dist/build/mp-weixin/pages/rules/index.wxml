@@ -1,0 +1,1 @@
+<view class="container data-v-215bffab"><nav-bar wx:if="{{a}}" class="data-v-215bffab" u-i="215bffab-0" bind:__l="__l" u-p="{{a}}"/><view class="content data-v-215bffab" style="{{'padding-top:' + b}}"><text class="data-v-215bffab">pages/rules/index.wxml</text></view></view>

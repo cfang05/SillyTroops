@@ -1,0 +1,1 @@
+"use strict";exports.collectStopStrings=function(t){if(!Array.isArray(t)||0===t.length)return null;const r=t.filter(t=>"string"==typeof t).map(t=>t.replace(/\r/g,"").trim()).filter(t=>t.length>=1&&t.length<=16);return 0===r.length?null:r.slice(0,4)};

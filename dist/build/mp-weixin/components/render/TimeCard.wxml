@@ -1,0 +1,1 @@
+<view class="time-card data-v-24026862"><text class="time-icon data-v-24026862">🕐</text><view class="time-info data-v-24026862"><text wx:if="{{a}}" class="time-date data-v-24026862">{{b}}</text><text wx:if="{{c}}" class="time-time data-v-24026862">{{d}}</text><text wx:if="{{e}}" class="time-scene data-v-24026862">{{f}}</text></view></view>

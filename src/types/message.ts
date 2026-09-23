@@ -19,7 +19,11 @@ export interface ChatMessage {
   swipe_id?: number
   /**
    * 思考内容（D17 / P6.1）：来自**上游** `reasoning_content` / `reasoning` 独立字段。
-   * **绝不参与上下文拼接**（toChatHistory 只取 role/content），也不会被当作正文渲染。
+   * 不会被当作正文渲染。
+   *
+   * ⚠️ 2026-09-21 起：它会参与上下文拼接 —— PromptBuilder 按酒馆 `PromptReasoning` 的语义，
+   * 只把**最近一轮**带思考的 assistant 消息的思考拼回 prompt（见 `_injectPromptReasoning`）。
+   * 所以它属于内容、要入档（`conversationManager` 里也已标明"reasoning 本身要存"）。
    */
   reasoning?: string
   /**
@@ -37,6 +41,14 @@ export interface ChatMessage {
   reasoningDone?: boolean
   /** 思考耗时（毫秒） */
   reasoningDurationMs?: number
+  /**
+   * 前端隐藏标记（自动回复用）
+   *
+   * 自动回复时系统会替玩家发一条文本（默认「继续」）给大模型，但**不在前端显示** ——
+   * 玩家只看到大模型一轮一轮地输出。这条消息仍然算真实上下文：会进 toChatHistory
+   * 参与请求、也会入档，只是 MessageItem 不渲染它。
+   */
+  hidden?: boolean
   /** 消息创建时间戳 */
   timestamp?: number
 }

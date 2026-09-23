@@ -1,36 +1,58 @@
 <template>
   <view class="edit-container">
-    <NavBar title="编辑预设" :subtitle="form.name || '未命名预设'" />
+    <NavBar title="对话设置" :subtitle="form.name || '当前对话'" />
     <scroll-view class="edit-scroll" scroll-y :style="{ paddingTop: (navBarHeight + 16) + 'px' }">
+      <!-- 基础信息（用户要求：显示目前使用的预设与正侧，不可编辑）
+           预设名与正侧都是"新建对话时选定"的，在对话里随手改名字会让预设列表认不出是谁，
+           所以这里只做只读展示。 -->
       <view class="section">
         <text class="section-title">基础信息</text>
-        <view class="form-item">
+        <view class="info-row">
+          <text class="info-label">预设</text>
+          <text class="info-value">{{ form.name || '(未命名预设)' }}</text>
+        </view>
+        <view class="info-row">
+          <text class="info-label">正侧</text>
+          <text class="info-value">{{ regexPresetName }}</text>
+        </view>
+        <text class="section-hint">这两项在「新建对话」时选定，此处只做展示，不可修改</text>
+        <!-- 兼容旧入口（从"预设列表"独立编辑预设）：那种场景下没有会话上下文，
+             名称仍需可改，否则无法给预设改名。 -->
+        <view v-if="!fromChat" class="form-item" style="margin-top: 14rpx;">
           <text class="label">预设名称</text>
-          <!-- 需求：从对话页面设置进入时（fromChat=1），预设名称只展示不可编辑，
-               避免在对话中随手改了预设名字，导致预设列表里认不出这是哪个预设。 -->
-          <input v-if="!readonlyName" class="input" :value="form.name" @input="onNameInput" />
-          <view v-else class="input readonly-input"><text>{{ form.name || '(未命名预设)' }}</text></view>
+          <input class="input" :value="form.name" @input="onNameInput" />
         </view>
       </view>
 
-      <!-- 渲染开关 / 功能模块开关：仅在从对话页面设置进入时显示（fromChat=1），
-           独立编辑预设时（从"酒馆导入"页进入）不需要这些和预设无关的全局显示开关。 -->
-      <view class="section" v-if="fromChat">
-        <text class="section-title">渲染开关</text>
-        <text class="section-hint">控制 AI 回复中特殊标签是否渲染为交互组件</text>
-        <view class="switch-item" v-for="item in rendererSwitches" :key="item.key">
-          <text class="switch-label">{{ item.label }}</text>
-          <switch :checked="pluginRenderers[item.key]" @change="onToggleRenderer(item.key)" color="#cfa54d" :disabled="item.key === 'html' && isMpWeixin" />
+      <!-- 流式输出（用户要求：紧跟在"基础信息"下面）——
+           10~100 的显示速度滑条，最右 100 = 全速（等价于关闭平滑输出）。每次只能调整 5。
+           与首页「设置」共用同一份配置，改动立即生效、不需要保存。 -->
+      <view class="section">
+        <text class="section-title">流式输出</text>
+        <text class="section-hint">控制文字"逐字释放"的速度。滑到最右侧 100 为全速：不限制显示速度，完全跟上游速度</text>
+        <view class="form-item">
+          <view class="pacing-head">
+            <text class="label">显示速度</text>
+            <text class="pacing-value">{{ pacingLabel }}</text>
+          </view>
+          <slider
+            class="pacing-slider"
+            :value="pacingCfg.charsPerSec"
+            :min="PACING_MIN"
+            :max="PACING_FULL_SPEED"
+            :step="PACING_STEP"
+            :show-value="false"
+            activeColor="#cfa54d"
+            backgroundColor="#3a332a"
+            block-size="20"
+            @change="onPacingRateChange"
+          />
+          <view class="pacing-scale">
+            <text class="pacing-scale-text">慢 {{ PACING_MIN }}</text>
+            <text class="pacing-scale-text">全速 {{ PACING_FULL_SPEED }}</text>
+          </view>
         </view>
-      </view>
-
-      <view class="section" v-if="fromChat">
-        <text class="section-title">功能模块</text>
-        <text class="section-hint">开启后在对话页显示对应的 TRPG 游戏机制面板</text>
-        <view class="switch-item" v-for="item in moduleSwitches" :key="item.key">
-          <text class="switch-label">{{ item.label }}</text>
-          <switch :checked="moduleFlags[item.key]" @change="onToggleModule(item.key)" color="#cfa54d" />
-        </view>
+        <text class="section-hint">这一项与首页「设置」里的流式输出是同一个开关，改哪边都生效（立即保存，无需点底部"保存"）</text>
       </view>
 
       <view class="section">
@@ -91,28 +113,97 @@
         </view>
       </view>
 
+      <!-- 作者注（Author's Note）：用户要求放在"生成参数"下面。
+           它是**账号级全局**配置（noteStore），不属于单个预设；改动立即保存，不需要点底部"保存"。 -->
       <view class="section">
-        <text class="section-title">全局变量</text>
-        <view v-for="(val, key) in form.globalVariables" :key="key" class="var-row">
-          <text class="var-key">{{ key }}</text>
-          <input class="var-input" :value="val" @input="(e: any) => onVarInput(String(key), e.detail.value)" />
-          <text class="var-delete" @tap="onVarDelete(String(key))">✕</text>
+        <text class="section-title">作者注</text>
+        <text class="section-subtitle">定时注入的全局提示，用于强调设定 / 风格 / 状态（对齐酒馆 Author's Note）。改动立即生效，无需点底部"保存"</text>
+        <view class="form-item">
+          <text class="label">作者注内容</text>
+          <textarea class="input textarea" placeholder="例如：{{char}} 正保持谨慎，注意周围环境…" :value="noteConfig.promptText" @input="onNotePromptInput" maxlength="2000" />
         </view>
-        <view class="add-var-btn" @tap="onAddVar">
-          <text class="add-var-text">+ 添加变量</text>
+        <view class="form-item">
+          <text class="label">注入频率（每 N 条用户消息）</text>
+          <input class="input" type="number" :value="noteConfig.interval" @input="onNoteIntervalInput" />
+        </view>
+        <view class="form-item">
+          <text class="label">注入深度（IN_CHAT 时，倒数第 N 条之前）</text>
+          <input class="input" type="number" :value="noteConfig.depth" @input="onNoteDepthInput" />
+        </view>
+        <view class="form-item">
+          <text class="label">注入位置</text>
+          <view class="chip-row">
+            <view v-for="p in notePositions" :key="p.value" :class="['chip', noteConfig.position === p.value ? 'active' : '']" @tap="onNotePosition(p.value)">{{ p.label }}</view>
+          </view>
+        </view>
+        <view class="form-item">
+          <text class="label">注入角色（IN_CHAT）</text>
+          <view class="chip-row">
+            <view v-for="r in noteRoles" :key="r.value" :class="['chip', noteConfig.role === r.value ? 'active' : '']" @tap="onNoteRole(r.value)">{{ r.label }}</view>
+          </view>
         </view>
       </view>
 
-      <!-- 全局正则（正侧）：对齐酒馆 GLOBAL 类型来源，跨角色/跨预设一直生效。管理入口在首页"设置"，这里只读展示 -->
+      <!-- 世界书扫描：对齐酒馆 world-info.js 的三个全局设置。
+           默认值必须与酒馆一致（深度 2、不递归），否则同一个预设会激活不同数量的条目。 -->
       <view class="section">
-        <text class="section-title">全局正则（{{ globalRegexScripts.length }} 条，只读）</text>
-        <text class="section-hint">跨角色/跨预设一直生效，去首页"设置"里勾选正侧文件的"全局"开关来管理</text>
-        <view v-if="globalRegexScripts.length === 0" class="empty-hint">
-          <text>暂无已启用的全局正则</text>
+        <text class="section-title">世界书扫描</text>
+        <view class="form-item">
+          <text class="label">扫描深度（看最近几条消息，0 = 全部历史；酒馆默认 2）</text>
+          <input class="input" type="number" :value="String(form.generationParams.worldInfoDepth ?? 2)" @input="(e:any) => onWorldInfoDepthInput(e.detail.value)" />
         </view>
-        <view v-for="script in globalRegexScripts" :key="script.id" class="regex-item">
-          <text class="regex-name">{{ script.scriptName }}</text>
-          <text class="regex-status" :class="script.disabled ? 'regex-disabled' : 'regex-enabled'">{{ script.disabled ? '已禁用' : '已启用' }}</text>
+        <view class="form-item form-item-row">
+          <text class="label">递归扫描（对齐酒馆「递归扫描」，默认关闭）</text>
+          <switch :checked="!!form.generationParams.worldInfoRecursive" @change="(e:any) => form.generationParams.worldInfoRecursive = e.detail.value" color="#cfa54d" style="transform: scale(0.8)" />
+        </view>
+        <view class="form-item">
+          <text class="label">最大递归步数（0 = 不额外限制，交给预算兜底）</text>
+          <input class="input" type="number" :value="String(form.generationParams.worldInfoMaxRecursionSteps ?? 0)" @input="(e:any) => onWorldInfoMaxStepsInput(e.detail.value)" />
+        </view>
+        <view class="form-item">
+          <text class="label">世界书外层包装（wi_format，{0} 为正文占位；默认 {0} = 不包装）</text>
+          <input class="input" :value="String(form.generationParams.worldInfoFormat ?? '{0}')" @input="(e:any) => form.generationParams.worldInfoFormat = e.detail.value" />
+        </view>
+      </view>
+
+      <!-- 自定义停止串：对齐酒馆「自定义停止序列」。一行一条，最多发 4 条（酒馆同款限制）。 -->
+      <view class="section">
+        <text class="section-title">自定义停止串（最多 4 条，每行一条）</text>
+        <text class="section-subtitle">命中即停止生成。留空 = 不发送 stop 字段</text>
+        <textarea
+          class="input textarea"
+          :value="stopStringsText"
+          @input="onStopStringsInput"
+          placeholder="例如：&#10;User:&#10;&lt;/content&gt;"
+          maxlength="400"
+        />
+      </view>
+
+      <!-- 自动回复（新增）：玩家不输入内容时长按发送键 3 秒进入。
+           几个开关默认就是打开的，改动立即保存，不需要点底部"保存"就能用。 -->
+      <view class="section">
+        <text class="section-title">自动回复</text>
+        <text class="section-hint">玩家没有输入内容时长按发送键 3 秒即可进入自动回复：系统会把下面的文本当作你的发言反复发给大模型，而这条发言不会显示在对话里 —— 你只会看到大模型一轮一轮地输出。中途点击输入框即可退出，本次生成结束后就停下等你自己输入。</text>
+        <text class="section-hint">下面几项默认已打开，改动立即生效（无需点底部"保存"）</text>
+        <view class="switch-item">
+          <text class="switch-label">打开自动输入</text>
+          <switch :checked="autoReply.enabled" @change="onToggleAutoReply" color="#cfa54d" />
+        </view>
+        <view class="switch-item">
+          <text class="switch-label">自定义自动输入文本</text>
+          <switch :checked="autoReply.useCustomText" @change="onToggleAutoReplyCustom" color="#cfa54d" />
+        </view>
+        <view class="form-item" style="margin-top: 16rpx;">
+          <text class="label">自动输入文本</text>
+          <input
+            class="input"
+            :class="{ 'input-disabled': !autoReplyInputEnabled }"
+            :disabled="!autoReplyInputEnabled"
+            :value="autoReply.customText"
+            @input="onAutoReplyTextInput"
+            :placeholder="DEFAULT_AUTO_REPLY_TEXT"
+          />
+          <text class="section-hint" style="margin-top: 10rpx; margin-bottom: 0;">未打开"自定义自动输入文本"时，固定使用默认文本「{{ DEFAULT_AUTO_REPLY_TEXT }}」；留空时同样回落到它</text>
         </view>
       </view>
 
@@ -129,26 +220,15 @@
         </view>
       </view>
 
-      <view class="section">
-        <text class="section-title">预设自带正则（{{ form.regexScripts.length }} 条，只读）</text>
-        <text class="section-hint">跟着这个预设走，换预设就换一套；要改内容请到"酒馆导入"页重新导入正侧 JSON</text>
-        <view v-if="form.regexScripts.length === 0" class="empty-hint">
-          <text>暂无正则脚本</text>
-        </view>
-        <view v-for="script in form.regexScripts" :key="script.id" class="regex-item">
-          <text class="regex-name">{{ script.scriptName }}</text>
-          <text class="regex-status" :class="script.disabled ? 'regex-disabled' : 'regex-enabled'">{{ script.disabled ? '已禁用' : '已启用' }}</text>
-        </view>
-      </view>
-
-      <!-- Prompt 列表放最后：条目一多列表很长，放在最下面。
+      <!-- 预设提示词条目（原"Prompt 列表"）放最后：条目一多列表很长，放在最下面。
            这一整块本身默认折叠（listExpanded=false），只显示标题栏，点标题栏才展开显示搜索框和条目列表；
            展开后单条 Prompt 仍然是各自独立收起（expandedId 控制），点条目才展开详情，两层折叠避免列表铺满全屏。 -->
       <view class="section">
         <view class="section-header" @tap="listExpanded = !listExpanded">
-          <text class="section-title">Prompt 列表（{{ filteredPrompts.length }}/{{ form.prompts.length }} 条）</text>
+          <text class="section-title">预设提示词条目（{{ filteredPrompts.length }}/{{ form.prompts.length }} 条）</text>
           <text class="collapse-arrow">{{ listExpanded ? '▲ 收起' : '▼ 展开' }}</text>
         </view>
+        <text class="section-hint">以下是当前会话所选预设自带的提示词条目</text>
         <view v-if="listExpanded">
           <view class="prompt-filter-row">
             <input class="prompt-search" :value="searchText" @input="(e:any)=>searchText=e.detail.value" placeholder="搜索名称/内容" />
@@ -232,19 +312,20 @@
 import { ref, reactive, computed } from 'vue'
 import { onLoad } from '@dcloudio/uni-app'
 import { usePresetStore } from '../../stores/presetStore'
-import { usePluginStore } from '../../stores/pluginStore'
-import { useModuleStore } from '../../stores/moduleStore'
 import { useRegexPresetStore } from '../../stores/regexPresetStore'
 import { useCharacterCardStore } from '../../stores/characterCardStore'
+import { useNoteStore } from '../../stores/noteStore'
 import { getNavBarHeight } from '../../utils/navbar.js'
 import NavBar from '../../components/common/NavBar.vue'
+import { SYSTEM_REGEX_PRESET_ID } from '../../engine/systemRegex'
+import { loadPacingConfig, savePacingConfig, PACING_MIN, PACING_FULL_SPEED, PACING_STEP, type StreamPacingConfig } from '../../utils/streamPacing'
 import type { Preset, PromptItem } from '../../types/preset'
+import { DEFAULT_AUTO_REPLY_TEXT, normalizeAutoReply } from '../../types/preset'
 
 const presetStore = usePresetStore()
-const pluginStore = usePluginStore()
-const moduleStore = useModuleStore()
 const regexPresetStore = useRegexPresetStore()
 const characterCardStore = useCharacterCardStore()
+const noteStore = useNoteStore()
 const navBarHeight = ref(0)
 const expandedId = ref<string>('')
 const searchText = ref('')
@@ -253,34 +334,132 @@ const onlyEnabled = ref(false)
 const listExpanded = ref(false)
 
 // 是否从对话页面的设置键进入（chat.vue 跳转时会带上 fromChat=1）。
-// 这种入口下：预设名称只读展示 + 额外显示渲染开关/功能模块开关这两块全局显示配置。
+// 这种入口下：基础信息只读展示（预设 + 正侧）；独立编辑预设时仍允许改名字。
 const fromChat = ref(false)
-const readonlyName = computed(() => fromChat.value)
+// 本次会话选中的正侧文件 id（chat.vue 通过路由参数带进来）
+const sessionRegexPresetId = ref('')
 
-const isMpWeixin = ref(false)
-const pluginRenderers = ref({ branch: true, summary: true, time: true, html: false, music: false })
-const rendererSwitches = [
-  { key: 'branch', label: '选项按钮（branches）' },
-  { key: 'summary', label: '摘要卡片（meow_FM）' },
-  { key: 'time', label: '时间卡片（time_format）' },
-  { key: 'html', label: '自定义 HTML（仅 H5）' },
-  { key: 'music', label: '音乐播放器' }
-] as const
-const moduleFlags = computed(() => ({ ...moduleStore.modules }))
-const moduleSwitches = [
-  { key: 'intentDetection', label: '意图识别' },
-  { key: 'combat', label: '战斗面板' },
-  { key: 'inventory', label: '背包系统' },
-  { key: 'characterStatus', label: '角色属性面板' },
-  { key: 'dicePanel', label: '骰子快捷栏' },
-  { key: 'stats', label: '数值系统' },
-  { key: 'adventure', label: '任务/剧情' }
-] as const
+/** 正侧展示名：没选中任何文件时就是默认的「系统正侧」 */
+const regexPresetName = computed(() => {
+  const id = sessionRegexPresetId.value || SYSTEM_REGEX_PRESET_ID
+  const p = regexPresetStore.get(id) as any
+  return p ? (p.fileName || p.name || id) : '系统正侧'
+})
 
-// ── 三路正则脚本只读展示（GLOBAL / SCOPED / PRESET，对齐酒馆合并语义） ──
-/** GLOBAL：所有勾选了"全局"的正侧文件合并后的脚本列表，管理入口在首页"设置" */
-const globalRegexScripts = computed(() => regexPresetStore.globalScripts as any[])
-/** SCOPED：当前角色卡自带的正则脚本（读全局 activeCard，和 moduleFlags 用的是同一个来源） */
+// ── 流式输出速度（与首页"设置"共用同一份配置）──────────────────────
+const pacingCfg = ref<StreamPacingConfig>({ enabled: true, charsPerSec: 80 })
+const pacingLabel = computed(() => {
+  const r = pacingCfg.value.charsPerSec
+  return r >= PACING_FULL_SPEED ? '全速（不限速）' : `${r} 字/秒`
+})
+function onPacingRateChange(e: any) {
+  const v = Number(e && e.detail && e.detail.value)
+  pacingCfg.value = { enabled: v < PACING_FULL_SPEED, charsPerSec: v }
+  savePacingConfig(pacingCfg.value)
+}
+
+// ── 自动回复（长按发送键 3 秒）────────────────────────────────────
+// ⚠️ 用户要求：几个开关**默认全部打开**，而且改了立即生效（不需要先点底部"保存"），
+//    否则"长按发送键没反应"会被当成功能坏了。默认值口径统一在 normalizeAutoReply 里。
+const autoReply = reactive(normalizeAutoReply(null))
+/** 文本输入框可编辑条件：勾了"自定义自动输入文本"（用户定义的规则） */
+const autoReplyInputEnabled = computed(() => autoReply.useCustomText)
+function onToggleAutoReply(e: any) {
+  autoReply.enabled = !!e.detail.value
+  _persistAutoReply()
+}
+function onToggleAutoReplyCustom(e: any) {
+  autoReply.useCustomText = !!e.detail.value
+  _persistAutoReply()
+}
+function onAutoReplyTextInput(e: any) {
+  autoReply.customText = e.detail.value
+  // 文本是逐字输入的：用防抖落盘，避免每敲一个字就把整份预设重新写一遍（预设可能 1MB+）
+  _debouncedPersistAutoReply()
+}
+
+/** 文本输入的防抖落盘（开关类仍然立即保存，只有连续输入才需要防抖） */
+let _autoReplyTimer: ReturnType<typeof setTimeout> | null = null
+function _debouncedPersistAutoReply() {
+  if (_autoReplyTimer) clearTimeout(_autoReplyTimer)
+  _autoReplyTimer = setTimeout(() => {
+    _autoReplyTimer = null
+    _persistAutoReply()
+  }, 400)
+}
+
+/**
+ * 立刻把自动回复配置写进预设（不经过底部"保存"按钮）
+ *
+ * 只补写 autoReply 这一个字段：编辑页里的生成参数等其它改动仍然遵循
+ * "点保存才生效"的原有约定，不会被这里顺手提交掉。
+ */
+function _persistAutoReply() {
+  try {
+    const existing = presetStore.get(form.id) as any
+    if (!existing) return // 新预设还没落库：交给底部"保存"处理
+    const payload = JSON.parse(JSON.stringify(existing))
+    payload.autoReply = { enabled: autoReply.enabled, useCustomText: autoReply.useCustomText, customText: autoReply.customText }
+    presetStore.save(payload)
+  } catch (err) {
+    console.warn('[对话设置] 自动回复即时保存失败:', err)
+  }
+}
+
+// ── 作者注（Author's Note，账号级全局配置）─────────────────────────
+// 数据源是 noteStore（不是本预设），因此这里的改动**立即持久化**，
+// 且不会因为用户没点底部"保存"而丢失。
+const noteConfig = reactive({ promptText: '', interval: 1, depth: 4, position: 1, role: 'system' })
+const notePositions = [
+  { value: 0, label: '场景后(IN_PROMPT)' },
+  { value: 1, label: '历史深处(IN_CHAT)' },
+  { value: 2, label: '提示词前(BEFORE)' }
+]
+const noteRoles = [
+  { value: 'system', label: 'system' },
+  { value: 'user', label: 'user' },
+  { value: 'assistant', label: 'assistant' }
+]
+function _flushNote() {
+  try {
+    if (noteStore) noteStore.update({ ...noteConfig } as any)
+  } catch (err) {
+    console.warn('[对话设置] 作者注保存失败:', err)
+  }
+}
+/** 作者注文本的防抖落盘（连续输入时不必每个字符都写一次本地存储） */
+let _noteTimer: ReturnType<typeof setTimeout> | null = null
+function _debouncedFlushNote() {
+  if (_noteTimer) clearTimeout(_noteTimer)
+  _noteTimer = setTimeout(() => {
+    _noteTimer = null
+    _flushNote()
+  }, 400)
+}
+function onNotePromptInput(e: any) {
+  noteConfig.promptText = e.detail.value
+  _debouncedFlushNote()
+}
+function onNoteIntervalInput(e: any) {
+  const n = parseInt(e.detail.value, 10)
+  noteConfig.interval = isNaN(n) || n < 1 ? 1 : n
+  _flushNote()
+}
+function onNoteDepthInput(e: any) {
+  const n = parseInt(e.detail.value, 10)
+  noteConfig.depth = isNaN(n) || n < 0 ? 0 : n
+  _flushNote()
+}
+function onNotePosition(v: number) {
+  noteConfig.position = v as 0 | 1 | 2
+  _flushNote()
+}
+function onNoteRole(v: string) {
+  noteConfig.role = v as 'system' | 'user' | 'assistant'
+  _flushNote()
+}
+
+// ── 角色卡自带正则只读展示（SCOPED） ──
 const scopedRegexScripts = computed(() => {
   const card = characterCardStore.activeCard as any
   return Array.isArray(card?.extensions?.regex_scripts) ? card.extensions.regex_scripts : []
@@ -300,16 +479,6 @@ function onToggleScopedRegex(e: any) {
   } catch (err: any) {
     uni.showModal({ title: '设置失败', content: err?.message || '未知错误', showCancel: false })
   }
-}
-
-
-function onToggleRenderer(key: keyof typeof pluginRenderers.value) {
-  pluginStore.toggle(key)
-  pluginRenderers.value = { ...pluginStore.renderers }
-}
-
-function onToggleModule(key: any) {
-  moduleStore.toggle(key)
 }
 
 const filteredPrompts = computed(() => {
@@ -360,6 +529,17 @@ function onNamesBehaviorChange(e: any) {
   form.generationParams.namesBehavior = namesBehaviorOptions[Number(e.detail.value)].value as any
 }
 
+/** 自定义停止串：数组 ↔ 一行一条的文本框（textarea 在 uni-app 里没有数组形态） */
+const stopStringsText = computed(() => ((form.generationParams.customStopStrings as string[]) || []).join('\n'))
+function onStopStringsInput(e: any) {
+  form.generationParams.customStopStrings = String(e.detail.value || '')
+    .replace(/\r/g, '')
+    .split('\n')
+    .map((s: string) => s.trim())
+    .filter((s: string) => s.length > 0)
+    .slice(0, 4)
+}
+
 const form = reactive<Preset>({
   id: '',
   name: '',
@@ -380,8 +560,15 @@ const form = reactive<Preset>({
     n: 1,
     namesBehavior: 0,
     squashSystemMessages: false,
-    continuePrefill: false
-  }
+    continuePrefill: false,
+    // 世界书扫描（对齐酒馆 world-info.js 默认值：深度 2、不递归）
+    worldInfoDepth: 2,
+    worldInfoRecursive: false,
+    worldInfoMaxRecursionSteps: 0,
+    worldInfoFormat: '{0}',
+    customStopStrings: []
+  },
+  autoReply: normalizeAutoReply(null)
 })
 
 // onLoad 是 uni-app 官方组合式 API，跨 H5/小程序统一从页面路由参数中取值，
@@ -391,20 +578,22 @@ onLoad((options: any) => {
   if (!getApp().checkUserLogin()) return
   navBarHeight.value = getNavBarHeight().navBarHeight
   presetStore.load()
+  regexPresetStore.load()
+  // 作者注是账号级全局配置，进页面时读一次当前值
+  noteStore.load()
+  Object.assign(noteConfig, { ...noteStore.config })
   fromChat.value = options?.fromChat === '1'
-  if (fromChat.value) {
-    pluginStore.load()
-    pluginRenderers.value = { ...pluginStore.renderers }
-    moduleStore.load()
-    // #ifdef MP-WEIXIN
-    isMpWeixin.value = true
-    // #endif
-  }
+  sessionRegexPresetId.value = options?.regexPresetId || ''
+  // 流式输出速度与首页"设置"共用一份配置
+  pacingCfg.value = loadPacingConfig()
   const id = options?.id
   if (id) {
     const existing = presetStore.get(id)
     if (existing) {
-      Object.assign(form, JSON.parse(JSON.stringify(existing)))
+      const copy = JSON.parse(JSON.stringify(existing))
+      Object.assign(form, copy)
+      // 自动回复兜底：老预设没有这个字段，缺失时按默认值（开关默认打开）
+      Object.assign(autoReply, normalizeAutoReply(copy.autoReply))
     }
   }
   if (!form.id) {
@@ -496,7 +685,7 @@ function onDeletePromptById(identifier: string) {
     })
     return
   }
-  
+
   uni.showModal({
     title: '删除 Prompt',
     content: '确定要删除这条 Prompt 吗？',
@@ -587,25 +776,16 @@ function onFrequencyPenaltyChange(e: any) {
   form.generationParams.frequencyPenalty = Math.round(e.detail.value / 25 * 100) / 100 - 2
 }
 
-function onVarInput(key: string, value: string) {
-  form.globalVariables[key] = value
+/** 世界书扫描深度：0 = 全部历史；空/非法值回落到酒馆默认值 2 */
+function onWorldInfoDepthInput(value: string) {
+  const n = Number(value)
+  form.generationParams.worldInfoDepth = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 2
 }
 
-function onVarDelete(key: string) {
-  delete form.globalVariables[key]
-}
-
-function onAddVar() {
-  uni.showModal({
-    title: '添加变量',
-    editable: true,
-    placeholderText: '变量名',
-    success: (res: any) => {
-      if (res.confirm && res.content) {
-        form.globalVariables[res.content] = ''
-      }
-    }
-  })
+/** 最大递归步数：0 = 不额外限制（引擎侧用安全上限兜底防死循环） */
+function onWorldInfoMaxStepsInput(value: string) {
+  const n = Number(value)
+  form.generationParams.worldInfoMaxRecursionSteps = Number.isFinite(n) && n >= 0 ? Math.floor(n) : 0
 }
 
 function onSave() {
@@ -614,7 +794,16 @@ function onSave() {
     return
   }
   _resyncOrderFromPrompts()
-  presetStore.save(JSON.parse(JSON.stringify(form)))
+  // 自动回复是独立响应式对象，保存前写回预设（文本原样保留，空文本由使用侧回落到默认值）
+  const payload = JSON.parse(JSON.stringify(form)) as Preset
+  payload.autoReply = {
+    enabled: !!autoReply.enabled,
+    useCustomText: !!autoReply.useCustomText,
+    customText: String(autoReply.customText ?? '')
+  }
+  presetStore.save(payload)
+  // 作者注是全局配置，走 noteStore（平时已即时保存，这里再兜一次确保一致）
+  _flushNote()
   uni.showToast({ title: '已保存', icon: 'success' })
   setTimeout(() => uni.navigateBack(), 800)
 }
@@ -625,7 +814,7 @@ function onSave() {
 .edit-scroll { flex: 1; padding: 20rpx; min-height: 0; box-sizing: border-box; }
 .section { margin-bottom: 30rpx; background: var(--surface); border: 1rpx solid var(--border); border-radius: 20rpx; padding: 24rpx; overflow: hidden; box-sizing: border-box; }
 .section-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 12rpx; }
-.section-title { font-family: var(--font-body); font-size: 24rpx; font-weight: 700; color: var(--fg); margin-bottom: 12rpx; }
+.section-title { font-family: var(--font-body); font-size: 24rpx; font-weight: 700; color: var(--fg); margin-bottom: 12rpx; display: block; }
 .add-btn { padding: 10rpx 18rpx; background: color-mix(in oklch, var(--success) 14%, transparent); border: 1rpx solid var(--success); border-radius: 14rpx; flex-shrink: 0; }
 .add-btn-text { font-size: 21rpx; color: var(--success); font-weight: 600; }
 .collapse-arrow { font-size: 21rpx; color: var(--faint); flex-shrink: 0; }
@@ -639,13 +828,33 @@ function onSave() {
 .form-item-row { display: flex; justify-content: space-between; align-items: center; }
 .label { display: block; font-size: 22rpx; color: var(--fg-soft); margin-bottom: 10rpx; }
 .input { height: 76rpx; background: var(--surface-2); border: 1rpx solid var(--border); border-radius: 16rpx; padding: 0 20rpx; font-size: 24rpx; color: var(--fg); box-sizing: border-box; width: 100%; }
+.input-disabled { opacity: 0.5; }
 .readonly-input { display: flex; align-items: center; color: var(--faint); background: var(--raised); }
 .select-value { padding: 20rpx; background: var(--surface-2); border: 1rpx solid var(--border); border-radius: 16rpx; font-size: 24rpx; color: var(--accent); font-weight: 600; }
 .section-hint { display: block; font-size: 19rpx; color: var(--faint); margin-bottom: 16rpx; margin-top: -4rpx; line-height: 1.5; }
+.section-subtitle { display: block; font-size: 19rpx; color: var(--faint); margin-bottom: 16rpx; margin-top: -4rpx; line-height: 1.5; }
 .field-header-row { display: flex; align-items: center; justify-content: space-between; margin-bottom: 6rpx; }
 .switch-item { display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10rpx; padding: 14rpx 0; border-bottom: 1rpx solid var(--border); }
 .switch-item:last-of-type { border-bottom: none; }
 .switch-label { font-size: 22rpx; color: var(--fg-soft); }
+
+/* 基础信息（只读展示） */
+.info-row { display: flex; align-items: flex-start; gap: 16rpx; padding: 10rpx 0; }
+.info-label { width: 100rpx; flex-shrink: 0; font-size: 22rpx; color: var(--faint); }
+.info-value { flex: 1; min-width: 0; font-size: 23rpx; color: var(--fg); font-weight: 600; word-break: break-all; }
+
+/* 作者注的选项胶囊（与首页"设置"同款） */
+.chip-row { display: flex; flex-wrap: wrap; gap: 12rpx; }
+.chip { padding: 11rpx 20rpx; border-radius: 16rpx; background: var(--surface-2); border: 1rpx solid var(--border); font-size: 20rpx; color: var(--fg-soft); }
+.chip.active { border-color: var(--accent); background: var(--accent-soft); color: var(--accent); font-weight: 700; }
+
+/* 流式输出速度滑条（与首页"设置"同款） */
+.pacing-head { display: flex; justify-content: space-between; align-items: baseline; }
+.pacing-value { font-family: var(--font-mono); font-size: 22rpx; font-weight: 700; color: var(--accent); }
+.pacing-slider { margin: 6rpx 0 0; }
+.pacing-scale { display: flex; justify-content: space-between; margin-top: -6rpx; }
+.pacing-scale-text { font-family: var(--font-mono); font-size: 17rpx; color: var(--faint); letter-spacing: 0.04em; }
+
 .prompt-item { background: var(--surface-2); border: 1rpx solid var(--border); border-radius: 16rpx; margin-bottom: 12rpx; padding: 16rpx 20rpx; }
 .prompt-item-header { display: flex; align-items: center; gap: 10rpx; }
 .prompt-name { flex: 1; min-width: 0; font-size: 23rpx; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -672,12 +881,7 @@ function onSave() {
 .meta-value { font-size: 22rpx; color: var(--accent); font-weight: 600; }
 .meta-input { width: 140rpx; height: 50rpx; background: var(--surface); border: 1rpx solid var(--border); border-radius: 8rpx; text-align: center; color: var(--fg); font-size: 22rpx; }
 .empty-hint { padding: 30rpx; text-align: center; color: var(--faint); font-size: 22rpx; }
-.var-row { display: flex; align-items: center; gap: 12rpx; margin-bottom: 12rpx; }
-.var-key { width: 160rpx; font-size: 22rpx; color: var(--faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.var-input { flex: 1; height: 60rpx; background: var(--surface-2); border: 1rpx solid var(--border); border-radius: 12rpx; padding: 0 16rpx; font-size: 22rpx; color: var(--fg); box-sizing: border-box; }
-.var-delete { font-size: 22rpx; color: var(--danger); padding: 0 8rpx; }
-.add-var-btn { padding: 14rpx; text-align: center; background: var(--accent-soft); border: 1rpx solid var(--accent); border-radius: 14rpx; }
-.add-var-text { font-size: 22rpx; color: var(--accent); font-weight: 600; }
+.textarea { height: 150rpx; padding-top: 18rpx; line-height: 1.5; }
 .regex-item { display: flex; justify-content: space-between; align-items: center; padding: 14rpx 16rpx; background: var(--surface-2); border: 1rpx solid var(--border); border-radius: 12rpx; margin-bottom: 8rpx; gap: 12rpx; }
 .regex-name { flex: 1; min-width: 0; font-size: 22rpx; color: var(--fg-soft); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .regex-status { font-size: 18rpx; padding: 2rpx 10rpx; border-radius: 8rpx; flex-shrink: 0; }

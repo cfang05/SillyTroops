@@ -243,7 +243,7 @@ async function checkReasoningSplit() {
 async function checkFixes() {
   const { applyRegexScripts } = await import('../src/engine/RegexScriptEngine')
   const { createSystemRegexScripts } = await import('../src/engine/systemRegex')
-  const { nextShownLength, charsPerFrame } = await import('../src/utils/streamPacing')
+  const { nextShownLength, charsPerFrame, normalizePacingConfig } = await import('../src/utils/streamPacing')
 
   console.log('\n[11] 台词引号必须保留（用户实测反馈）')
   const out = applyRegexScripts('她握紧了刀。“我不会退。”她说。', createSystemRegexScripts(), 0, { isMarkdown: true })
@@ -262,6 +262,33 @@ async function checkFixes() {
   check('推进受限速约束', nextShownLength(0, 100, 80, 33) === 3, nextShownLength(0, 100, 80, 33))
   check('到达末尾即停（不越界）', nextShownLength(99, 100, 80, 33) === 100, nextShownLength(99, 100, 80, 33))
   check('速率非法时直接放行全文', nextShownLength(0, 100, 0, 33) === 100, nextShownLength(0, 100, 0, 33))
+
+  // 用户改版要求：去掉"平滑输出"开关，只留 10~100 的显示速度滑条（步进 5），
+  // 最右 100 = 全速 = 等价于原来的"关闭平滑输出"。enabled 由速率派生，旧配置要能平滑迁移。
+  console.log('\n[12b] 流式速度归一化（10~100 / 步进 5 / 100 = 全速）')
+  const p80 = normalizePacingConfig({ enabled: true, charsPerSec: 80 })
+  check('80 保持启用', p80.charsPerSec === 80 && p80.enabled === true, p80)
+  const p100 = normalizePacingConfig({ enabled: true, charsPerSec: 100 })
+  check('100 = 全速（enabled 派生为 false）', p100.charsPerSec === 100 && p100.enabled === false, p100)
+  const pOldOff = normalizePacingConfig({ enabled: false, charsPerSec: 80 })
+  check('旧配置"平滑已关闭" → 全速 100', pOldOff.charsPerSec === 100 && pOldOff.enabled === false, pOldOff)
+  check('低于下限钳到 10', normalizePacingConfig({ enabled: true, charsPerSec: 3 }).charsPerSec === 10)
+  check('高于上限钳到 100（旧默认 160 不再越界）', normalizePacingConfig({ enabled: true, charsPerSec: 160 }).charsPerSec === 100)
+  check('吸附到 5 的倍数', normalizePacingConfig({ enabled: true, charsPerSec: 42 }).charsPerSec === 40)
+  check('非法速率回落默认 80', normalizePacingConfig({ enabled: true, charsPerSec: NaN }).charsPerSec === 80)
+
+  // 用户要求：自动回复的几个开关"默认全部打开"，开箱即用（不必先去保存一次设置）。
+  // 所以判定口径必须是 `!== false`（缺字段 = 开），这里把这条不变量钉死。
+  const { normalizeAutoReply, DEFAULT_AUTO_REPLY_TEXT } = await import('../src/types/preset')
+  console.log('\n[12c] 自动回复默认值（几个开关默认打开）')
+  const arEmpty = normalizeAutoReply(undefined)
+  check('缺字段 = 打开自动输入', arEmpty.enabled === true, arEmpty)
+  check('缺字段 = 打开自定义文本', arEmpty.useCustomText === true, arEmpty)
+  check('文本默认「继续」', arEmpty.customText === DEFAULT_AUTO_REPLY_TEXT, arEmpty)
+  const arExplicitOff = normalizeAutoReply({ enabled: false, useCustomText: false, customText: '走' })
+  check('显式 false 才是关闭', arExplicitOff.enabled === false && arExplicitOff.useCustomText === false, arExplicitOff)
+  check('自定义文本被保留', arExplicitOff.customText === '走', arExplicitOff)
+  check('空文本原样保留（使用侧再回落默认）', normalizeAutoReply({ customText: '' }).customText === '', normalizeAutoReply({ customText: '' }).customText)
 }
 
 // ═══════════════════════════════════════════════════════════

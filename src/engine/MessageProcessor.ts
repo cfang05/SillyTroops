@@ -73,6 +73,9 @@ export class MessageProcessor {
 
     try {
       // 1. 输入侧正则脚本（placement=1；vars 供 substituteRegex 宏替换使用）
+      //    注意顺序对齐酒馆 `sendMessageAsUser`（script.js:5816-5823）：
+      //    先 getRegexedString，**再** substituteParams。这里只做正则，
+      //    宏替换由 PromptBuilder 在拼 prompt 时执行（存档里仍是用户原文）。
       const processedInput = applyRegexScripts(userMessage, preset.regexScripts, 1, { vars: variables })
 
       // 1.5 意图识别钩子（intentDetection 开启时由调用方注入 detectIntent；世界书扫描之前）
@@ -92,7 +95,10 @@ export class MessageProcessor {
         worldInfoSessionState: options.worldInfoSessionState,
         personaDescription: options.personaDescription,
         trpgState: options.trpgState,
-        authorsNote: options.authorsNote
+        authorsNote: options.authorsNote,
+        // 上面第 1 步已经跑过 placement=1 的输入侧正则：告诉 PromptBuilder 不要再跑一次，
+        // 否则 promptOnly 的输入侧脚本（如 `<user_input>` 包裹）会被套两层。
+        userMessagePreProcessed: true
       }
       const { messages, worldInfoState, promptInfo } = buildMessages(buildCtx)
 
@@ -293,9 +299,24 @@ export class MessageProcessor {
   }
 }
 
-/** 将内部 ChatMessage[] 转换为 PromptBuilder 需要的历史格式（过滤掉 system 消息） */
-export function toChatHistory(messages: ChatMessage[]): { role: 'user' | 'assistant'; content: string }[] {
+/**
+ * 将内部 ChatMessage[] 转换为 PromptBuilder 需要的历史格式（过滤掉 system 消息）。
+ *
+ * `reasoning` 一并带出：PromptBuilder 会按酒馆 `PromptReasoning` 的语义，
+ * 只把**最近一轮**有思考的 assistant 消息的思考拼回 prompt（见 `_injectPromptReasoning`）。
+ * 这里只是搬运数据，不参与存档写入。
+ */
+export function toChatHistory(messages: ChatMessage[]): { role: 'user' | 'assistant'; content: string; reasoning?: string }[] {
   return messages
     .filter(m => (m.role === 'user' || m.role === 'assistant') && m.content && m.content.trim())
-    .map(m => ({ role: m.role as 'user' | 'assistant', content: m.content }))
+    .map(m => {
+      const item: { role: 'user' | 'assistant'; content: string; reasoning?: string } = {
+        role: m.role as 'user' | 'assistant',
+        content: m.content
+      }
+      // 上游原生思考优先；没有时用正文定界符切出来的那份（开关打开时才有）
+      const reasoning = (m.reasoning && m.reasoning.trim()) ? m.reasoning : m.reasoningFromText
+      if (reasoning && reasoning.trim()) item.reasoning = reasoning
+      return item
+    })
 }

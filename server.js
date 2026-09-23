@@ -516,6 +516,9 @@ function _providerParams() {
 const PASSTHROUGH_PARAMS = [
   'temperature', 'max_tokens', 'top_p', 'top_k',
   'presence_penalty', 'frequency_penalty', 'seed', 'n',
+  // 自定义停止串：**数组**（不是标量）。原样转发，不做长度/条数夹取 ——
+  // 前端已按酒馆规则整理过（trim、丢空串、上限 4 条，见 utils/llm/client.js 的 _collectStopStrings）。
+  'stop',
   // D13：前端靠它让上游在最后一个数据块返回真实 usage（用于用量统计）。
   // 不加进白名单的话，内置测试通道会把该字段丢掉，统计只能退化为本地估算。
   'stream_options'

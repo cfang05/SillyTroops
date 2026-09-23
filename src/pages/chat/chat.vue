@@ -8,7 +8,8 @@
         </view>
         <text class="navbar-title">{{ characterName || '对话' }}</text>
         <view class="navbar-settings-btn" @tap="goSettings">
-          <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="10" cy="10" r="3.4"/><path d="M10 2.3v1.7M10 16v1.7M2.3 10h1.7M16 10h1.7M4.6 4.6l1.2 1.2M14.2 14.2l1.2 1.2M15.4 4.6l-1.2 1.2M5.8 14.2l-1.2 1.2"/></svg>
+          <!-- 齿轮（原图标是"圆心+放射线"，看起来像太阳，用户要求换成齿轮） -->
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
         </view>
       </view>
     </view>
@@ -84,17 +85,35 @@
           class="chat-input"
           :value="inputValue"
           @input="onInput"
-          placeholder="输入消息..."
+          :placeholder="autoMode ? '自动输入中' : '输入消息...'"
           confirm-type="send"
           @confirm="handleSend"
           :disabled="runtimeStore.isLoading"
           maxlength="1000"
         />
-        <view v-if="!runtimeStore.isLoading" :class="['send-button', canSend ? '' : 'send-button-disabled']" @tap="handleSend">
-          <text class="send-text">发送</text>
+        <!-- 自动回复期间盖一层透明遮罩：点击即退出。
+             用遮罩而不是给 input 绑 tap —— isLoading 时 input 是 disabled 的，
+             浏览器对 disabled 表单控件不派发点击事件，绑在它上面收不到。 -->
+        <view v-if="autoMode" class="auto-overlay" @tap="exitAutoMode"></view>
+
+        <!-- 自动回复中：发送键闪烁、文字变"自动"（点一下也能退出） -->
+        <view v-if="autoMode" class="send-button auto-button" @tap="exitAutoMode">
+          <text class="send-text">自动</text>
         </view>
-        <view v-else class="send-button stop-button" @tap="handleStop">
+        <!-- 生成中：停止 -->
+        <view v-else-if="runtimeStore.isLoading" class="send-button stop-button" @tap="handleStop">
           <text class="send-text">停止</text>
+        </view>
+        <!-- 空闲：没有输入内容时是黑色的；长按 3 秒进入自动回复（需先在「对话设置」打开自动输入） -->
+        <view
+          v-else
+          :class="['send-button', canSend ? '' : 'send-button-disabled']"
+          @tap="handleSend"
+          @touchstart="onSendPressStart"
+          @touchend="onSendPressEnd"
+          @touchcancel="onSendPressEnd"
+        >
+          <text class="send-text">发送</text>
         </view>
       </view>
     </view>
@@ -103,7 +122,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onUnmounted, onMounted, nextTick } from 'vue'
-import { onLoad } from '@dcloudio/uni-app'
+import { onLoad, onShow } from '@dcloudio/uni-app'
 import { useRuntimeStore } from '../../stores/runtimeStore'
 import { useCharacterCardStore } from '../../stores/characterCardStore'
 import { usePresetStore } from '../../stores/presetStore'
@@ -142,6 +161,7 @@ import { savePromptInfo } from '../../services/promptInfoStore'
 import { initCustomCss } from '../../utils/customCss'
 import { splitReasoning, combineReasoning, loadReasoningConfig, type ReasoningSplitConfig } from '../../engine/ReasoningHandler'
 import { nextShownLength, loadPacingConfig, type StreamPacingConfig } from '../../utils/streamPacing'
+import { DEFAULT_AUTO_REPLY_TEXT, normalizeAutoReply } from '../../types/preset'
 
 const runtimeStore = useRuntimeStore()
 const characterCardStore = useCharacterCardStore()
@@ -178,6 +198,18 @@ onMounted(() => {
   try { window.addEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
   try { window.addEventListener('pagehide', _flushPersist) } catch (e) { /* ignore */ }
   // #endif
+})
+
+/**
+ * 页面重新可见时刷新"能在别处改"的配置
+ *
+ * chat 页的右上角设置键现在打开的是「对话设置」（同一个页面栈里的 navigateTo），
+ * 返回时 **onLoad 不会再跑**：流式显示速度、思考解析开关都是那页能改的，
+ * 不在这里重读的话，用户改完回来会发现"改了没用"。
+ */
+onShow(() => {
+  _pacing.value = loadPacingConfig()
+  _reasoningCfg.value = loadReasoningConfig()
 })
 
 // ── 视口滚动：不再做任何程序化操作 ──────────────────
@@ -251,6 +283,35 @@ const _streamShown = new Map<number, number>()
 const _streamTarget = new Map<number, string>()
 /** 待收尾：平滑模式下要等文本释放完再落定，避免最后一帧"啪"地补全 */
 let _pendingFinalize: { index: number; text: string; after?: () => void } | null = null
+
+// ── 自动回复（长按发送键 3 秒进入）──────────────────────────────
+/** 长按阈值：用户要求 3 秒 */
+const AUTO_REPLY_HOLD_MS = 3000
+/** 两轮自动回复之间的小间隔（给用户一点"看清楚了"的时间，也避免请求过于密集） */
+const AUTO_REPLY_INTERVAL_MS = 600
+/** 是否处于自动回复状态（发送键闪烁 + 文字变"自动"） */
+const autoMode = ref(false)
+/** 自动回复的轮次定时器 */
+let _autoTimer: ReturnType<typeof setTimeout> | null = null
+/** 发送键长按计时器 */
+let _holdTimer: ReturnType<typeof setTimeout> | null = null
+
+/**
+ * 自动回复配置：**跟随本次会话选中的预设**（在「对话设置」页里配置）。
+ *
+ * ⚠️ 几个开关的默认值是**打开**（用户要求开箱即用，不必先去保存一次设置）：
+ * 缺字段一律按"开"处理，判定口径与 normalizeAutoReply 保持一致。
+ * 文本为空时回落到默认文本，避免把空消息发给模型。
+ */
+const autoReplyCfg = computed(() => {
+  const cfg = normalizeAutoReply((_resolvePreset() as any)?.autoReply)
+  const custom = cfg.customText.trim() || DEFAULT_AUTO_REPLY_TEXT
+  return {
+    enabled: cfg.enabled,
+    useCustomText: cfg.useCustomText,
+    text: cfg.useCustomText ? custom : DEFAULT_AUTO_REPLY_TEXT
+  }
+})
 
 function _ensurePending(index: number) {
   if (!_pendingStream || _pendingStream.index !== index) _pendingStream = { index }
@@ -715,6 +776,10 @@ async function _loadConversation(cardId: string) {
   const record = await conversationManager.load(cardId)
   if (record && Array.isArray(record.messages) && record.messages.length > 0) {
     _applyRecord(record)
+    // 打开历史对话即视为"最近在用"：立刻落一次盘，把 updatedAt 刷新成现在。
+    // 否则列表按 updatedAt 倒序排，"点进来接着聊"的这段对话仍停在几天前的位置，
+    // 用户会觉得"我刚打开过，怎么没排到最前面"。
+    _persistConversation({ immediate: true })
   } else {
     _startFresh()
   }
@@ -727,12 +792,19 @@ function _startFresh() {
   trpgState.value = initTrpgState(card as any, activePersona.value?.trpgProfile || null)
   const rawFirstMes = card?.first_mes
   if (rawFirstMes) {
-    // 宏替换（{{char}}/{{user}}/{{description}}/{{personality}}/{{scenario}} 等）+ 结构化块解析，
-    // 与用户发送消息后 AI 回复的处理链路保持一致，否则开场白里的宏和状态栏标签不会被渲染
+    // 宏替换（{{char}}/{{user}}/{{description}}/{{personality}}/{{scenario}} 等）
     const vars = _buildBaseVars()
     // 酒馆 Alt. Greetings：first_mes 是第 0 个 swipe，alternate_greetings 依次追加为可切换的其他开场白
     const rawGreetings = [rawFirstMes, ...((card as any)?.alternate_greetings || [])]
-    const processedGreetings = rawGreetings.map(g => substituteVariables(g, vars))
+    // ⚠️ 对齐酒馆 `getFirstMessage()`（script.js:7710-7740）：开场白与所有 alternate_greetings
+    // 落档**之前**要先过一遍「输出侧正则」（placement=0、不带 isMarkdown/isPrompt），
+    // 之后再走显示态管线。改造前只做宏替换就落档，于是：
+    //   · 存档里是原始文本，而显示态管线又会把它当"用户输入/台词"再处理一次 → 渲染不一致；
+    //   · 用 DSmama 那套正侧时开场白会被显示态套上 `<user_input>…</user_input>` 并**显示出来**；
+    //   · 同一个文件"实时新开对话"与"刷新重载后"的渲染结果不同。
+    const outputScripts = ((_resolvePreset()?.regexScripts as RegexScript[]) || [])
+    const applyOutputRegex = (t: string) => (outputScripts.length ? applyRegexScripts(t, outputScripts, 0, { vars }) : t)
+    const processedGreetings = rawGreetings.map(g => applyOutputRegex(substituteVariables(g, vars)))
     const processedFirstMes = processedGreetings[0]
     // 开场白同样走显示态管线（P4.1）：台词等 markdownOnly 样式在开场白上也应生效
     const segments = _segmentsFor(processedFirstMes, 0, { role: 'assistant', total: 1 })
@@ -876,6 +948,10 @@ function _flushPersist() {
 onUnmounted(() => {
   processor.abort()
   _cancelStreamContent()
+  // 自动回复：离开页面时必须停掉长按计时与轮次定时器，否则会在已卸载的组件上继续跑
+  autoMode.value = false
+  _clearHoldTimer()
+  _clearAutoTimer()
   _flushPersist()
   // #ifdef H5
   try { window.removeEventListener('beforeunload', _flushPersist) } catch (e) { /* ignore */ }
@@ -884,7 +960,97 @@ onUnmounted(() => {
 })
 
 function onInput(e: any) {
+  // 自动回复期间输入框只作为"自动输入中"的提示，不接受编辑
+  if (autoMode.value) return
   inputValue.value = e.detail.value
+}
+
+// ── 自动回复（长按发送键 3 秒）────────────────────────────────
+//
+// 玩法（用户定义）：
+//   玩家没有输入内容时，发送键是黑色的；长按 3 秒进入自动回复 →
+//   发送键闪烁、文字变"自动"，输入框显示"自动输入中"，点击输入框即可退出。
+//   期间系统把配置里的文本（默认"继续"）当作玩家发言反复发给大模型，
+//   但这条发言在前端**不显示**（消息带 hidden 标记），所以看起来就是
+//   "大模型一轮一轮地自己输出"。中途退出后，本次生成结束就停下等玩家手动输入。
+
+function _clearHoldTimer() {
+  if (_holdTimer) { clearTimeout(_holdTimer); _holdTimer = null }
+}
+
+function _clearAutoTimer() {
+  if (_autoTimer) { clearTimeout(_autoTimer); _autoTimer = null }
+}
+
+/** 发送键按下：只有在"没有输入内容 + 自动回复已打开"时才开始 3 秒计时 */
+function onSendPressStart() {
+  if (runtimeStore.isLoading || autoMode.value) return
+  if (inputValue.value.trim()) return
+  if (!autoReplyCfg.value.enabled) return
+  _clearHoldTimer()
+  _holdTimer = setTimeout(() => {
+    _holdTimer = null
+    enterAutoMode()
+  }, AUTO_REPLY_HOLD_MS)
+}
+
+/** 抬手/滑动取消：没按满 3 秒就什么也不做 */
+function onSendPressEnd() {
+  _clearHoldTimer()
+}
+
+function enterAutoMode() {
+  if (autoMode.value) return
+  if (!autoReplyCfg.value.enabled) {
+    uni.showToast({ title: '请先在「对话设置」里打开自动输入', icon: 'none', duration: 2500 })
+    return
+  }
+  autoMode.value = true
+  uni.showToast({ title: '已进入自动回复，点击输入框可退出', icon: 'none', duration: 2200 })
+  // 正在生成时不要插队：等这一轮结束后 _requestReply 的 settle 会自动接上下一轮
+  if (!runtimeStore.isLoading) _autoStep()
+}
+
+/** 退出自动回复：立刻恢复输入框与发送键；正在生成的那一轮会自然跑完，之后不再排下一轮 */
+function exitAutoMode() {
+  if (!autoMode.value) return
+  autoMode.value = false
+  _clearAutoTimer()
+  uni.showToast({ title: '已退出自动回复', icon: 'none' })
+}
+
+/**
+ * 自动回复的一轮
+ *
+ * hidden:true 的那条用户消息是"替身发言"：它进请求上下文、也会入档，
+ * 但 MessageItem 不渲染它 —— 这就是"前端只能看到大模型在输出"的实现方式。
+ */
+async function _autoStep() {
+  if (!autoMode.value || runtimeStore.isLoading) return
+
+  const text = autoReplyCfg.value.text
+  runtimeStore.appendMessage({ role: 'user', content: text, hidden: true } as ChatMessage)
+  runtimeStore.appendMessage({ role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 } as ChatMessage)
+  const aiIndex = runtimeStore.messages.length - 1
+
+  const ok = await new Promise<boolean>((resolve) => {
+    _requestReply(aiIndex, text, resolve)
+  })
+
+  if (!ok) {
+    // 上游失败（已重试 3 次仍失败）：退出自动回复，把控制权还给玩家，
+    // 否则会变成"一直报错、一直重试"的死循环。
+    exitAutoMode()
+    return
+  }
+  // 用户中途退出了 → 本次生成结束即停，不再排下一轮
+  if (!autoMode.value) return
+
+  _clearAutoTimer()
+  _autoTimer = setTimeout(() => {
+    _autoTimer = null
+    _autoStep()
+  }, AUTO_REPLY_INTERVAL_MS)
 }
 
 /**
@@ -895,7 +1061,12 @@ function onInput(e: any) {
  */
 function goSettings() {
   const id = _ensureSessionPresetId()
-  uni.navigateTo({ url: '/pages/presets/edit?id=' + id + '&fromChat=1' })
+  // 把本次会话选中的正侧 id 也带上：「对话设置」页要在"基础信息"里只读展示当前正侧是哪一个。
+  // 没选过时用 SYSTEM_REGEX_PRESET_ID（系统正侧），与实际生效的正侧保持一致。
+  const regexId = sessionRegexPresetId.value || SYSTEM_REGEX_PRESET_ID
+  uni.navigateTo({
+    url: '/pages/presets/edit?id=' + id + '&fromChat=1&regexPresetId=' + encodeURIComponent(regexId)
+  })
 }
 
 /** 自定义导航栏的返回按钮：navigationStyle:"custom" 后系统不再提供返回箭头，需要自己实现 */
@@ -964,6 +1135,9 @@ function _ensureSessionPresetId(): string {
 function handleStop() {
   processor.abort()
   runtimeStore.setLoading(false)
+  // 手动停止时同时退出自动回复（正常路径下自动回复中按钮是"自动"，走不到这里，
+  // 这是兜底：保证任何情况下"停止"都意味着真的停下来）
+  if (autoMode.value) { autoMode.value = false; _clearAutoTimer() }
   // 先把最后一帧增量写进去（停止时不该丢掉最后 ~33ms 的文字），再收尾
   _flushStreamContent()
 
@@ -1011,7 +1185,7 @@ async function handleContinue() {
     personaDescription: activePersona.value?.description || '',
     lorebookEntries: _collectLorebookEntries(),
     worldInfoSessionState: worldInfoState.value,
-    authorsNote: noteStore.active,
+    authorsNote: noteStore.config,
     trpgState: trpgState.value,
     detectIntent: activeModules.value.intentDetection ? _handleIntent : undefined,
     continuePrefix: lastAiMsg.content || '', // Continue特有：原AI消息作为前缀
@@ -1069,16 +1243,28 @@ function onFateDice() {
   uni.showToast({ title: '命运骰（待接入战斗死亡流程）', icon: 'none' })
 }
 
-async function sendUserMessage(text: string) {
-  runtimeStore.appendMessage({ role: 'user', content: text })
-
-  const aiMsg: ChatMessage = { role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 }
-  runtimeStore.appendMessage(aiMsg)
-  const aiIndex = runtimeStore.messages.length - 1
+/**
+ * 把"本轮用户消息 + 空的 AI 占位消息"送进模型，并把流式结果写到 aiIndex 上。
+ *
+ * 抽成单独函数的原因：手动发送、编辑最近一条用户消息后重新生成、自动回复
+ * 这三条路径的参数、错误处理、落盘时机必须完全一致 —— 以前只有 sendUserMessage 一份，
+ * 复制出第二份就一定会漂移。
+ *
+ * @param aiIndex 空 AI 占位消息在 messages 里的下标（它之前的全部消息构成上下文）
+ * @param userMessage 本轮要发给模型的用户文本
+ * @param onSettled 本轮真正结束（含平滑输出把尾巴播完）后回调；true = 成功，false = 失败/被中断
+ */
+async function _requestReply(aiIndex: number, userMessage: string, onSettled?: (ok: boolean) => void) {
+  let completed = false
+  let settled = false
+  const settle = (ok: boolean) => {
+    if (settled) return
+    settled = true
+    if (onSettled) onSettled(ok)
+  }
 
   runtimeStore.setLoading(true)
-  // 立刻落盘：用户这条消息必须在第一时间进存档（"发完就刷新"不该丢），
-  // 同时流式期间每 500ms 还会再落一次（见 _flushStreamContent）。
+  // 立刻落盘：用户这条消息必须在第一时间进存档（"发完就刷新"不该丢）。
   // 此刻 AI 占位消息是空的，读档时会被 _sanitizeLoadedMessages 丢弃，不会留下空白气泡。
   _persistConversation({ immediate: true })
 
@@ -1089,7 +1275,7 @@ async function sendUserMessage(text: string) {
     character: _characterForProcessor(),
     preset: activePresetResolved,
     chatHistory: toChatHistory(runtimeStore.messages.slice(0, aiIndex)),
-    userMessage: text,
+    userMessage,
     variables: _buildBaseVars(),
     personaDescription: activePersona.value?.description || '',
     trpgState: trpgState.value || undefined,
@@ -1106,11 +1292,13 @@ async function sendUserMessage(text: string) {
     // 思考走独立通道（P6.1 / D17）
     onReasoning: (r: string) => _queueStreamReasoning(aiIndex, r),
     onComplete: (finalText, segments, wiState) => {
+      completed = true
       // 平滑模式下等剩余文本按节奏释放完再收尾（否则最后一帧会突然补全一大段）
       _scheduleFinalize(aiIndex, finalText, () => {
         runtimeStore.setLoading(false)
         worldInfoState.value = wiState
         _persistConversation()
+        settle(true)
       })
     },
     onError: (err) => {
@@ -1126,6 +1314,7 @@ async function sendUserMessage(text: string) {
         runtimeStore.setLoading(false)
         // 用户自己那条消息留着（登录回来直接重发），所以这里也要落盘
         _persistConversation({ immediate: true })
+        settle(false)
         return
       }
       // 把真实错误名称/消息打全，避免只留一句"抱歉，发生了错误，请重试。"看不出根因
@@ -1142,8 +1331,23 @@ async function sendUserMessage(text: string) {
       runtimeStore.setLoading(false)
       // 错误文案也要进存档，避免"刷新后连报错都没了"
       _persistConversation({ immediate: true })
+      settle(false)
     }
   })
+
+  // 走完 processor.send 却既没 onComplete 也没 onError：只可能是被 abort
+  // （用户点了停止 / 离开页面）。不兜底的话自动回复的循环会永远挂在等待里。
+  if (!completed) settle(false)
+}
+
+async function sendUserMessage(text: string) {
+  runtimeStore.appendMessage({ role: 'user', content: text })
+
+  const aiMsg: ChatMessage = { role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 }
+  runtimeStore.appendMessage(aiMsg)
+  const aiIndex = runtimeStore.messages.length - 1
+
+  await _requestReply(aiIndex, text)
 }
 
 function onBranchSelect(option: string) {
@@ -1244,59 +1448,86 @@ async function regenerateSwipe(messageIndex: number) {
   })
 }
 
+/** 最近一条"玩家可见的"用户消息下标（-1 = 没有）。自动回复插入的 hidden 消息不算。 */
+const lastUserMessageIndex = computed(() => {
+  const msgs = runtimeStore.messages
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    if (msgs[i].role === 'user' && !msgs[i].hidden) return i
+  }
+  return -1
+})
+
+/**
+ * 长按菜单（按用户要求改版）
+ *
+ *   · 玩家输入的文字：**只能编辑最近的一条**（原来的"删除"整个去掉）；
+ *     编辑后模型按编辑后的内容**重新生成回复**。
+ *   · LLM 输出的文字：只有**最后一段**能"重新生成"（原「从此处重新生成」改名），
+ *     同样不再提供"删除"。
+ *   · 没有可执行操作的条目不再弹菜单 —— 弹一个点不动的菜单比不弹更让人困惑。
+ */
 function onMessageLongPress(idx: number) {
-  const msg = runtimeStore.messages[idx]
-  if (!msg) return
-  const isAI = msg.role === 'assistant'
-  // 续写：仅当长按的最后一条消息是 AI 消息时才提供（与原先独立"续写"按钮的条件一致），
-  // 表示从这条消息继续生成；其它 AI 消息仍保留“从此处重新生成”。
-  const isLastAI = isAI && idx === runtimeStore.messages.length - 1
-  const items = ['编辑', '删除']
-  if (isLastAI) items.push('续写')
-  if (isAI) items.push('从此处重新生成')
+  const msgs = runtimeStore.messages
+  const msg = msgs[idx]
+  if (!msg || msg.hidden) return
+  if (runtimeStore.isLoading) return
+
+  if (msg.role === 'assistant') {
+    // 只有最后一段输出可重新生成
+    if (idx !== msgs.length - 1) return
+    uni.showActionSheet({
+      itemList: ['重新生成', '续写'],
+      success(res: any) {
+        if (res.tapIndex === 0) regenerateSwipe(idx)
+        else if (res.tapIndex === 1) handleContinue()
+      }
+    })
+    return
+  }
+
+  if (msg.role !== 'user') return
+  // 用户消息：只允许编辑"最近的一条"
+  if (lastUserMessageIndex.value !== idx) return
   uni.showActionSheet({
-    itemList: items,
+    itemList: ['编辑'],
     success(res: any) {
-      if (res.tapIndex === 0) editMessage(idx)
-      else if (res.tapIndex === 1) deleteMessage(idx)
-      else if (isLastAI && res.tapIndex === 2) handleContinue()
-      else if (isAI && res.tapIndex === (isLastAI ? 3 : 2)) regenerateSwipe(idx)
+      if (res.tapIndex === 0) editLastUserMessage(idx)
     }
   })
 }
 
-function editMessage(idx: number) {
+/**
+ * 编辑最近一条用户消息，并**按编辑后的内容重新生成回复**
+ *
+ * 为什么必须丢掉后面的内容：这条用户消息之后的 AI 回复是基于**旧文案**生成的，
+ * 留在上下文里会让模型看到一段"答非所问"的历史，并且它们已经被存档 ——
+ * 所以这里直接截断到编辑的这一条，再走一次正常的生成流程。
+ */
+function editLastUserMessage(idx: number) {
   const msg = runtimeStore.messages[idx]
-  if (!msg) return
+  if (!msg || msg.role !== 'user') return
   uni.showModal({
     title: '编辑消息',
     editable: true,
     content: msg.content,
     success: (res: any) => {
-      if (res.confirm && typeof res.content === 'string') {
-        const msgs = [...runtimeStore.messages]
-        const newContent = res.content
-        const swipes = msgs[idx].swipes ? [...(msgs[idx].swipes as string[])] : undefined
-        if (swipes) swipes[msgs[idx].swipe_id || 0] = newContent
-        msgs[idx] = { ...msgs[idx], content: newContent, swipes }
-        runtimeStore.setMessages(msgs)
-        _persistConversation()
+      if (!res.confirm || typeof res.content !== 'string') return
+      const text = res.content.trim()
+      if (!text) {
+        uni.showToast({ title: '内容不能为空', icon: 'none' })
+        return
       }
-    }
-  })
-}
+      if (text === msg.content) return
 
-function deleteMessage(idx: number) {
-  uni.showModal({
-    title: '删除消息',
-    content: '确定要删除这条消息吗？',
-    success: (res: any) => {
-      if (res.confirm) {
-        const msgs = [...runtimeStore.messages]
-        msgs.splice(idx, 1)
-        runtimeStore.setMessages(msgs)
-        _persistConversation()
-      }
+      const msgs = [...runtimeStore.messages]
+      msgs[idx] = { ...msgs[idx], content: text }
+      // 截断：这条之后的旧回复全部作废
+      msgs.length = idx + 1
+      runtimeStore.setMessages(msgs)
+
+      runtimeStore.appendMessage({ role: 'assistant', content: '', isStreaming: true, segments: [], swipes: [''], swipe_id: 0 } as ChatMessage)
+      const aiIndex = runtimeStore.messages.length - 1
+      _requestReply(aiIndex, text)
     }
   })
 }
@@ -1400,16 +1631,38 @@ function _emptyPreset(): Preset {
 .side-btns { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
 .side-btn { width: 40px; height: 30px; background: var(--surface); border: 1px solid var(--border); border-radius: 9px; display: flex; align-items: center; justify-content: center; }
 .side-btn-text { font-size: 10px; color: var(--fg-soft); font-weight: 500; }
-.input-wrapper { flex: 1; display: flex; align-items: center; gap: 8px; }
+.input-wrapper { flex: 1; display: flex; align-items: center; gap: 8px; position: relative; }
 .chat-input { flex: 1; height: 40px; background: var(--surface); border: 1px solid var(--border); border-radius: 20px; padding: 0 16px; font-size: 13px; color: var(--fg); }
+/* 自动回复期间盖在输入框上的透明层：点一下即退出（disabled 的 input 收不到点击事件） */
+.auto-overlay {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  right: calc(56px + 8px);
+  z-index: 3;
+  border-radius: 20px;
+}
 .send-button {
   width: 56px; height: 40px; border-radius: 20px; display: flex; align-items: center; justify-content: center;
   background: linear-gradient(135deg, var(--accent), var(--accent-strong));
   box-shadow: 0 8px 18px -8px oklch(75% 0.14 80 / 0.6);
 }
-.send-button-disabled { background: var(--raised); box-shadow: none; opacity: .6; }
-.stop-button { background: linear-gradient(135deg, oklch(68% 0.17 26), oklch(56% 0.18 24)); box-shadow: none; }
-.send-text { font-size: 12px; font-weight: 700; color: #171104; }
+/* 玩家没有输入内容时发送键是**黑色**的（用户要求）：保留一圈边框以免整块"消失"在深色背景里 */
+.send-button-disabled {
+  background: #000;
+  border: 1px solid var(--border);
+  box-shadow: none;
+}
 .send-button-disabled .send-text { color: var(--faint); }
+.stop-button { background: linear-gradient(135deg, oklch(68% 0.17 26), oklch(56% 0.18 24)); box-shadow: none; }
+/* 自动回复中：发送键闪烁、文字为"自动" */
+.auto-button {
+  background: linear-gradient(135deg, oklch(72% 0.13 150), oklch(58% 0.13 160));
+  box-shadow: none;
+  animation: autoBlink 1s ease-in-out infinite;
+}
+@keyframes autoBlink { 0%, 100% { opacity: 1; } 50% { opacity: 0.3; } }
+.send-text { font-size: 12px; font-weight: 700; color: #171104; }
 .stop-button .send-text { color: var(--fg); }
 </style>

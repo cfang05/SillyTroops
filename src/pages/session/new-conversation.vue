@@ -327,19 +327,18 @@ async function _refreshConvMeta() {
 
 /**
  * API 状态文案（与设置页同一份配置：scopedKey('ai_model_settings')）
- *   · test   → 内置测试接口，需要账号有测试权限；
- *   · default→ 小程序内置模型，无需 Key；
- *   · 其余   → 必须填了 API Key 才算配置完成。
+ *   · test → 内置测试接口，需要账号有测试权限；
+ *   · 其余 → 必须填了 API Key 才算配置完成。
+ *     （小程序端原来的内置默认模型已下线，不再有"无需 Key 即可用"的选项。）
  */
 function _loadApiState() {
   try {
     const s: any = storage.get(scopedKey('ai_model_settings'))
     let isTest = false
     try { isTest = !!userManager.isTestAccount() } catch (e) { isTest = false }
-    const model = String((s && s.model) || (isTest ? 'test' : 'hunyuan'))
+    const model = String((s && s.model) || (isTest ? 'test' : 'openai'))
     let ok = false
     if (model === 'test') ok = isTest
-    else if (model === 'default') ok = true
     else ok = !!(s && s.apiKey)
     apiLabel.value = ok ? '模型连接正常' : '未配置'
   } catch (e) {

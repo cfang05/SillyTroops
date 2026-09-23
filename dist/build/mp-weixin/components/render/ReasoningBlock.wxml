@@ -1,0 +1,1 @@
+<view class="{{['reason-box', 'data-v-00e7472f', f && 'reason-box-streaming']}}"><view class="reason-head data-v-00e7472f" bindtap="{{c}}"><text class="reason-caret data-v-00e7472f">{{a}}</text><text class="reason-title data-v-00e7472f">{{b}}</text></view><view wx:if="{{d}}" class="reason-body data-v-00e7472f"><text class="reason-text data-v-00e7472f">{{e}}</text></view></view>

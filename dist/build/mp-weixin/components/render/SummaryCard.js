@@ -1,0 +1,1 @@
+"use strict";const e=require("../../common/vendor.js"),t=e.defineComponent({__name:"SummaryCard",props:{content:{}},setup(t){const n=e.ref(!1);function o(){n.value=!n.value}return(t,a)=>e.e({a:e.t(n.value?"收起":"展开"),b:n.value},n.value?{c:e.t(t.content)}:{},{d:e.o(o,"55")})}}),n=e._export_sfc(t,[["__scopeId","data-v-033e7d55"]]);wx.createComponent(n);

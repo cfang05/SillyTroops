@@ -1,0 +1,1 @@
+<view class="branch-selector data-v-0e7e8f62"><view wx:for="{{a}}" wx:for-item="option" wx:key="b" class="branch-option data-v-0e7e8f62" bindtap="{{option.c}}"><text class="branch-option-text data-v-0e7e8f62">{{option.a}}</text></view></view>

@@ -1,0 +1,1 @@
+"use strict";const e=require("./userManager.js");exports.scopedKey=function(r){return"u_"+(e.userManager.getCurrentUserId()||"guest")+"_"+r},exports.scopedKeyFor=function(e,r){return"u_"+(e||"guest")+"_"+r};

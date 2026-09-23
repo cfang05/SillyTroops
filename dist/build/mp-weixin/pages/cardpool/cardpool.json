@@ -1,0 +1,10 @@
+{
+  "navigationStyle": "custom",
+  "backgroundColor": "#1c1712",
+  "backgroundTextStyle": "light",
+  "usingComponents": {
+    "card-detail": "./components/CardDetail",
+    "filter-drawer": "./components/FilterDrawer",
+    "nav-bar": "../../components/common/NavBar"
+  }
+}

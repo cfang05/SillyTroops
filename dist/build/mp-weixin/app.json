@@ -1,0 +1,30 @@
+{
+  "pages": [
+    "pages/brand/brand",
+    "pages/index/index",
+    "pages/login/login",
+    "pages/persona/index",
+    "pages/import/import",
+    "pages/session/session",
+    "pages/session/new-conversation",
+    "pages/collect/collect",
+    "pages/cardpool/cardpool",
+    "pages/settings/settings",
+    "pages/rules/index",
+    "pages/chat/chat",
+    "pages/characters/index",
+    "pages/characters/edit",
+    "pages/presets/index",
+    "pages/presets/edit",
+    "pages/import/regex-edit",
+    "pages/monitor/monitor"
+  ],
+  "window": {
+    "navigationBarBackgroundColor": "#171104",
+    "navigationBarTextStyle": "white",
+    "navigationBarTitleText": "无限旅团",
+    "backgroundColor": "#171104",
+    "backgroundTextStyle": "light"
+  },
+  "usingComponents": {}
+}

@@ -5,6 +5,7 @@ import { defineStore } from 'pinia'
 import { scopedKey } from '../utils/account/userScope.js'
 import { createCachedStore } from '../utils/storage/cachedStore'
 import type { Preset } from '../types/preset'
+import { normalizeAutoReply } from '../types/preset'
 import { createSystemPreset, SYSTEM_PRESET_ID } from '../adapters/preset/defaultPreset'
 
 function STORAGE_KEY() { return scopedKey('llm_presets') }
@@ -24,8 +25,39 @@ const _store = createCachedStore({
   }
 })
 
-export const usePresetStore = defineStore('preset', {
-  state: () => ({
+/**
+ * 补齐 generationParams 的默认值（读取历史预设时调用）。
+ *
+ * 为什么必须在**读取**时补，而不是只在导入时补：
+ *   用户本地已经存着一批"用旧版导入器导入的"预设，它们没有 worldInfoDepth /
+ *   worldInfoRecursive / worldInfoMaxRecursionSteps 等新字段。PromptBuilder 里虽然也有
+ *   兜底默认值，但预设编辑页拿到的是原始对象，不补的话界面显示成空白、一保存又被写回 undefined。
+ *
+ * ⚠️ 世界书三项的默认值必须是**酒馆默认值**（深度 2、不递归），否则"同一个预设"
+ *    在本项目与酒馆会激活不同数量的世界书条目。
+ */
+function normalizePreset(preset: Preset): Preset {
+  const g = (preset.generationParams || {}) as Record<string, any>
+  // 自动回复（长按发送键 3 秒）：老预设没有这个字段，读取时补默认值。
+  // ⚠️ 默认是**打开**的（用户要求开箱即用），默认值口径统一在 normalizeAutoReply 里。
+  const autoReply = normalizeAutoReply((preset as any).autoReply)
+  return {
+    ...preset,
+    autoReply,
+    generationParams: {
+      ...g,
+      worldInfoDepth: typeof g.worldInfoDepth === 'number' && g.worldInfoDepth >= 0 ? g.worldInfoDepth : 2,
+      worldInfoRecursive: typeof g.worldInfoRecursive === 'boolean' ? g.worldInfoRecursive : false,
+      worldInfoMaxRecursionSteps: typeof g.worldInfoMaxRecursionSteps === 'number' && g.worldInfoMaxRecursionSteps >= 0
+        ? g.worldInfoMaxRecursionSteps
+        : 0,
+      worldInfoFormat: typeof g.worldInfoFormat === 'string' ? g.worldInfoFormat : '{0}',
+      customStopStrings: Array.isArray(g.customStopStrings) ? g.customStopStrings.filter((s: any) => typeof s === 'string') : []
+    } as Preset['generationParams']
+  }
+}
+
+export const usePresetStore = defineStore('preset', {  state: () => ({
     presets: [] as Preset[],
     activePresetId: null as string | null
   }),
@@ -38,7 +70,9 @@ export const usePresetStore = defineStore('preset', {
   actions: {
     load() {
       try {
-        this.presets = _store.get(STORAGE_KEY()) || []
+        const raw = _store.get(STORAGE_KEY()) || []
+        // 补齐/修正 generationParams 的默认值（见 normalizePreset 注释）
+        this.presets = Array.isArray(raw) ? raw.filter(Boolean).map(normalizePreset) : []
       } catch (e) {
         console.warn('[presetStore] load 失败:', e)
         this.presets = []
@@ -65,11 +99,13 @@ export const usePresetStore = defineStore('preset', {
     },
 
     save(preset: Preset) {
-      const idx = this.presets.findIndex(p => p.id === preset.id)
+      // 落盘前同样补默认值，保证 _persist 写出去的永远是"字段齐全"的预设
+      const normalized = normalizePreset(preset)
+      const idx = this.presets.findIndex(p => p.id === normalized.id)
       if (idx >= 0) {
-        this.presets[idx] = preset
+        this.presets[idx] = normalized
       } else {
-        this.presets.push(preset)
+        this.presets.push(normalized)
       }
       this._persist()
     },

@@ -1,0 +1,8 @@
+{
+  "navigationStyle": "custom",
+  "backgroundColor": "#1c1712",
+  "usingComponents": {
+    "nav-bar": "../../components/common/NavBar",
+    "dialog-shell": "../../components/common/DialogShell"
+  }
+}

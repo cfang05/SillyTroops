@@ -1,0 +1,10 @@
+{
+  "component": true,
+  "usingComponents": {
+    "branch-selector": "./BranchSelector",
+    "summary-card": "./SummaryCard",
+    "time-card": "./TimeCard",
+    "fallback-text": "./FallbackText",
+    "rich-text": "./RichText"
+  }
+}

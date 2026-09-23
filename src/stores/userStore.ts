@@ -14,7 +14,15 @@ export interface UserInfo {
   avatar: string
   isAdmin: boolean
   isTest: boolean
-  createdAt: number
+  /**
+   * 账号创建时间。
+   *
+   * ⚠️ 声明为可选：`userManager.getCurrentUser()` 的返回**并不保证带这个字段**
+   * （老服务端的 /api/auth/me 不返回它），而它在全项目里也没有任何读取点
+   * （仅此一处声明）。之前写成必填，导致 `this.currentUser = userManager.getCurrentUser()`
+   * 一直报 TS2741 —— 那是**类型定义过严**，不是运行时 bug。
+   */
+  createdAt?: number
   // 等级/经验：服务端权威（跨设备同步 + 评论里显示他人等级要用）。
   // 老服务端不返回时为 undefined，此时以本地 user_level_{id} 缓存为准。
   level?: number

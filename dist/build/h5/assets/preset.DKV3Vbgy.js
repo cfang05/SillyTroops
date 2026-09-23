@@ -1,0 +1,1 @@
+const t="继续";function e(t){const e=t&&"object"==typeof t?t:{};return{enabled:!1!==e.enabled,useCustomText:!1!==e.useCustomText,customText:"string"==typeof e.customText?e.customText:"继续"}}export{t as D,e as n};

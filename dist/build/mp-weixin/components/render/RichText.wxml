@@ -1,0 +1,1 @@
+<text class="{{['data-v-c32df8f9', b]}}"><text wx:for="{{a}}" wx:for-item="seg" wx:key="b" class="{{['data-v-c32df8f9', seg.c && 'rich-bold', seg.d && 'rich-italic', seg.e && 'rich-strike', seg.f && 'rich-code']}}">{{seg.a}}</text></text>

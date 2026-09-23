@@ -1,0 +1,1 @@
+"use strict";const e=require("../../common/vendor.js"),t=e.defineComponent({__name:"FallbackText",props:{content:{}},setup:t=>(t,n)=>({a:e.t(t.content)})}),n=e._export_sfc(t,[["__scopeId","data-v-72a96969"]]);wx.createComponent(n);

@@ -1,6 +1,6 @@
 <template>
   <view class="container">
-    <NavBar title="模型设置" subtitle="配置 AI 模型参数" />
+    <NavBar title="设置" subtitle="模型 / 显示 / 数据 与备份" />
 
     <scroll-view class="content" scroll-y="true" :style="{ paddingTop: (navBarHeight + 16) + 'px' }">
       <view class="section info-section">
@@ -11,7 +11,7 @@
           <view class="info-text">
             <text class="info-title">使用说明</text>
             <!-- #ifdef MP-WEIXIN -->
-            <text class="info-desc">如果不配置API，将使用小程序内置的腾讯混元模型。配置后将优先使用您的API进行内容生成。</text>
+            <text class="info-desc">小程序端的内置默认模型已失效下线，请选择一种模型并填写对应的 API Key 后再开始对话。</text>
             <!-- #endif -->
             <!-- #ifndef MP-WEIXIN -->
             <text class="info-desc">测试账号（含 admin）可直接使用内置测试 API；其他账号请填写 API Key（支持 DeepSeek 等 OpenAI 兼容接口）再开始对话。</text>
@@ -41,7 +41,7 @@
         </view>
       </view>
 
-      <view class="section" v-if="currentModel !== 'default' && currentModel !== 'test'" >
+      <view class="section" v-if="currentModel !== 'test'" >
         <text class="section-title">API配置</text>
 
         <view class="form-item">
@@ -60,7 +60,7 @@
           </view>
         </view>
 
-        <view class="form-item" v-if="currentModel === 'openai' || currentModel === 'custom' || currentModel === 'hunyuan'">
+        <view class="form-item" v-if="currentModel === 'openai' || currentModel === 'custom'">
           <text class="label">API URL</text>
           <input
             class="input"
@@ -98,23 +98,6 @@
         <text class="section-subtitle">「测试 API（内置）」需要管理员开通测试权限后才会出现在上方列表；开通后重新进入本页即可选择。你也可以直接填写自己的 API Key 使用其他模型。</text>
       </view>
 
-      <!-- 渲染开关 -->
-      <view class="section">
-        <text class="section-title">渲染开关</text>
-        <text class="section-subtitle">控制 AI 回复中特殊标签是否渲染为交互组件</text>
-        <view class="switch-item" v-for="item in rendererSwitches" :key="item.key">
-          <text class="switch-label">{{ item.label }}</text>
-          <switch :checked="pluginRenderers[item.key]" @change="onToggleRenderer(item.key, $event)" color="#c9a84a" :disabled="item.key === 'html' && isMpWeixin" />
-        </view>
-      </view>
-
-      <!-- 上下文详情（P3.4 / D14）：入口藏在这里，不占用聊天主界面 -->
-      <view class="section">
-        <text class="section-title">上下文详情</text>
-        <text class="section-subtitle">查看最近几次请求实际发送了什么、各段占多少 token、有没有省略历史</text>
-        <button class="btn-secondary" @tap="showContextInspector = true">打开上下文详情</button>
-      </view>
-
       <!-- 自定义 CSS（P4.3 / D2）：正侧产出 class，这里决定外观 -->
       <view class="section">
         <text class="section-title">自定义 CSS</text>
@@ -131,22 +114,32 @@
         </view>
       </view>
 
-      <!-- 流式输出（本轮新增）：控制"逐字释放"的节奏 -->
+      <!-- 流式输出（改版）：去掉"平滑输出"开关，只留一个 10~100 的显示速度滑条。
+           最左 10 = 最慢；最右 100 = 全速（等价于关闭平滑输出，完全跟上游速度）。每次只能调整 5。 -->
       <view class="section">
         <text class="section-title">流式输出</text>
-        <text class="section-subtitle">开启平滑输出后，即使模型是真流式，界面也会按下面的速度逐字显示；关掉则完全跟上游速度（高速模型会一屏字瞬间涌出）</text>
-        <view class="switch-item">
-          <text class="switch-label">平滑输出（限制显示速度）</text>
-          <switch :checked="pacingCfg.enabled" @change="onTogglePacing" color="#c9a84a" />
-        </view>
+        <text class="section-subtitle">控制文字"逐字释放"的速度。滑到最右侧 100 为全速：不限制显示速度，完全跟上游速度（高速模型会一屏字瞬间涌出）</text>
         <view class="form-item">
-          <text class="label">显示速度（字/秒）</text>
-          <input class="input" type="number" :value="String(pacingCfg.charsPerSec)" @input="onPacingRateInput" />
-        </view>
-        <view class="quick-preset-row">
-          <button class="btn-secondary quick-btn" @tap="onPacingPreset(40)">慢 40</button>
-          <button class="btn-secondary quick-btn" @tap="onPacingPreset(80)">中 80</button>
-          <button class="btn-secondary quick-btn" @tap="onPacingPreset(160)">快 160</button>
+          <view class="pacing-head">
+            <text class="label">显示速度</text>
+            <text class="pacing-value">{{ pacingLabel }}</text>
+          </view>
+          <slider
+            class="pacing-slider"
+            :value="pacingCfg.charsPerSec"
+            :min="PACING_MIN"
+            :max="PACING_FULL_SPEED"
+            :step="PACING_STEP"
+            :show-value="false"
+            activeColor="#c9a84a"
+            backgroundColor="#3a332a"
+            block-size="20"
+            @change="onPacingRateChange"
+          />
+          <view class="pacing-scale">
+            <text class="pacing-scale-text">慢 {{ PACING_MIN }}</text>
+            <text class="pacing-scale-text">全速 {{ PACING_FULL_SPEED }}</text>
+          </view>
         </view>
       </view>
 
@@ -169,32 +162,24 @@
         <text class="section-subtitle">打开后自动识别正文里的思考定界符（无需配置）：命中就把这段内容从正文移除、放进上面的「思考过程」折叠块；折叠块里会同时显示上游思考与这里切出来的思考，点标题可收起/展开。支持的定界符：{{ reasoningDelimiterHint }}</text>
       </view>
 
-      <!-- 数据与存储（P5.4 / D8）：对话存档已改用 IndexedDB，这里看用量与做备份 -->
+      <!-- 上下文详情（P3.4 / D14）：诊断类入口，和"数据与存储"一起放到页面靠后位置，
+           不占用模型/显示这些日常要改的设置的位置。 -->
+      <view class="section">
+        <text class="section-title">上下文详情</text>
+        <text class="section-subtitle">查看最近几次请求实际发送了什么、各段占多少 token、有没有省略历史</text>
+        <button class="btn-secondary" @tap="showContextInspector = true">打开上下文详情</button>
+      </view>
+
+      <!-- 数据与存储（P5.4 / D8）：对话存档在 IndexedDB，这里只留"导入 / 导出备份"两个按键。
+           持久化存储改为进页面时自动申请（见 onLoad 的 _autoRequestPersist），不再需要用户点。 -->
       <view class="section">
         <text class="section-title">数据与存储</text>
         <text class="section-subtitle">对话存档已改用 IndexedDB（容量更大、写入不阻塞界面）；本地数据可能被浏览器清理，建议定期导出备份</text>
         <text class="storage-line">已用空间：{{ storageUsageText }}</text>
-        <text class="storage-line">持久化存储：{{ storagePersisted ? '已启用' : '未启用' }}</text>
-        <view class="quick-preset-row">
-          <button class="btn-secondary quick-btn" @tap="onRequestPersist">申请持久化</button>
-          <button class="btn-primary quick-btn" @tap="onExportBackup">导出备份</button>
-        </view>
+        <text class="storage-line">持久化存储：{{ storagePersisted ? '已启用' : '未启用（已自动申请，浏览器未授予）' }}</text>
         <view class="quick-preset-row">
           <button class="btn-secondary quick-btn" @tap="onImportBackup">导入备份</button>
-        </view>
-      </view>
-
-      <!-- 功能模块开关 -->
-      <view class="section">
-        <text class="section-title">功能模块</text>
-        <text class="section-subtitle">开启后在对话页显示对应的 TRPG 游戏机制面板</text>
-        <view class="switch-item" v-for="item in moduleSwitches" :key="item.key">
-          <text class="switch-label">{{ item.label }}</text>
-          <switch :checked="moduleFlags[item.key]" @change="onToggleModule(item.key, $event)" color="#c9a84a" />
-        </view>
-        <view class="quick-preset-row">
-          <button class="btn-secondary quick-btn" @tap="onApplyModulePreset('chat')">自由聊天模式</button>
-          <button class="btn-secondary quick-btn" @tap="onApplyModulePreset('trpg')">TRPG 模式</button>
+          <button class="btn-primary quick-btn" @tap="onExportBackup">导出备份</button>
         </view>
       </view>
 
@@ -204,7 +189,7 @@
         <text class="section-subtitle">定时注入的全局提示，用于强调设定 / 风格 / 状态（对齐酒馆 Author's Note）</text>
         <view class="form-item">
           <text class="label">作者注内容</text>
-          <textarea class="input textarea" placeholder="例如：{{char}} 正保持谨慎，注意周围环境…" :value="noteConfig.prompt" @input="onNotePromptInput" maxlength="2000" />
+          <textarea class="input textarea" placeholder="例如：{{char}} 正保持谨慎，注意周围环境…" :value="noteConfig.promptText" @input="onNotePromptInput" maxlength="2000" />
         </view>
         <view class="form-item">
           <text class="label">注入频率（每 N 条用户消息）</text>
@@ -227,16 +212,22 @@
           </view>
         </view>
       </view>
-      <!-- 全局正则（正侧）：对齐酒馆 GLOBAL 类型正则脚本来源，跨角色/跨预设一直生效 -->
+      <!-- 渲染开关（用户要求：折叠 + 下移到页面靠后位置）
+           只保留真正生效的四项；原来的"音乐播放器"是死开关（代码里没有任何地方读取它），已删除。 -->
       <view class="section">
-        <text class="section-title">全局正则（正侧）</text>
-        <text class="section-subtitle">勾选"全局"的正侧文件会跨角色/跨预设一直生效，和角色卡自带、预设自带的正则合并执行，互不覆盖</text>
-        <view v-if="regexPresets.length === 0" class="empty-hint">
-          <text>暂无已导入的正侧文件，请到"酒馆导入"页导入</text>
+        <view class="section-header" @tap="renderersExpanded = !renderersExpanded">
+          <text class="section-title">渲染开关</text>
+          <text class="collapse-arrow">{{ renderersExpanded ? '▲ 收起' : '▼ 展开' }}</text>
         </view>
-        <view class="switch-item" v-for="rp in regexPresets" :key="rp.id">
-          <text class="switch-label">{{ rp.fileName || rp.name }}（{{ rp.scripts.length }} 条）</text>
-          <switch :checked="!!rp.enabledGlobal" @change="onToggleGlobalRegex(rp.id, $event)" color="#c9a84a" />
+        <text class="section-subtitle">控制 AI 回复中特殊标签是否渲染为交互组件（默认收起）</text>
+        <view v-if="renderersExpanded">
+          <view class="switch-item" v-for="item in rendererSwitches" :key="item.key">
+            <view class="switch-text">
+              <text class="switch-label">{{ item.label }}</text>
+              <text class="switch-desc">{{ item.desc }}</text>
+            </view>
+            <switch :checked="pluginRenderers[item.key]" @change="onToggleRenderer(item.key, $event)" color="#c9a84a" :disabled="item.key === 'html' && isMpWeixin" />
+          </view>
         </view>
       </view>
 
@@ -258,10 +249,7 @@ import storage from '../../utils/storage.js'
 import { scopedKey } from '../../utils/account/userScope.js'
 import userManager from '../../utils/account/userManager.js'
 import { usePluginStore } from '../../stores/pluginStore'
-import { useModuleStore } from '../../stores/moduleStore'
-import { useCharacterCardStore } from '../../stores/characterCardStore'
 import { useNoteStore } from '../../stores/noteStore'
-import { useRegexPresetStore } from '../../stores/regexPresetStore'
 import { getNavBarHeight } from '../../utils/navbar.js'
 import { getTestApiConfig } from '../../utils/llm/client.js'
 import NavBar from '../../components/common/NavBar.vue'
@@ -269,7 +257,7 @@ import ContextInspector from '../../components/render/ContextInspector.vue'
 import { loadCustomCss, saveCustomCss, initCustomCss } from '../../utils/customCss'
 import { exportBackup, pickBackupFile, restoreBackup } from '../../services/backupService'
 import { loadReasoningConfig, saveReasoningConfig, REASONING_DELIMITERS } from '../../engine/ReasoningHandler'
-import { loadPacingConfig, savePacingConfig } from '../../utils/streamPacing'
+import { loadPacingConfig, savePacingConfig, PACING_MIN, PACING_FULL_SPEED, PACING_STEP } from '../../utils/streamPacing'
 
 // LLM 配置改为按当前用户隔离存储（原全局 STORAGE_KEYS.LLM_CONFIG 键名不变，但加上用户前缀）
 function llmConfigKey() {
@@ -289,10 +277,19 @@ export default {
       if (!u || !u.quota) return '（当前环境不支持查询）'
       const mb = (n) => (n / 1024 / 1024).toFixed(1)
       return `${mb(u.usage)} MB / ${mb(u.quota)} MB`
+    },
+    /** 流式速度文案：最右侧 = 全速（等价于关闭平滑输出） */
+    pacingLabel() {
+      const r = this.pacingCfg.charsPerSec
+      return r >= PACING_FULL_SPEED ? '全速（不限速）' : `${r} 字/秒`
     }
   },
   data() {
     return {
+      // 滑条的边界常量（模板里用，避免魔法数字散落）
+      PACING_MIN,
+      PACING_FULL_SPEED,
+      PACING_STEP,
       navBarHeight: 0,
       // 上下文详情弹窗（P3.4 / D14）
       showContextInspector: false,
@@ -304,37 +301,28 @@ export default {
       // 思考内容（P6.6 / P6.4）
       thinkingEnabled: false,
       reasoningCfg: { enabled: false },
-      // 流式输出节奏（本轮新增）
+      // 流式输出节奏：10~100，100 = 全速
       pacingCfg: { enabled: true, charsPerSec: 80 },
       modelList: [],
       currentModel: '',
+      /** 没有测试权限、也没选过模型时的回落项（按平台不同） */
+      fallbackModel: 'openai',
       apiKey: '',
       apiUrl: '',
       modelName: '',
       showApiKey: false,
       isTestAccount: false,
-      // 渲染开关
-      pluginRenderers: { branch: true, summary: true, time: true, html: false, music: false },
+      // 渲染开关（默认收起，见模板里的 renderersExpanded）
+      renderersExpanded: false,
+      pluginRenderers: { branch: true, summary: true, time: true, html: false },
       rendererSwitches: [
-        { key: 'branch', label: '选项按钮（branches）' },
-        { key: 'summary', label: '摘要卡片（meow_FM）' },
-        { key: 'time', label: '时间卡片（time_format）' },
-        { key: 'html', label: '自定义 HTML（仅 H5）' },
-        { key: 'music', label: '音乐播放器' }
+        { key: 'branch', label: '选项按钮（branches）', desc: 'AI 给出 <branches>A.… B.…</branches> 时渲染成可点按钮，点一下即作为你的发言发送' },
+        { key: 'summary', label: '摘要卡片（meow_FM）', desc: 'AI 输出 <meow_FM>…</meow_FM> 时渲染成摘要卡片；关闭则按纯文本显示' },
+        { key: 'time', label: '时间卡片（time_format）', desc: 'AI 输出 <time_format date="…" time="…" scene="…"/> 时渲染成时间卡片' },
+        { key: 'html', label: '自定义 HTML（仅 H5）', desc: '把 ```html 代码块用 iframe 渲染出来，默认关闭（有安全与性能风险）' }
       ],
-      // 模块开关（字段与 TrpgModules 对齐，默认全关）
-      moduleFlags: { intentDetection: false, combat: false, inventory: false, characterStatus: false, dicePanel: false, stats: false, adventure: false },
-      moduleSwitches: [
-        { key: 'intentDetection', label: '意图识别' },
-        { key: 'combat', label: '战斗面板' },
-        { key: 'inventory', label: '背包系统' },
-        { key: 'characterStatus', label: '角色属性面板' },
-        { key: 'dicePanel', label: '骰子快捷栏' },
-        { key: 'stats', label: '数值系统' },
-        { key: 'adventure', label: '任务/剧情' }
-      ],
-      // 作者注
-      noteConfig: { prompt: '', interval: 1, depth: 4, position: 1, role: 'system' },
+      // 作者注（字段名与 types/note.ts 的 AuthorsNoteConfig 对齐：promptText / interval）
+      noteConfig: { promptText: '', interval: 1, depth: 4, position: 1, role: 'system' },
       notePositions: [
         { value: 0, label: '场景后(IN_PROMPT)' },
         { value: 1, label: '历史深处(IN_CHAT)' },
@@ -348,9 +336,7 @@ export default {
       isMpWeixin: false,
       // 内置测试通道的公开信息（无密钥）：可用性与展示名都来自服务端，
       // 这样官方调整模型名时只需改服务端变量，前端无需改代码/重新发版
-      testApiInfo: { enabled: false, label: '' },
-      // 全局正则（正侧）
-      regexPresets: []
+      testApiInfo: { enabled: false, label: '' }
     }
   },
 
@@ -364,18 +350,17 @@ export default {
     // 新账号注册时默认没有测试权限，用户"等管理员开权限"期间不必重新登录/清缓存。
     this._refreshTestPermission()
     this._loadTestApiInfo()
-    this._initPluginAndModuleStores()
+    this._initPluginStore()
     this._initNoteStore()
-    this._initRegexPresetStore()
     // 自定义 CSS（P4.3 / D2）：载入用户样式并确保默认样式已注入
     this.customCss = loadCustomCss()
     initCustomCss()
-    // 数据与存储信息（P5.4）
-    this._loadStorageInfo()
+    // 数据与存储信息（P5.4）：读取用量后自动申请持久化（不再需要用户手点按钮）
+    this._loadStorageInfo().then(() => this._autoRequestPersist())
     // 思考内容（P6.6 / P6.4）
     this.thinkingEnabled = storage.get(scopedKey('ai_thinking_enabled')) === true
     this.reasoningCfg = loadReasoningConfig()
-    // 流式输出节奏（本轮新增）
+    // 流式输出节奏：读取时归一化（老配置里"平滑输出关闭"等价于全速 100）
     this.pacingCfg = loadPacingConfig()
     // #ifdef MP-WEIXIN
     this.isMpWeixin = true
@@ -383,22 +368,14 @@ export default {
   },
 
   methods: {
-    /** 平滑输出开关（本轮新增）：真流式下也按速率逐字释放，避免"疯狂涌出" */
-    onTogglePacing(e) {
-      const on = !!(e && e.detail && e.detail.value)
-      this.pacingCfg = { ...this.pacingCfg, enabled: on }
-      savePacingConfig(this.pacingCfg)
-      uni.showToast({ title: on ? '已开启平滑输出' : '已关闭（完全跟上游速度）', icon: 'none', duration: 2500 })
-    },
-    onPacingRateInput(e) {
+    /**
+     * 显示速度滑条（改版）：10~100，步进 5。
+     * 100 = 全速（等价于原来的"关闭平滑输出"），因此 enabled 由速率派生，不再单独存开关。
+     */
+    onPacingRateChange(e) {
       const v = Number(e && e.detail && e.detail.value)
-      this.pacingCfg = { ...this.pacingCfg, charsPerSec: Number.isFinite(v) && v > 0 ? v : 80 }
+      this.pacingCfg = { enabled: v < PACING_FULL_SPEED, charsPerSec: v }
       savePacingConfig(this.pacingCfg)
-    },
-    onPacingPreset(rate) {
-      this.pacingCfg = { enabled: true, charsPerSec: rate }
-      savePacingConfig(this.pacingCfg)
-      uni.showToast({ title: `已设为 ${rate} 字/秒`, icon: 'none' })
     },
 
     /** 启用/关闭模型思考（P6.6）：默认关（省 token、降首字延迟） */
@@ -431,20 +408,22 @@ export default {
         }
       } catch (e) { /* 忽略：不支持的端就不显示 */ }
     },
-    /** 申请持久化存储：避免浏览器在磁盘紧张时清理用户数据 */
-    async onRequestPersist() {
+    /**
+     * 自动申请持久化存储（用户要求：这件事默认自动做，不再放按键）
+     *
+     * 只做一次静默申请：浏览器授予就更新状态，不授予（隐私模式 / 已拒绝）也不弹窗打扰，
+     * 页面上的「持久化存储」一行会如实显示结果。
+     */
+    async _autoRequestPersist() {
       try {
         const s = (typeof navigator !== 'undefined' && navigator.storage) || null
-        if (!s || typeof s.persist !== 'function') {
-          uni.showToast({ title: '当前环境不支持该能力', icon: 'none' })
+        if (!s || typeof s.persist !== 'function') return
+        if (typeof s.persisted === 'function' && await s.persisted()) {
+          this.storagePersisted = true
           return
         }
-        const ok = await s.persist()
-        this.storagePersisted = !!ok
-        uni.showToast({ title: ok ? '已启用持久化存储' : '浏览器未授予（可能已在隐私模式）', icon: 'none', duration: 3000 })
-      } catch (e) {
-        uni.showToast({ title: '申请失败', icon: 'none' })
-      }
+        this.storagePersisted = !!(await s.persist())
+      } catch (e) { /* 静默：申请失败不影响设置页任何功能 */ }
     },
     /** 导出备份（P5.4）：H5 直接下载 JSON；其它端复制到剪贴板 */
     async onExportBackup() {
@@ -516,19 +495,21 @@ export default {
 
     _initModelList() {
       this.isTestAccount = userManager.isTestAccount()
+      // 没有测试权限、也没选过模型时的回落项：所有端都回落到需要自配 Key 的 OpenAI GPT。
+      // （小程序端原来的「默认模型」走的是内置云开发通道，该通道已失效，按要求一并删除。）
+      this.fallbackModel = 'openai'
       // #ifdef MP-WEIXIN
       this.modelList = [
-        { id: 'default', name: '默认模型', desc: '使用小程序内置的腾讯混元模型' },
-        { id: 'hunyuan', name: '腾讯混元', desc: '腾讯自研的大语言模型（需要API Key）' },
         { id: 'openai', name: 'OpenAI GPT', desc: 'GPT系列模型（需要API Key）' },
         { id: 'claude', name: 'Claude', desc: 'Anthropic的Claude系列（需要API Key）' },
         { id: 'custom', name: '自定义API', desc: '使用自己的API接口' }
       ]
-      this.currentModel = 'default'
+      this.currentModel = this.fallbackModel
       // #endif
       // #ifndef MP-WEIXIN
+      // 腾讯混元已按要求下线：它的接口按 OpenAI 兼容格式调用，与「OpenAI GPT / 自定义API」重复，
+      // 留着只会让用户在四个几乎一样的选项里纠结。
       this.modelList = [
-        { id: 'hunyuan', name: '腾讯混元', desc: '腾讯自研的大语言模型（需要API Key）' },
         { id: 'openai', name: 'OpenAI GPT', desc: 'GPT系列模型（需要API Key）' },
         { id: 'claude', name: 'Claude', desc: 'Anthropic的Claude系列（需要API Key）' },
         { id: 'custom', name: '自定义API', desc: '使用自己的API接口' }
@@ -537,30 +518,37 @@ export default {
       if (this.isTestAccount) {
         this.modelList.push({ id: 'test', name: '测试 API（内置）', desc: '使用内置 DeepSeek 测试接口，无需配置 Key' })
       }
-      this.currentModel = this.isTestAccount ? 'test' : 'hunyuan'
+      this.currentModel = this.isTestAccount ? 'test' : this.fallbackModel
       // #endif
+    },
+
+    /**
+     * 把任意来源（本地存档 / 旧配置）的模型 id 归一到"当前列表里真实存在的一项"
+     *
+     * 需要它的原因：
+     *   · 腾讯混元、小程序端「默认模型」两个选项都已下线，但老用户本地还存着
+     *     model='hunyuan' / 'default'；原样使用的话模型列表里没有任何一项是选中态，
+     *     用户会以为设置页坏了。
+     *   · 'test' 只对测试账号且只在该端支持时才存在于列表里（小程序端没有内置测试通道）。
+     */
+    _normalizeModelId(id) {
+      const has = (mid) => this.modelList.some(x => x.id === mid)
+      let m = (id === 'hunyuan' || id === 'default') ? this.fallbackModel : id
+      if (m === 'test' && !has('test')) m = this.fallbackModel
+      if (!m || !has(m)) m = has('test') ? 'test' : this.fallbackModel
+      return m
     },
 
     loadSettings() {
       try {
         const settings = storage.get(llmConfigKey())
         if (settings) {
-          // #ifdef MP-WEIXIN
-          // 小程序端不支持内置测试 API（没有 /api 代理，Key 也无法放在服务端），
-          // 若本地残留 model='test' 则回落到默认模型，避免对话页一直报「不支持」
-          this.currentModel = (settings.model && settings.model !== 'test') ? settings.model : 'default'
-          // #endif
-          // #ifndef MP-WEIXIN
-          // 本地残留 model='test' 但当前账号没有测试权限（管理员刚关掉、或本机换过账号）时，
-          // 回落到需要自配 Key 的模型：否则设置页会显示"已使用内置测试接口"，
-          // 而真正发请求时被 client.js 的权限兜底拒绝，用户只看到一句报错、不知道是权限问题。
-          this.currentModel = (settings.model === 'test' && !this.isTestAccount)
-            ? 'hunyuan'
-            : (settings.model || (this.isTestAccount ? 'test' : 'hunyuan'))
-          // #endif
+          this.currentModel = this._normalizeModelId(settings.model)
           this.apiKey = settings.apiKey || ''
           this.apiUrl = settings.apiUrl || ''
           this.modelName = settings.modelName || ''
+        } else {
+          this.currentModel = this._normalizeModelId('')
         }
       } catch (error) {
         console.error('加载设置失败:', error)
@@ -605,8 +593,8 @@ export default {
         return
       }
 
-      // 测试模型走内置 Key，无需用户填 Key
-      if (currentModel !== 'default' && currentModel !== 'test' && !apiKey) {
+      // 测试模型走内置 Key，无需用户填 Key（其余选项一律需要自配 Key）
+      if (currentModel !== 'test' && !apiKey) {
         uni.showToast({ title: '请输入API Key', icon: 'none' })
         return
       }
@@ -642,12 +630,7 @@ export default {
           if (res.confirm) {
             try {
               storage.remove(llmConfigKey())
-              // #ifdef MP-WEIXIN
-              this.currentModel = 'default'
-              // #endif
-              // #ifndef MP-WEIXIN
-              this.currentModel = this.isTestAccount ? 'test' : 'hunyuan'
-              // #endif
+              this.currentModel = this._normalizeModelId('')
               this.apiKey = ''
               this.apiUrl = ''
               this.modelName = ''
@@ -662,45 +645,24 @@ export default {
 
     onShareAppMessage() {
       return {
-        title: '无限旅团 - 模型设置',
+        title: '无限旅团 - 设置',
         path: '/pages/index/index'
       }
     },
 
-    // ── 渲染开关 / 功能模块开关（Sprint 6.8） ──────────────────
-    _initPluginAndModuleStores() {
+    // ── 渲染开关（Sprint 6.8）──────────────────────────────────
+    _initPluginStore() {
       try {
         this._pluginStore = usePluginStore()
         this._pluginStore.load()
         this.pluginRenderers = { ...this._pluginStore.renderers }
       } catch (e) { console.warn('[Settings] pluginStore 初始化失败:', e) }
-
-      try {
-        // 先加载角色卡库，使 moduleStore（卡片投影）有"当前卡"可读写
-        useCharacterCardStore().loadAll()
-        this._moduleStore = useModuleStore()
-        this._moduleStore.load()
-        this.moduleFlags = { ...this._moduleStore.modules }
-      } catch (e) { console.warn('[Settings] moduleStore 初始化失败:', e) }
     },
 
     onToggleRenderer(key, e) {
       if (!this._pluginStore) return
       this._pluginStore.toggle(key)
       this.pluginRenderers = { ...this._pluginStore.renderers }
-    },
-
-    onToggleModule(key, e) {
-      if (!this._moduleStore) return
-      this._moduleStore.toggle(key)
-      this.moduleFlags = { ...this._moduleStore.modules }
-    },
-
-    onApplyModulePreset(profile) {
-      if (!this._moduleStore) return
-      this._moduleStore.applyPreset(profile)
-      this.moduleFlags = { ...this._moduleStore.modules }
-      uni.showToast({ title: profile === 'trpg' ? '已切换为 TRPG 模式' : '已切换为自由聊天模式', icon: 'none' })
     },
 
     // ── 作者注 ────────────────────────────────────────────────
@@ -713,7 +675,7 @@ export default {
     },
 
     onNotePromptInput(e) {
-      this.noteConfig.prompt = e.detail.value
+      this.noteConfig.promptText = e.detail.value
     },
     onNoteIntervalInput(e) {
       const n = parseInt(e.detail.value, 10)
@@ -728,23 +690,6 @@ export default {
     },
     onNoteRole(v) {
       this.noteConfig.role = v
-    },
-
-    // ── 全局正则（正侧）：对齐酒馆 GLOBAL 类型来源 ─────────────────
-    _initRegexPresetStore() {
-      try {
-        this._regexPresetStore = useRegexPresetStore()
-        this._regexPresetStore.load()
-        this.regexPresets = [...this._regexPresetStore.presets]
-      } catch (e) { console.warn('[Settings] regexPresetStore 初始化失败:', e) }
-    },
-
-    onToggleGlobalRegex(id, e) {
-      if (!this._regexPresetStore) return
-      const enabled = !!e.detail.value
-      this._regexPresetStore.toggleGlobal(id, enabled)
-      this.regexPresets = [...this._regexPresetStore.presets]
-      uni.showToast({ title: enabled ? '已设为全局正则' : '已取消全局正则', icon: 'none' })
     }
   }
 }
@@ -1038,6 +983,58 @@ export default {
 .switch-label {
   font-size: 22rpx;
   color: var(--fg-soft);
+}
+
+/* 渲染开关（折叠区块）：标题行 + 每一项的两行说明 */
+.section-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.section-header .section-title { margin-bottom: 0; }
+.collapse-arrow {
+  font-size: 21rpx;
+  color: var(--faint);
+  flex-shrink: 0;
+  padding-left: 16rpx;
+}
+.switch-text {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4rpx;
+  padding-right: 16rpx;
+}
+.switch-desc {
+  font-size: 18rpx;
+  color: var(--faint);
+  line-height: 1.45;
+}
+
+/* 流式输出速度滑条 */
+.pacing-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+.pacing-value {
+  font-family: var(--font-mono);
+  font-size: 22rpx;
+  font-weight: 700;
+  color: var(--accent);
+}
+.pacing-slider { margin: 6rpx 0 0; }
+.pacing-scale {
+  display: flex;
+  justify-content: space-between;
+  margin-top: -6rpx;
+}
+.pacing-scale-text {
+  font-family: var(--font-mono);
+  font-size: 17rpx;
+  color: var(--faint);
+  letter-spacing: 0.04em;
 }
 
 .quick-preset-row {

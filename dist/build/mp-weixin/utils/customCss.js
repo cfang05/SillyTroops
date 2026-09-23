@@ -1,0 +1,1 @@
+"use strict";const t=require("./storage.js"),s=require("./account/userScope.js");function r(){return s.scopedKey("custom_css")}exports.loadCustomCss=function(){try{const s=t.storage.get(r());return"string"==typeof s?s:""}catch(s){return""}},exports.saveCustomCss=function(s){try{return t.storage.set(r(),s||""),!0}catch(e){return console.warn("[customCss] 保存失败:",e),!1}};
