@@ -453,11 +453,40 @@ page {
       并居中，任何视口宽度下都与画布左右边缘重合，亮金色。
    对应 brand-spec.md §4b。
    ============================================================ */
-html, body {
+/* ⚠️⚠️ 别把 overflow-x 加回 html 上 —— 这是踩过的坑（2026-09 定位，花了两轮）⚠️⚠️
+   ────────────────────────────────────────────────────────────────
+   html 上只要有**任何非 visible 的 overflow**，按 CSS 规范 body 的 overflow 就**不再传播给视口**，
+   而是让 body 自己变成一个滚动容器。本项目里：
+     html / body 都是 height:100%，#app / uni-app / uni-page / uni-page-wrapper 也都是 height:100%，
+     真正会溢出的是 uni-page-body（它没有 height:100%，随内容长高），
+     于是溢出被最近的滚动容器吸收 —— 而那个容器就是 body。
+   一旦滚动容器变成 document.body，下面三件事会**同时**坏掉，且症状都很"莫名其妙"：
+     ① uni.pageScrollTo 失效并且**方向相反**：uni 的实现是按 documentElement 钳制的
+        （html 自己不溢出 → scrollHeight - clientHeight = 0），再把算出来的 0
+        同时写给 documentElement 和 body → 「滚到底部」实际变成「**滚到最顶部**」；
+     ② onPageScroll 回调恒为 0（uni 传的是 window.pageYOffset，视口没滚自然恒 0）
+        → 所有依赖它的逻辑失效，而且**用户往上滑也检测不到**；
+     ③ onReachBottom 同样失效（它用 documentElement.scrollHeight + window.scrollY 判断）。
+   正确写法：html 什么都不设（保持 overflow: visible），只把 overflow-x 放在 **body** 上。
+   这样 body 的 overflow 会传播给视口（水平溢出照样裁掉、滚动条照样隐藏），
+   而 body 自己的 used overflow 变回 visible → 滚动权回到**视口** → 上面三个 API 全部恢复正常。
+   自检（浏览器 Console）：
+     document.documentElement.scrollHeight - document.documentElement.clientHeight  // 应 > 0
+     document.body.scrollTop                                                        // 应恒为 0
+     window.scrollY                                                                 // 才应该是真实滚动位置
+   ──────────────────────────────────────────────────────────────── */
+html {
   background: oklch(9% 0.006 70);
-  overflow-x: hidden;
-  scrollbar-width: none;      /* Firefox：隐藏滚动条，避免其占用右侧宽度 */
+  scrollbar-width: none;      /* Firefox：隐藏**视口**滚动条，避免其占用右侧宽度 */
   -ms-overflow-style: none;   /* 旧版 Edge / IE */
+}
+
+body {
+  background: oklch(9% 0.006 70);
+  /* 只留在 body 上：它会被传播给视口（裁掉水平溢出），但不会让 body 变成滚动容器 */
+  overflow-x: hidden;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
 }
 
 /* 隐藏页面滚动条（Chromium：Chrome / Edge / Safari）。

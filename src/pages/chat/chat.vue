@@ -216,22 +216,22 @@ onShow(() => {
   if (_bootCompleted) _pinToBottom([0, 120])
 })
 
-// ── 视口滚动：贴底跟随 + 进入/返回时置底 ──────────────────────────────
+// ── 视口滚动：进入/返回时置底（生成期间不跟随）──────────────────────
 //
-// 历史教训（不要退回这种写法）：老版本用"位置驱动跟随 + 手势锁"，无条件把视口钉在底部，
-// 结果生成期间用户完全没法往上翻 —— 于是整套跟随被删掉了。但删干净又带来另一个问题：
-// 进入/返回聊天页时停在**能显示的最早一条**上（见下）。
+// 历史教训（不要退回这些写法）：
+//   ① 老版本用"位置驱动跟随 + 手势锁"**无条件**把视口钉在底部 → 生成期间用户完全没法往上翻，
+//      于是整套跟随被删掉；
+//   ② 后来加了"有条件跟随"（贴底才跟、上滑就停），但用户实测生成期间视口被**反复拉到最上面** ——
+//      根因不在跟随逻辑本身，而在 `uni.pageScrollTo` 当时是坏的（详见 _doScrollBottom 的注释）：
+//      「滚到底部」实际是「滚到顶部」，而且 onPageScroll 恒为 0 导致"上滑就停"永远触发不了。
+//      → 现已把根因（App.vue 里 html 上的 overflow-x）修掉，并且**按用户要求不再恢复生成期间的跟随**。
 //
-// 现在两件事一起做，互不冲突：
-//   ① 进入 / 回到聊天页 → 置底（用户要求"进到页面里能看到最新的信息"）；
-//   ② 流式输出时**有条件**跟随：只有用户当前正贴着底部才跟随；他一旦往上滑就立刻停，
-//      滑回底部再自动恢复。这样"想跟的时候跟得动、想翻的时候翻得动"。
-//
-// 为什么会停在不该停的位置（历史现象，记录原因免得又被改回去）：
-//   1. 列表只渲染最近 100 条（MESSAGE_PAGE_SIZE），页面初始 scrollTop = 0，
-//      于是正对着"能显示的最早的那条"（不是会话第一条，是渲染窗口的第一条）；
-//   2. H5 端 navigateTo 会把当前页隐藏，navigateBack 再显示时浏览器把滚动位置重置为 0
-//      —— 所以返回聊天页必然回到顶部。
+// 现在的行为：
+//   · 进入 / 继续对话 → 置底（看到最新消息）
+//   · 从「对话设置」等页面返回 → 置底（H5 切页时滚动偏移会被重置为 0）
+//   · 用户主动发送 / 自动回复开新一轮 / 编辑后重新生成 → 置底一次
+//   · **生成期间零视口操作**（见 _doScrollBottom 的 isLoading 闸门）
+//   · 用户往上翻历史 → 完全不受打扰（没有任何自动跟随）
 /** 置底的补偿时间点（毫秒）：消息是富文本（卡片/代码块/图片）渲染的，高度异步撑开，只滚一次会差一点到底 */
 const SCROLL_BOTTOM_RETRIES = [0, 150, 420]
 /** 距底部多少像素以内算"贴着底部"。留余量：亚像素取整、滚动条宽度差都不该被判成"用户滑走了" */
@@ -306,34 +306,25 @@ function _measurePageMax() {
 }
 
 /**
- * 🚨 视口操作总开关 —— 目前**整条链路关闭**
- *
- * 根因已定位（详见 _doScrollBottom 的注释）：本项目里
- * `uni.pageScrollTo({ scrollTop: 大值 })` 实际等价于「滚到最顶部」——
- * 因为真正的滚动容器是 `document.body`，而 uni-app 是按 `document.documentElement` 钳制的
- * （html 不溢出 → scrollHeight - clientHeight = 0 → 超大值被钳成 0 → 再把 0 写给 body）。
- *
- * 结论：在"滚到底部"这件事改用正确姿势之前，**任何一次调用都只会把视口拽到顶部**，
- * 所以先把整条链路关死，保证页面在进入、返回、发送、生成期间都**没有任何视口操作**。
- * 底层改好之后，把这里改成 false 即可恢复（其余逻辑都还在）。
- */
-const SCROLL_OPS_DISABLED = true
-
-/**
  * 真正执行一次"滚到最底部"
  *
- * 双重保险：
- *   ① `SCROLL_OPS_DISABLED` —— 根因未解决前的总开关（见上）；
- *   ② 生成期间一律不执行 —— 用户实测：LLM 一开始输出，视口就被**反复**拉到页面最上面。
- *      做成硬开关而不是"只删掉调用点"，是为了连补偿队列里的那几次也一起失效，不留漏网之鱼。
- *      只有用户自己的动作（进入 / 返回 / 主动发送 / 自动回复开新一轮）带 allowDuringLoading 放行。
+ * 用 uni.pageScrollTo 而不是手写 window.scrollTo：uni-app H5 的实现（uni-shared 的 scrollTo()）
+ * 会先按 documentElement 的 scrollHeight/clientHeight 钳制，再同时写 documentElement.scrollTop
+ * 与 body.scrollTop —— 正好覆盖"个别浏览器要用 body 控制滚动"的情况。
+ *
+ * ⚠️ 它有一个**前提**：视口必须是滚动容器。
+ * 曾经的故障（2026-09，查了两轮）：`src/App.vue` 把 `overflow-x: hidden` 同时加在了 html 和 body 上，
+ * 导致 body 变成滚动容器、html 永不溢出 → `scrollHeight - clientHeight = 0` → 超大 scrollTop
+ * 被钳成 0 再写给 body → **「滚到底部」变成「滚到最顶部」**。
+ * 已在 App.vue 里把 html 上的 overflow-x 去掉根治。若将来又出现"置底反而跳到顶部"，
+ * 第一个要查的就是：html 上是否又被加了非 visible 的 overflow（自检命令见 App.vue 那段注释）。
+ *
+ * `runtimeStore.isLoading` 期间一律不执行：见 SCROLL 那一节顶部说明（生成期间不碰视口）。
+ * 只有用户自己的动作（进入 / 返回 / 主动发送 / 自动回复开新一轮）带 allowDuringLoading 放行。
  */
 function _doScrollBottom(opts: { allowDuringLoading?: boolean } = {}) {
-  if (SCROLL_OPS_DISABLED) return
   if (runtimeStore.isLoading && !opts.allowDuringLoading) return
   _selfScrollAt = Date.now()
-  // 用超大 scrollTop，让运行时自己钳到最大可滚动位置。
-  // ⚠️ 注意：这一步在本项目的布局下是坏的（见 SCROLL_OPS_DISABLED 的说明），不要直接复用。
   uni.pageScrollTo({ scrollTop: 9999999, duration: 0 })
 }
 
