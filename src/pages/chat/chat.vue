@@ -236,8 +236,6 @@ onShow(() => {
 const SCROLL_BOTTOM_RETRIES = [0, 150, 420]
 /** 距底部多少像素以内算"贴着底部"。留余量：亚像素取整、滚动条宽度差都不该被判成"用户滑走了" */
 const BOTTOM_STICK_THRESHOLD = 60
-/** 流式跟随的最小间隔（毫秒）：30fps 的写入没必要每帧都真的滚一次 */
-const FOLLOW_THROTTLE_MS = 100
 /** 我们自己发起的滚动：忽略紧随其后的那次 scroll 事件（消费一次即失效） */
 const SELF_SCROLL_GUARD_MS = 80
 
@@ -258,8 +256,6 @@ let _lastScrollTop = 0
 let _cachedMaxScrollTop = 0
 /** 我们自己发起滚动的时刻（用于识别随之而来的那次 scroll 事件） */
 let _selfScrollAt = 0
-/** 上一次流式跟随的时刻（节流用） */
-let _lastFollowAt = 0
 /** 非 H5 端最近一次异步测量 scrollHeight 的时刻 */
 let _lastMeasureAt = 0
 
@@ -309,16 +305,35 @@ function _measurePageMax() {
   // #endif
 }
 
-/** 真正执行一次"滚到最底部"（幂等：无论调几次都是去同一个位置） */
-function _doScrollBottom() {
+/**
+ * 🚨 视口操作总开关 —— 目前**整条链路关闭**
+ *
+ * 根因已定位（详见 _doScrollBottom 的注释）：本项目里
+ * `uni.pageScrollTo({ scrollTop: 大值 })` 实际等价于「滚到最顶部」——
+ * 因为真正的滚动容器是 `document.body`，而 uni-app 是按 `document.documentElement` 钳制的
+ * （html 不溢出 → scrollHeight - clientHeight = 0 → 超大值被钳成 0 → 再把 0 写给 body）。
+ *
+ * 结论：在"滚到底部"这件事改用正确姿势之前，**任何一次调用都只会把视口拽到顶部**，
+ * 所以先把整条链路关死，保证页面在进入、返回、发送、生成期间都**没有任何视口操作**。
+ * 底层改好之后，把这里改成 false 即可恢复（其余逻辑都还在）。
+ */
+const SCROLL_OPS_DISABLED = true
+
+/**
+ * 真正执行一次"滚到最底部"
+ *
+ * 双重保险：
+ *   ① `SCROLL_OPS_DISABLED` —— 根因未解决前的总开关（见上）；
+ *   ② 生成期间一律不执行 —— 用户实测：LLM 一开始输出，视口就被**反复**拉到页面最上面。
+ *      做成硬开关而不是"只删掉调用点"，是为了连补偿队列里的那几次也一起失效，不留漏网之鱼。
+ *      只有用户自己的动作（进入 / 返回 / 主动发送 / 自动回复开新一轮）带 allowDuringLoading 放行。
+ */
+function _doScrollBottom(opts: { allowDuringLoading?: boolean } = {}) {
+  if (SCROLL_OPS_DISABLED) return
+  if (runtimeStore.isLoading && !opts.allowDuringLoading) return
   _selfScrollAt = Date.now()
   // 用超大 scrollTop，让运行时自己钳到最大可滚动位置。
-  // 不去自己读 scrollHeight —— 富文本（卡片/代码块/图片）撑开高度是异步的，量到的值常常偏小。
-  //
-  // 这里直接用 uni.pageScrollTo 而不是手写 window.scrollTo：uni-app H5 的实现
-  // （uni-shared 的 scrollTo()）会先按 documentElement 的 scrollHeight/clientHeight 做钳制，
-  // 再同时写 documentElement.scrollTop 与 body.scrollTop —— 正好覆盖"个别浏览器要用 body 控制滚动"
-  // 的情况；这也是本文件 loadMoreMessages 已经在用的同一套 API。
+  // ⚠️ 注意：这一步在本项目的布局下是坏的（见 SCROLL_OPS_DISABLED 的说明），不要直接复用。
   uni.pageScrollTo({ scrollTop: 9999999, duration: 0 })
 }
 
@@ -330,14 +345,18 @@ function _doScrollBottom() {
  *
  * @param opts.delays 补偿滚动的执行时间点（毫秒）。默认用于"刚载入会话"——
  *   那时富文本还在陆续撑开高度，一次滚不到底；而"用户主动发送那一下"只需要滚一次。
+ * @param opts.allowDuringLoading 是否允许在"正在生成"时执行（只给用户主动发起的置底用）
  */
-function _scrollToBottom(opts: { delays?: number[] } = {}) {
+function _scrollToBottom(opts: { delays?: number[]; allowDuringLoading?: boolean } = {}) {
   _clearScrollTimers()
   const delays = (opts.delays && opts.delays.length) ? opts.delays : SCROLL_BOTTOM_RETRIES
   delays.forEach((delay, i) => {
     const timer = setTimeout(() => {
       _scrollTimers = _scrollTimers.filter(t => t !== timer)
-      const run = () => { if (_stickToBottom) _doScrollBottom() }
+      const run = () => {
+        if (!_stickToBottom) return
+        _doScrollBottom({ allowDuringLoading: !!opts.allowDuringLoading })
+      }
       if (i === 0) nextTick(run)
       else run()
     }, delay)
@@ -345,30 +364,22 @@ function _scrollToBottom(opts: { delays?: number[] } = {}) {
   })
 }
 
-/** 强制"贴底 + 滚到底"（进入页面 / 从别的页面返回时用，带补偿） */
+/** 强制"贴底 + 滚到底"（进入页面 / 从别的页面返回时用，带补偿）—— 用户主动动作，生成期间也放行 */
 function _pinToBottom(delays?: number[]) {
   _stickToBottom = true
-  _scrollToBottom(delays ? { delays } : {})
+  _scrollToBottom({ delays: delays && delays.length ? delays : undefined, allowDuringLoading: true })
 }
 
-/** 强制"贴底 + 滚到底"，只滚一次（发送 / 自动回复每一轮 / 编辑后重新生成） */
+/** 强制"贴底 + 滚到底"，只滚一次（发送 / 自动回复每一轮 / 编辑后重新生成）—— 用户主动动作 */
 function _pinToBottomOnce() {
   _stickToBottom = true
-  _scrollToBottom({ delays: [0] })
+  _scrollToBottom({ delays: [0], allowDuringLoading: true })
 }
 
-/**
- * 流式输出的跟随（节流）
- *
- * 只在 `_stickToBottom` 为真时被调用；nextTick 里再确认一次，
- * 避免"排队的这一帧"在用户已经往上滑之后才落地。
- */
-function _followStreaming() {
-  const now = Date.now()
-  if (now - _lastFollowAt < FOLLOW_THROTTLE_MS) return
-  _lastFollowAt = now
-  nextTick(() => { if (_stickToBottom) _doScrollBottom() })
-}
+// 🚨 原先这里有一个 _followStreaming()：生成期间每 ~100ms 把视口拉到底部。
+// 用户实测它表现为"视口被反复拉到页面最上面"，已整段删除（连同 _lastFollowAt / FOLLOW_THROTTLE_MS
+// 这两个只为它存在的变量）。删除而不是注释掉，是为了避免以后有人手滑再启用同一个坏路径。
+// 根因查清之前不要恢复。
 
 /**
  * 用户滚动 → 维护"是否贴底跟随"
@@ -617,10 +628,10 @@ function _flushStreamContent() {
   // 由 _flushPersist 里的 sessionStorage 同步草稿兜底。
   if (pending) _persistConversation()
 
-  // 流式跟随（用户要求）：只有"用户当前正贴着底部"时才把视口保持在最新文字处。
-  // 他往上滑的那一刻 onPageScroll 就把 _stickToBottom 置 false 了，这里自然不再跟随，
-  // 所以不会出现老版本"生成期间视口被抢走、翻不动"的问题。
-  if (_stickToBottom) _followStreaming()
+  // 🚨 这里原先有"流式跟随"（每 ~100ms 把视口拉到底部）。
+  // 用户实测：LLM 一开始输出，视口就被反复拉到页面最上面 —— 已按要求整段移除。
+  // 生成期间不再有任何由输出驱动的视口操作（另见 _doScrollBottom 里的硬开关）。
+  // 不要在没有查清根因之前把它加回来。
 
   if (needMore && !_streamTimer) {
     _streamTimer = setTimeout(_flushStreamContent, STREAM_FLUSH_MS)
@@ -723,9 +734,8 @@ function _finalizeMessage(index: number, finalText: string) {
   }
   runtimeStore.setMessages(next)
   _reasoningStart.delete(index)
-  // 收尾后再补一次跟随：最后一帧可能被节流挡掉，不然结尾会停在折叠线以下看不见。
-  // 用户已经往上翻时 _stickToBottom 为 false，这里不会打扰他。
-  if (_stickToBottom) nextTick(() => { if (_stickToBottom) _doScrollBottom() })
+  // 🚨 这里原先还有一次"收尾后补一次跟随"。同上，已按要求移除：
+  // 生成相关的任何视口操作都会表现为"视口被拽走"，先全部停掉，等根因查清再说。
 }
 
 /**
