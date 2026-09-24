@@ -60,7 +60,7 @@ git push origin master
 | `TEST_API_PROVIDER` | 测试通道 api1 的**提供商展示名**（设置页与切换提示里显示） | `DeepSeek` | 否（默认即此值） |
 | `TEST_API_LABEL` | 测试通道 api1 的展示名（设置页那一行的标题） | `DeepSeek原生` | 否（默认即此值） |
 | `TEST_API_ENABLED` | 测试通道 api1 的开关 | `true` | 否（默认开启） |
-| `TEST_API_2_KEY` / `_2_TARGET` / `_2_MODEL` / `_2_DISPLAY_MODEL` / `_2_PROVIDER` / `_2_LABEL` / `_2_ENABLED` | **测试通道 api2**（火山代理 DeepSeek），含义同上 | `TEST_API_2_TARGET=https://ark.cn-beijing.volces.com/api/v3`、`TEST_API_2_MODEL=DeepSeek-V4-Flash`、`TEST_API_2_PROVIDER=火山方舟` | 否（不配 `_2_KEY` 则该通道显示"未配置"、不可选） |
+| `TEST_API_2_KEY` / `_2_TARGET` / `_2_MODEL` / `_2_DISPLAY_MODEL` / `_2_PROVIDER` / `_2_LABEL` / `_2_ENABLED` | **测试通道 api2**（火山代理 DeepSeek），含义同上。注意这条**展示模型名与真实模型名不同** | `TEST_API_2_TARGET=https://ark.cn-beijing.volces.com/api/v3`、`TEST_API_2_MODEL=deepseek-v4-flash-ga-260731`、`TEST_API_2_DISPLAY_MODEL=DeepSeek-V4-Flash`、`TEST_API_2_PROVIDER=火山方舟` | 否（不配 `_2_KEY` 则该通道显示"未配置"、不可选） |
 | `TEST_API_3_KEY` / `_3_TARGET` / `_3_MODEL` / `_3_DISPLAY_MODEL` / `_3_PROVIDER` / `_3_LABEL` / `_3_ENABLED` | **测试通道 api3**（原生智谱），含义同上 | `TEST_API_3_TARGET=https://open.bigmodel.cn/api/paas/v4`、`TEST_API_3_MODEL=GLM-5.3-Flash`、`TEST_API_3_PROVIDER=智谱 AI` | 否（同上） |
 | `TEST_API_4_KEY` / `_4_TARGET` / `_4_MODEL` / `_4_DISPLAY_MODEL` / `_4_PROVIDER` / `_4_LABEL` / `_4_ENABLED` | **测试通道 api4**（GG 公益站 CLI 反代 / Gemini），含义同上 | `TEST_API_4_TARGET=https://gcli.ggchan.dev`、`TEST_API_4_MODEL=gemini-2.5-flash-lite`、`TEST_API_4_PROVIDER=GG公益站`、`TEST_API_4_LABEL=公益站CLI反代` | 否（同上） |
 | `TOKEN_TTL_DAYS` | 登录有效天数 | `7` | 否（默认 7 天） |
@@ -114,16 +114,16 @@ git push origin master
 | 通道 id | 默认提供商 | 界面显示模型名 | **发给上游的真实模型名** | 环境变量前缀 |
 |---------|-----------|---------------|------------------------|--------------|
 | `api1` | DeepSeek | `DeepSeek-V4.1-Flash` | `DeepSeek-V4.1-Flash` | `TEST_API_` |
-| `api2` | 火山方舟（DeepSeek 代理） | `DeepSeek-V4-Flash` | `DeepSeek-V4-Flash` | `TEST_API_2_` |
+| `api2` | 火山方舟（DeepSeek 代理） | `DeepSeek-V4-Flash` | `deepseek-v4-flash-ga-260731` | `TEST_API_2_` |
 | `api3` | 智谱 AI | `GLM-5.3-Flash` | `GLM-5.3-Flash` | `TEST_API_3_` |
 | `api4` | GG公益站 | `gemini-2.5-flash-lite` | `gemini-2.5-flash-lite` | `TEST_API_4_` |
 
 设置页里每行显示的是「`*_LABEL` 作为标题 + 提供商：`*_PROVIDER` + 模型：`*_DISPLAY_MODEL`」，
 默认值依次为 `DeepSeek原生` / `火山代理 DeepSeek` / `智谱原生` / `公益站CLI反代`。
 
-`*_DISPLAY_MODEL` 目前四条通道都用不到（展示名与真实模型名一致，不配就自动等于 `*_MODEL`）。
-它存在的意义是应对"上游模型名是内部代号、不想让用户看到"的渠道 —— 将来真遇到，
-只要给那条通道设一个 `*_DISPLAY_MODEL`，界面上就会显示它、而请求里仍然发 `*_MODEL`。
+`*_DISPLAY_MODEL` 用于"上游模型名是内部代号/带型号后缀、不想让用户看到"的渠道 ——
+api2 就是这种情况：界面显示 `DeepSeek-V4-Flash`，但请求体里发的是火山方舟的真实型号
+`deepseek-v4-flash-ga-260731`。不配 `*_DISPLAY_MODEL` 时展示名就等于 `*_MODEL`。
 
 每条通道都可用 `*_TARGET` / `*_MODEL` / `*_DISPLAY_MODEL` / `*_PROVIDER` / `*_LABEL` / `*_ENABLED` 覆盖默认值。
 `*_DISPLAY_MODEL` 用于"上游模型名是内部代号、不想让用户看到"的渠道（api4 就是这种）：

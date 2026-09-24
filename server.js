@@ -515,9 +515,10 @@ function _readTestApiKey(envSuffix) {
  * `model` 与 `displayModel` 是**两个不同的东西**：
  *   · `model`        = 真正发给上游的模型名
  *   · `displayModel` = 设置页展示给用户看的模型名；**不写就自动等于 `model`**
- * 只有当某个渠道"上游模型名是内部代号、不想让用户看到"时才需要单独写 `displayModel`
- * （或设 `*_DISPLAY_MODEL`）。目前四条通道两者一致，所以都没有单独写 ——
- * 这样只有一个真相来源，避免改了 model 忘了改 displayModel、界面静默显示旧名字。
+ * 当某个渠道"上游模型名是内部代号/带型号后缀、不想让用户看到"时，必须显式写 `displayModel`
+ * （或设 `*_DISPLAY_MODEL`）。目前只有 api2 需要（上游 `deepseek-v4-flash-ga-260731`、
+ * 界面显示 `DeepSeek-V4-Flash`）；其余通道两者一致，所以都不写 —— 只有一个真相来源，
+ * 避免改了 model 忘了改 displayModel、界面静默显示旧名字。
  *
  * `label` 是设置页里这一项的名称，`provider` 是提供商展示名 —— 两者都会在选中提示里出现。
  */
@@ -534,7 +535,12 @@ const TEST_API_CHANNELS = [
     id: 'api2',
     envSuffix: '_2',
     target: 'https://ark.cn-beijing.volces.com/api/v3',
-    model: 'DeepSeek-V4-Flash',
+    // 火山方舟的模型名是**账号内的实际型号/接入点代号**，必须与 target 配套。
+    // 之前用 `DeepSeek-V4-Flash` 猜错了型号 → Ark 对无效型号返回 **404**（InvalidEndpointOrModel.NotFound），
+    // 这就是"API2 测试报 404"的原因（不是路径问题：路径 /api/v3/chat/completions 是对的）。
+    model: 'deepseek-v4-flash-ga-260731',
+    // 界面上仍然显示不带型号后缀的名字（两者不一致时 displayModel 必须显式写）
+    displayModel: 'DeepSeek-V4-Flash',
     provider: '火山方舟',
     label: '火山代理 DeepSeek'
   },
@@ -557,14 +563,19 @@ const TEST_API_CHANNELS = [
   }
 ].map(function (def) {
   const s = def.envSuffix;
-  const model = _envStr('TEST_API' + s + '_MODEL') || def.model;
+  const envModel = _envStr('TEST_API' + s + '_MODEL');
+  const model = envModel || def.model;
   return {
     id: def.id,
     envSuffix: s,
     target: (_envStr('TEST_API' + s + '_TARGET') || def.target).replace(/\/$/, ''),
     model: model,
-    // 展示名：没配就退回真实模型名（api1~api3 就是这种情况），保证界面上永远有可读的名字
-    displayModel: _envStr('TEST_API' + s + '_DISPLAY_MODEL') || def.displayModel || model,
+    // 展示名的优先级（顺序不能改，否则会出现"界面显示旧名字"的静默漂移）：
+    //   1. 显式配了 *_DISPLAY_MODEL → 用它的（api2 生产环境走这条）
+    //   2. 否则若用 *_MODEL 覆盖过真实模型 → 展示名跟着走（避免"改了型号、界面还是旧名字"）
+    //   3. 否则用代码里的展示名默认值（api2：DeepSeek-V4-Flash）
+    //   4. 都没有 → 等于真实模型名
+    displayModel: _envStr('TEST_API' + s + '_DISPLAY_MODEL') || envModel || def.displayModel || model,
     provider: _envStr('TEST_API' + s + '_PROVIDER') || def.provider,
     label: _envStr('TEST_API' + s + '_LABEL') || def.label,
     enabled: String(_envStr('TEST_API' + s + '_ENABLED') || 'true').toLowerCase() !== 'false'
