@@ -39,6 +39,35 @@
             </view>
           </view>
         </view>
+
+        <!-- 测试 API 通道：只有选中「测试 API（内置）」时才出现。
+             三条通道的 Key / 地址 / 模型名全部由服务端变量决定，前端只上报通道 id。
+             点选即生效（立即写盘），不需要页面底部的"保存"。 -->
+        <view v-if="currentModel === 'test'" class="test-api-block">
+          <text class="test-api-title">测试 API 通道</text>
+          <text class="test-api-hint">Key / 地址 / 模型由服务端配置；点一下即生效，无需保存</text>
+          <view v-if="testApis.length === 0" class="empty-hint">
+            <text>服务端没有提供任何测试通道，请检查服务端变量</text>
+          </view>
+          <view
+            v-for="api in testApis"
+            :key="api.id"
+            :class="['test-api-item', selectedTestApiId === api.id ? 'active' : '', api.enabled ? '' : 'unavailable']"
+            @tap="onSelectTestApi(api)"
+          >
+            <view class="test-api-info">
+              <view class="test-api-head">
+                <text class="test-api-name">{{ api.label }}</text>
+                <text v-if="!api.enabled" class="test-api-badge">未配置</text>
+              </view>
+              <text class="test-api-desc">提供商：{{ api.provider || '—' }}</text>
+              <text class="test-api-desc">模型：{{ api.model || '—' }}</text>
+            </view>
+            <view class="model-check">
+              <svg v-if="selectedTestApiId === api.id && api.enabled" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4.5 10.5l3.5 3.5 7.5-8"/></svg>
+            </view>
+          </view>
+        </view>
       </view>
 
       <view class="section" v-if="currentModel !== 'test'" >
@@ -83,12 +112,18 @@
         </view>
       </view>
 
-      <!-- 说明：生成参数（temperature/top_p/惩罚项等）不再在此配置，统一改为在"预设编辑"页里调整，
-           避免出现两个地方都能改生成参数、互相打架、又没有一个是实际生效的来源这种情况。
-           这里只负责"用什么模型 / 用什么接口地址 / 用什么 Key"这类连接层配置。 -->
+      <!-- 测试通道的当前状态：只读展示，切换在上面的「选择模型 → 测试 API 通道」里点选 -->
       <view class="section" v-if="currentModel === 'test'">
-        <text class="section-subtitle" v-if="testApiInfo.enabled">已使用内置测试接口（{{ testApiInfo.label }}）：模型与 Key 由服务端统一配置，无需填写</text>
-        <text class="section-subtitle" v-else>内置测试接口当前不可用，请选择其他模型并填写自己的 API Key</text>
+        <text class="section-subtitle" v-if="selectedTestApi && selectedTestApi.enabled">
+          当前测试通道：{{ selectedTestApi.label }} · {{ selectedTestApi.provider || '—' }} · {{ selectedTestApi.model || '—' }}
+          —— Key / 地址 / 模型由服务端统一配置，无需填写
+        </text>
+        <!-- 选中的通道服务端没配 Key（或已关闭）时必须说清"不可用"，
+             否则这行会显示成"当前测试通道：xxx"，看着像能用、一发消息就报错。 -->
+        <text class="section-subtitle" v-else-if="selectedTestApi">
+          当前选中的测试通道「{{ selectedTestApi.label }}」在服务端未配置（或已关闭），暂时不可用：请在上面换一条通道，或选择其他模型并填写自己的 API Key
+        </text>
+        <text class="section-subtitle" v-else>测试通道当前不可用，请选择其他模型并填写自己的 API Key</text>
       </view>
 
       <!-- 没有测试权限时的说明：新注册账号默认没有测试权限（is_test=false），
@@ -251,7 +286,7 @@ import userManager from '../../utils/account/userManager.js'
 import { usePluginStore } from '../../stores/pluginStore'
 import { useNoteStore } from '../../stores/noteStore'
 import { getNavBarHeight } from '../../utils/navbar.js'
-import { getTestApiConfig } from '../../utils/llm/client.js'
+import { getTestApiConfig, getSelectedTestApiId, DEFAULT_TEST_API_CHANNEL_ID } from '../../utils/llm/client.js'
 import NavBar from '../../components/common/NavBar.vue'
 import ContextInspector from '../../components/render/ContextInspector.vue'
 import { loadCustomCss, saveCustomCss, initCustomCss } from '../../utils/customCss'
@@ -282,6 +317,11 @@ export default {
     pacingLabel() {
       const r = this.pacingCfg.charsPerSec
       return r >= PACING_FULL_SPEED ? '全速（不限速）' : `${r} 字/秒`
+    },
+    /** 当前选中的测试通道（用于只读状态行）；找不到返回 null */
+    selectedTestApi() {
+      if (!this.testApis.length) return null
+      return this.testApis.find(a => a.id === this.selectedTestApiId) || null
     }
   },
   data() {
@@ -335,8 +375,12 @@ export default {
       ],
       isMpWeixin: false,
       // 内置测试通道的公开信息（无密钥）：可用性与展示名都来自服务端，
-      // 这样官方调整模型名时只需改服务端变量，前端无需改代码/重新发版
-      testApiInfo: { enabled: false, label: '' }
+      // 这样官方调整模型名/换厂商时只需改服务端变量，前端无需改代码/重新发版
+      testApiInfo: { enabled: false, label: '', model: '' },
+      /** 服务端提供的测试通道清单（api1 / api2 / api3） */
+      testApis: [],
+      /** 当前选中的测试通道 id（与对话请求共用同一份配置） */
+      selectedTestApiId: ''
     }
   },
 
@@ -466,10 +510,60 @@ export default {
     /** 读取内置测试通道的公开配置（无密钥，仅用于显示可用性与展示名） */
     async _loadTestApiInfo() {
       try {
-        this.testApiInfo = await getTestApiConfig()
+        const cfg = await getTestApiConfig(true)
+        this.testApiInfo = cfg
+        this.testApis = Array.isArray(cfg.apis) ? cfg.apis : []
+        this.selectedTestApiId = getSelectedTestApiId()
+        this._healSelectedTestApi()
       } catch (e) {
         console.warn('[Settings] 读取内置测试通道配置失败:', e && e.message)
       }
+    },
+
+    /**
+     * 选中的通道与服务端清单对不上时（换过部署、回滚版本、本地存了脏 id），
+     * 自动落到第一条可用的通道并写盘 —— 否则用户的对话会一直打在一条不存在的通道上。
+     */
+    _healSelectedTestApi() {
+      if (!this.testApis.length) return
+      if (this.testApis.some(a => a.id === this.selectedTestApiId)) return
+      const fallback = this.testApis.find(a => a.enabled) || this.testApis[0]
+      if (!fallback) return
+      this.selectedTestApiId = fallback.id
+      this._patchLlmSettings({ testApiId: fallback.id })
+    },
+
+    /**
+     * 只补写指定的几个字段，不动用户还没保存的表单内容
+     * （apiKey/apiUrl/modelName 那些仍然遵循"点保存才生效"的原有约定）
+     */
+    _patchLlmSettings(patch) {
+      try {
+        const cur = storage.get(llmConfigKey()) || {}
+        storage.set(llmConfigKey(), { ...cur, ...patch, updatedAt: Date.now() })
+        return true
+      } catch (e) {
+        console.error('[Settings] 写入设置失败:', e)
+        return false
+      }
+    },
+
+    /**
+     * 选中一条测试 API 通道 —— **立即生效，不需要点页面底部的"保存"**
+     *
+     * 只写 testApiId 一个字段：对话请求会带上它，服务端据此注入该通道的 Key/地址/模型。
+     */
+    onSelectTestApi(api) {
+      if (!api) return
+      if (!api.enabled) {
+        uni.showToast({ title: `「${api.label}」服务端未配置，暂不可用`, icon: 'none', duration: 2500 })
+        return
+      }
+      if (api.id === this.selectedTestApiId) return
+      this.selectedTestApiId = api.id
+      this._patchLlmSettings({ testApiId: api.id })
+      const parts = [api.label, api.provider, api.model].filter(Boolean)
+      uni.showToast({ title: `测试API已切换到「${parts.join(' · ')}」`, icon: 'none', duration: 2500 })
     },
 
     /**
@@ -541,6 +635,9 @@ export default {
 
     loadSettings() {
       try {
+        // 测试通道选择与"模型选择"在同一份配置里：这里一并读回，保证界面显示的
+        // 就是对话请求真正会用的那条通道。
+        this.selectedTestApiId = getSelectedTestApiId()
         const settings = storage.get(llmConfigKey())
         if (settings) {
           this.currentModel = this._normalizeModelId(settings.model)
@@ -605,6 +702,9 @@ export default {
           apiKey,
           apiUrl,
           modelName,
+          // ⚠️ 必须带上：测试通道的选择是"点选即生效"写进同一份配置的，
+          // 保存时漏掉它会把用户刚选的通道又抹回默认值。
+          testApiId: this.selectedTestApiId || DEFAULT_TEST_API_CHANNEL_ID,
           updatedAt: Date.now()
         }
 
@@ -634,6 +734,9 @@ export default {
               this.apiKey = ''
               this.apiUrl = ''
               this.modelName = ''
+              // 测试通道选择也回到默认通道（配置被整份清掉了）
+              this.selectedTestApiId = DEFAULT_TEST_API_CHANNEL_ID
+              this._healSelectedTestApi()
               uni.showToast({ title: '已重置为默认', icon: 'success' })
             } catch (error) {
               console.error('重置失败:', error)
@@ -1010,6 +1113,80 @@ export default {
   font-size: 18rpx;
   color: var(--faint);
   line-height: 1.45;
+}
+
+/* 测试 API 通道（选中"测试 API（内置）"后出现在模型列表下方）
+   紧凑排版：内边距/间距都收窄，提供商与模型再小一号（用户要求），
+   避免这块把「选择模型」区撑得太长。 */
+.test-api-block {
+  margin-top: 12rpx;
+  padding-top: 12rpx;
+  border-top: 1rpx dashed var(--border);
+}
+.test-api-title {
+  display: block;
+  font-size: 21rpx;
+  font-weight: 700;
+  color: var(--fg);
+  margin-bottom: 4rpx;
+}
+.test-api-hint {
+  display: block;
+  font-size: 17rpx;
+  color: var(--faint);
+  line-height: 1.4;
+  margin-bottom: 8rpx;
+}
+.test-api-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 10rpx;
+  padding: 11rpx 16rpx;
+  margin-top: 8rpx;
+  background: var(--raised);
+  border: 1rpx solid var(--border);
+  border-radius: 14rpx;
+  transition: border-color 0.2s ease, background 0.2s ease;
+}
+.test-api-item.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+}
+.test-api-item.unavailable { opacity: 0.55; }
+.test-api-info {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1rpx;
+}
+.test-api-head {
+  display: flex;
+  align-items: center;
+  gap: 8rpx;
+}
+.test-api-name {
+  font-size: 21rpx;
+  font-weight: 700;
+  color: var(--fg);
+  line-height: 1.35;
+}
+.test-api-badge {
+  font-size: 15rpx;
+  padding: 1rpx 8rpx;
+  border-radius: 6rpx;
+  flex-shrink: 0;
+  color: var(--faint);
+  background: var(--surface-2);
+  border: 1rpx solid var(--border);
+}
+/* 提供商 / 模型：比通道名再小一号，别抢主标题的视觉重心 */
+.test-api-desc {
+  font-size: 17rpx;
+  color: var(--faint);
+  line-height: 1.32;
+  word-break: break-all;
 }
 
 /* 流式输出速度滑条 */

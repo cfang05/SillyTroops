@@ -460,40 +460,127 @@ cardpool.registerCardPoolRoutes(app, { requireAuth, db, accounts });
 
 // ========== 内置测试 API（Key / 模型 / 目标地址 全部只保存在服务端） ==========
 // 背景：内置测试 Key 以前硬编码在前端（会随 dist 分发），模型名也写死在前端。
-// 现在前端只表达"我要用测试通道"，其余全部由服务端决定：
-//   TEST_API_KEY     内置 Key（唯一秘密）
-//   TEST_API_TARGET  目标地址（默认 DeepSeek）
-//   TEST_API_MODEL   模型名（官方改名只改这个变量，前端无需改代码/重新发版）
-//   TEST_API_LABEL   前端展示名（可选）
-//   TEST_API_ENABLED 一键开关（false 时测试通道不可用）
+// 现在前端只表达"我要用测试通道的哪个通道"，其余全部由服务端决定。
+//
+// 多通道（用户需求）：测试账号在设置页可以挑"用哪家的 API 跑测试"。前端只上报通道 id，
+// 服务端据此注入 Key / 地址 / 模型名；客户端传什么 model 都会被覆盖。
+//
+// 环境变量命名（第 1 个沿用原变量名以兼容历史配置，新增的加 _2 / _3 后缀与它区分开）：
+//   通道 api1：TEST_API_KEY       TEST_API_TARGET       TEST_API_MODEL       TEST_API_PROVIDER       TEST_API_LABEL       TEST_API_ENABLED
+//   通道 api2：TEST_API_2_KEY     TEST_API_2_TARGET     TEST_API_2_MODEL     TEST_API_2_PROVIDER     TEST_API_2_LABEL     TEST_API_2_ENABLED
+//   通道 api3：TEST_API_3_KEY     TEST_API_3_TARGET     TEST_API_3_MODEL     TEST_API_3_PROVIDER     TEST_API_3_LABEL     TEST_API_3_ENABLED
+// 另外都支持写进 data/secrets.json（同名键），便于本地开发不配环境变量。
 const SECRETS_FILE = path.join(__dirname, 'data', 'secrets.json');
 
-let _testApiKeyCache = null;
-function _readTestApiKey() {
-  if (_testApiKeyCache !== null) return _testApiKeyCache;
-  let value = process.env.TEST_API_KEY ? String(process.env.TEST_API_KEY).trim() : '';
-  if (!value) {
-    try {
-      if (fs.existsSync(SECRETS_FILE)) {
-        const raw = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf8'));
-        if (raw && raw.TEST_API_KEY) value = String(raw.TEST_API_KEY).trim();
-      }
-    } catch (e) {
-      console.warn('[TestAPI] 读取 data/secrets.json 失败:', e.message);
-    }
+/** 读取一个环境变量（trim 后返回；未设置返回空串） */
+function _envStr(name) {
+  return process.env[name] ? String(process.env[name]).trim() : '';
+}
+
+/** secrets.json 的内存缓存（只读一次） */
+let _secretsCache = null;
+function _readSecrets() {
+  if (_secretsCache !== null) return _secretsCache;
+  let raw = {};
+  try {
+    if (fs.existsSync(SECRETS_FILE)) raw = JSON.parse(fs.readFileSync(SECRETS_FILE, 'utf8')) || {};
+  } catch (e) {
+    console.warn('[TestAPI] 读取 data/secrets.json 失败:', e.message);
   }
-  _testApiKeyCache = value;
+  _secretsCache = raw;
+  return _secretsCache;
+}
+
+/** 各通道 Key 的缓存（键 = 环境变量后缀，'' / '_2' / '_3'） */
+const _testApiKeyCache = new Map();
+function _readTestApiKey(envSuffix) {
+  const suffix = envSuffix || '';
+  if (_testApiKeyCache.has(suffix)) return _testApiKeyCache.get(suffix);
+  const name = 'TEST_API' + suffix + '_KEY';
+  let value = _envStr(name);
+  if (!value) {
+    const raw = _readSecrets();
+    if (raw && raw[name]) value = String(raw[name]).trim();
+  }
+  _testApiKeyCache.set(suffix, value);
   return value;
 }
 
-const TEST_API_TARGET = (process.env.TEST_API_TARGET || 'https://api.deepseek.com').replace(/\/$/, '');
-const TEST_API_MODEL = (process.env.TEST_API_MODEL || 'deepseek-v4-flash').trim();
-const TEST_API_LABEL = (process.env.TEST_API_LABEL || '').trim();
-const TEST_API_ENABLED = String(process.env.TEST_API_ENABLED || 'true').toLowerCase() !== 'false';
+/**
+ * 通道定义表
+ *
+ * `envSuffix` 决定环境变量名；下面每个字段都只是**默认值**，用户随时可以用服务端变量覆盖
+ * （官方改名/换家只改变量，前端无需改代码、无需重新发版）。
+ *
+ * `model` 与 `displayModel` 是**两个不同的东西**：
+ *   · `model`        = 真正发给上游的模型名
+ *   · `displayModel` = 设置页展示给用户看的模型名；**不写就自动等于 `model`**
+ * 只有当某个渠道"上游模型名是内部代号、不想让用户看到"时才需要单独写 `displayModel`
+ * （或设 `*_DISPLAY_MODEL`）。目前四条通道两者一致，所以都没有单独写 ——
+ * 这样只有一个真相来源，避免改了 model 忘了改 displayModel、界面静默显示旧名字。
+ *
+ * `label` 是设置页里这一项的名称，`provider` 是提供商展示名 —— 两者都会在选中提示里出现。
+ */
+const TEST_API_CHANNELS = [
+  {
+    id: 'api1',
+    envSuffix: '',
+    target: 'https://api.deepseek.com',
+    model: 'DeepSeek-V4.1-Flash',
+    provider: 'DeepSeek',
+    label: 'DeepSeek原生'
+  },
+  {
+    id: 'api2',
+    envSuffix: '_2',
+    target: 'https://ark.cn-beijing.volces.com/api/v3',
+    model: 'DeepSeek-V4-Flash',
+    provider: '火山方舟',
+    label: '火山代理 DeepSeek'
+  },
+  {
+    id: 'api3',
+    envSuffix: '_3',
+    target: 'https://open.bigmodel.cn/api/paas/v4',
+    model: 'GLM-5.3-Flash',
+    provider: '智谱 AI',
+    label: '智谱原生'
+  },
+  {
+    id: 'api4',
+    envSuffix: '_4',
+    target: 'https://gcli.ggchan.dev',
+    // 展示名与上游模型名目前一致，所以不单独写 displayModel（写了反而多一处会漂移的副本）
+    model: 'gemini-2.5-flash-lite',
+    provider: 'GG公益站',
+    label: '公益站CLI反代'
+  }
+].map(function (def) {
+  const s = def.envSuffix;
+  const model = _envStr('TEST_API' + s + '_MODEL') || def.model;
+  return {
+    id: def.id,
+    envSuffix: s,
+    target: (_envStr('TEST_API' + s + '_TARGET') || def.target).replace(/\/$/, ''),
+    model: model,
+    // 展示名：没配就退回真实模型名（api1~api3 就是这种情况），保证界面上永远有可读的名字
+    displayModel: _envStr('TEST_API' + s + '_DISPLAY_MODEL') || def.displayModel || model,
+    provider: _envStr('TEST_API' + s + '_PROVIDER') || def.provider,
+    label: _envStr('TEST_API' + s + '_LABEL') || def.label,
+    enabled: String(_envStr('TEST_API' + s + '_ENABLED') || 'true').toLowerCase() !== 'false'
+  };
+});
 
-/** 前端展示名：未显式配置时退回模型名 */
-function _testApiLabel() {
-  return TEST_API_LABEL || TEST_API_MODEL;
+/** 客户端没带 channel 时的默认通道（= 原来的单通道行为） */
+const DEFAULT_TEST_API_CHANNEL_ID = 'api1';
+
+/** 按 id 找通道；找不到返回 null（调用方必须据此报 400，绝不能回退到"随便挑一个"） */
+function _findTestApiChannel(id) {
+  const wanted = String(id || '').trim() || DEFAULT_TEST_API_CHANNEL_ID;
+  for (let i = 0; i < TEST_API_CHANNELS.length; i++) {
+    if (TEST_API_CHANNELS[i].id === wanted) return TEST_API_CHANNELS[i];
+  }
+  return null;
 }
 
 /** 是否是 DeepSeek 系目标（决定要不要注入 thinking 这类协议参数） */
@@ -504,12 +591,15 @@ function _isDeepSeekLike(target, model) {
 }
 
 /**
- * 由服务端注入的"协议参数"（不是采样参数）：
+ * 由服务端注入的"协议参数"（不是采样参数）
+ *
  * DeepSeek V4 的 thinking 默认 enabled，思考内容会进 reasoning_content 而 content 可能为空，
  * 所以显式关闭。前端已经不知道模型是谁，这类判断只能由服务端做。
+ * 注意：只对 DeepSeek 系（含代理到 DeepSeek 的通道）注入 —— 别的家不一定认这个字段，
+ * 乱发会有被上游 400 的风险。
  */
-function _providerParams() {
-  return _isDeepSeekLike(TEST_API_TARGET, TEST_API_MODEL) ? { thinking: { type: 'disabled' } } : {};
+function _providerParams(channel) {
+  return _isDeepSeekLike(channel.target, channel.model) ? { thinking: { type: 'disabled' } } : {};
 }
 
 /** 允许从客户端透传的采样字段：值原样转发，服务端不看、不改、不夹取（由前端预设决定） */
@@ -524,12 +614,31 @@ const PASSTHROUGH_PARAMS = [
   'stream_options'
 ];
 
-/** 测试通道的公开配置（无密钥，前端只用来显示与判断可用性） */
+/**
+ * 测试通道的公开配置（无密钥，前端只用来显示与判断可用性）
+ *
+ * 返回每个通道的 id / 展示名 / 提供商 / **展示用模型名** / 是否可用；
+ * **绝不返回 target、Key 与上游真实模型名** —— 那几个都是服务端内部细节。
+ * 旧的顶层 enabled/label/model 字段保留（取第一个通道），避免老前端读到 undefined。
+ */
 app.get('/api/test-api/config', (req, res) => {
+  const apis = TEST_API_CHANNELS.map(function (ch) {
+    return {
+      id: ch.id,
+      label: ch.label,
+      provider: ch.provider,
+      // 给用户看的是 displayModel，不是发给上游的 model
+      model: ch.displayModel,
+      enabled: ch.enabled && !!_readTestApiKey(ch.envSuffix)
+    };
+  });
+  const first = apis[0] || { label: '', model: '' };
   res.json({
-    enabled: TEST_API_ENABLED && !!_readTestApiKey(),
-    label: _testApiLabel(),
-    model: TEST_API_MODEL
+    enabled: apis.some(function (a) { return a.enabled; }),
+    label: first.label,
+    model: first.model,
+    defaultId: DEFAULT_TEST_API_CHANNEL_ID,
+    apis: apis
   });
 });
 
@@ -537,34 +646,52 @@ app.get('/api/test-api/config', (req, res) => {
  * 内置测试通道：服务端决定模型与 Key，采样参数透传。
  * 权限：必须登录，且 is_admin || is_test 为真（以数据库为准）。
  * 新注册账号默认 is_test=false，需要管理员在监控页的「测试管理」里打开开关。
+ *
+ * body.channel = 通道 id（api1 / api2 / api3）；缺省用 api1。
+ * 校验顺序刻意是"权限 → 通道 → Key"：权限检查必须在最前面，
+ * 否则没权限的账号会先收到"未知通道"这种误导性的错误。
  */
 app.post('/api/chat/test', requireAuth, async (req, res) => {
-  if (!TEST_API_ENABLED) return res.status(503).json({ error: '内置测试 API 已关闭' });
   if (!req.accountPublic.canUseTestApi) {
     return res.status(403).json({ error: '内置测试 API 需要管理员开通测试权限，请在设置中选择其他模型或填写自己的 Key' });
   }
-  const apiKey = _readTestApiKey();
-  if (!apiKey) return res.status(503).json({ error: '内置测试 API 未配置：服务端缺少 TEST_API_KEY' });
 
   const body = req.body || {};
+  const channel = _findTestApiChannel(body.channel);
+  if (!channel) {
+    return res.status(400).json({
+      error: '未知的测试 API 通道：' + String(body.channel),
+      allowed: TEST_API_CHANNELS.map(function (c) { return c.id; })
+    });
+  }
+  if (!channel.enabled) {
+    return res.status(503).json({ error: '测试通道「' + channel.label + '」已在服务端关闭' });
+  }
+  const apiKey = _readTestApiKey(channel.envSuffix);
+  if (!apiKey) {
+    return res.status(503).json({
+      error: '测试通道「' + channel.label + '」未配置：服务端缺少 TEST_API' + channel.envSuffix + '_KEY'
+    });
+  }
+
   const messages = Array.isArray(body.messages) ? body.messages : null;
   if (!messages || !messages.length) return res.status(400).json({ error: 'messages 不能为空' });
 
   const wantStream = body.stream !== false;
   const upstreamBody = {
     messages: messages,
-    model: TEST_API_MODEL,   // 模型只认服务端配置：客户端传什么都会被覆盖
+    model: channel.model,   // 模型只认服务端配置：客户端传什么都会被覆盖
     stream: wantStream
   };
   for (const key of PASSTHROUGH_PARAMS) {
     if (body[key] !== undefined && body[key] !== null) upstreamBody[key] = body[key];
   }
-  Object.assign(upstreamBody, _providerParams());
+  Object.assign(upstreamBody, _providerParams(channel));
 
   const controller = new AbortController();
   let upstream;
   try {
-    upstream = await fetch(TEST_API_TARGET + '/chat/completions', {
+    upstream = await fetch(channel.target + '/chat/completions', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -574,13 +701,13 @@ app.post('/api/chat/test', requireAuth, async (req, res) => {
       signal: controller.signal
     });
   } catch (e) {
-    console.error('[TestAPI] 上游请求失败:', e && e.message);
-    return res.status(502).json({ error: '内置测试通道请求上游失败', detail: e && e.message });
+    console.error('[TestAPI] 上游请求失败(' + channel.id + '):', e && e.message);
+    return res.status(502).json({ error: '测试通道「' + channel.label + '」请求上游失败', detail: e && e.message });
   }
 
   if (!upstream.ok) {
     const text = await upstream.text().catch(function () { return ''; });
-    console.error('[TestAPI] 上游返回非 2xx:', upstream.status, text.slice(0, 300));
+    console.error('[TestAPI] 上游返回非 2xx(' + channel.id + '):', upstream.status, text.slice(0, 300));
     return res.status(upstream.status).json({
       error: '上游返回 HTTP ' + upstream.status,
       detail: text.slice(0, 500)
@@ -798,9 +925,18 @@ async function startServer() {
     console.log(`🗄️  数据库: ${db.isConfigured() ? '已配置（Neon Postgres）' : '未配置'}`);
     console.log(`🔑 默认 API 目标(用户自配 Key 通道): ${process.env.API_TARGET || 'https://api.deepseek.com'}`);
     console.log(`🔐 环境变量 API_KEY: ${process.env.API_KEY ? '已设置' : '未设置（建议保持未设置）'}`);
-    console.log(`🧪 内置测试 Key(TEST_API_KEY): ${_readTestApiKey() ? '已设置' : '未设置（测试通道不可用）'}`);
-    console.log(`🧪 内置测试模型(TEST_API_MODEL): ${TEST_API_MODEL} @ ${TEST_API_TARGET}`);
-    console.log(`🧪 内置测试通道开关: ${TEST_API_ENABLED ? '启用' : '关闭'}`);
+    // 内置测试通道：逐条打印，方便一眼看出"哪条配了 Key、哪条没配"
+    TEST_API_CHANNELS.forEach(function (ch) {
+      const varName = 'TEST_API' + ch.envSuffix + '_KEY';
+      const state = !ch.enabled
+        ? '已关闭'
+        : (_readTestApiKey(ch.envSuffix) ? '可用' : `未配置（缺少 ${varName}）`);
+      // 展示名与真实模型名不一致时两个都打出来，避免"看到的和发出去的不一样"让人困惑
+      const modelText = ch.displayModel === ch.model
+        ? ch.model
+        : `${ch.displayModel}（上游模型名：${ch.model}）`;
+      console.log(`🧪 测试通道[${ch.id}] ${ch.label} / ${ch.provider} / ${modelText} → ${state}`);
+    });
     console.log('='.repeat(50));
     console.log('💡 用户可通过请求头 X-API-Base 和 X-API-Key 使用自配 Key');
     console.log('💡 未携带 X-API-Key 的 /api/chat/completions 请求将得不到 Key（不会被兜底）');

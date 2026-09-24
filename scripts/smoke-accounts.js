@@ -22,6 +22,23 @@ process.env.TEST_API_KEY = 'sk-smoke-dummy-key';
 process.env.TEST_API_TARGET = 'http://127.0.0.1:3211';
 process.env.TEST_API_MODEL = 'deepseek-v4-flash';
 process.env.TEST_API_LABEL = '冒烟测试模型';
+// 多通道：api2 用**另一个路径**指向同一台假上游（路径不同即可断言"确实走了 api2"）；
+// api3 故意**不配 Key**，用来验证"未配置的通道在配置接口里是 enabled:false、请求返回 503"。
+process.env.TEST_API_2_KEY = 'sk-smoke-dummy-key-2';
+process.env.TEST_API_2_TARGET = 'http://127.0.0.1:3211/c2';
+process.env.TEST_API_2_MODEL = 'volcano-smoke-model';
+process.env.TEST_API_2_PROVIDER = '火山冒烟';
+process.env.TEST_API_2_LABEL = '火山冒烟通道';
+process.env.TEST_API_3_TARGET = 'http://127.0.0.1:3211/c3';
+process.env.TEST_API_3_MODEL = 'glm-smoke-model';
+// api4：**展示模型名与上游真实模型名故意不同**（GG 公益站反代那类"内部代号"渠道），
+// 用来验证配置接口只回展示名，而真正发给上游的是真实模型名。
+process.env.TEST_API_4_KEY = 'sk-smoke-dummy-key-4';
+process.env.TEST_API_4_TARGET = 'http://127.0.0.1:3211/c4';
+process.env.TEST_API_4_MODEL = 'fake-stream-gemini-2.5-pro';
+process.env.TEST_API_4_DISPLAY_MODEL = 'Gemini-2.5-pro';
+process.env.TEST_API_4_PROVIDER = 'GG冒烟反代';
+process.env.TEST_API_4_LABEL = 'GG冒烟通道';
 
 const BASE = 'http://127.0.0.1:' + process.env.PORT;
 const UPSTREAM_PORT = 3211;
@@ -29,9 +46,11 @@ const CHUNK1 = 'data: {"choices":[{"delta":{"content":"SMOKE-1 "}}]}\n\n';
 const CHUNK2 = 'data: {"choices":[{"delta":{"content":"SMOKE-2"}}]}\n\n';
 
 let lastUpstreamBody = null;
+let lastUpstreamPath = null;
 
 // ── 假上游 LLM ───────────────────────────────────────────────
 const upstreamServer = http.createServer((req, res) => {
+  lastUpstreamPath = req.url;
   let body = '';
   req.on('data', (c) => { body += c; });
   req.on('end', () => {
@@ -223,6 +242,20 @@ async function main() {
   const cfg = await req('/api/test-api/config');
   expect('配置接口返回 enabled/label', cfg.status === 200 && cfg.json.enabled === true && cfg.json.label === '冒烟测试模型');
   expect('配置接口不含任何 Key', cfg.text.indexOf('sk-') === -1, cfg.text);
+  expect('配置接口返回四条通道', Array.isArray(cfg.json.apis) && cfg.json.apis.length === 4, cfg.json.apis);
+  expect('配置接口不含目标地址（target 是服务端秘密）', cfg.text.indexOf('127.0.0.1') === -1, cfg.text);
+
+  const api1 = (cfg.json.apis || []).find((a) => a.id === 'api1');
+  const api2 = (cfg.json.apis || []).find((a) => a.id === 'api2');
+  const api3 = (cfg.json.apis || []).find((a) => a.id === 'api3');
+  const api4 = (cfg.json.apis || []).find((a) => a.id === 'api4');
+  expect('api1 带提供商与模型信息', !!api1 && api1.provider === 'DeepSeek' && api1.model === 'deepseek-v4-flash' && api1.enabled === true, api1);
+  expect('api2 通过 _2 变量配置（提供商/模型/可用）', !!api2 && api2.provider === '火山冒烟' && api2.model === 'volcano-smoke-model' && api2.enabled === true, api2);
+  expect('api3 没配 Key → enabled=false（设置页会显示"未配置"）', !!api3 && api3.enabled === false, api3);
+  expect('api4 展示的是 displayModel（不是上游真实模型名）',
+    !!api4 && api4.model === 'Gemini-2.5-pro' && api4.provider === 'GG冒烟反代' && api4.enabled === true, api4);
+  expect('api4 的上游真实模型名不外泄给前端',
+    cfg.text.indexOf('fake-stream-gemini-2.5-pro') === -1, cfg.text.slice(0, 200));
 
   const testCall = await req('/api/chat/test', {
     method: 'POST',
@@ -239,11 +272,51 @@ async function main() {
   expect('测试通道返回 200', testCall.status === 200, testCall.text.slice(0, 200));
   expect('SSE 内容被完整透传', testCall.text.indexOf('SMOKE-1') !== -1 && testCall.text.indexOf('[DONE]') !== -1);
   expect('响应头禁止代理缓冲（X-Accel-Buffering）', testCall.headers.get('x-accel-buffering') === 'no');
+  expect('不带 channel 时默认走 api1（兼容老前端）', lastUpstreamPath === '/chat/completions', lastUpstreamPath);
   expect('上游收到的 model 是服务端配置值', lastUpstreamBody && lastUpstreamBody.model === 'deepseek-v4-flash', lastUpstreamBody && lastUpstreamBody.model);
   expect('客户端伪造的 model 未生效', lastUpstreamBody && lastUpstreamBody.model !== 'deepseek-v4-pro');
   expect('采样参数 max_tokens 原样透传（未被夹取）', lastUpstreamBody && lastUpstreamBody.max_tokens === 12345, lastUpstreamBody && lastUpstreamBody.max_tokens);
   expect('采样参数 temperature 原样透传', lastUpstreamBody && lastUpstreamBody.temperature === 0.85);
-  expect('协议参数 thinking 由服务端注入', !!(lastUpstreamBody && lastUpstreamBody.thinking && lastUpstreamBody.thinking.type === 'disabled'), lastUpstreamBody && lastUpstreamBody.thinking);
+  expect('协议参数 thinking 由服务端注入（DeepSeek 系）', !!(lastUpstreamBody && lastUpstreamBody.thinking && lastUpstreamBody.thinking.type === 'disabled'), lastUpstreamBody && lastUpstreamBody.thinking);
+
+  // ── 多通道：显式指定 channel 时必须打到**那条通道**的地址与模型 ──
+  const api2Call = await req('/api/chat/test', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { messages: [{ role: 'user', content: 'hi' }], stream: true, channel: 'api2' }
+  });
+  expect('切到 api2 返回 200', api2Call.status === 200, api2Call.text.slice(0, 200));
+  expect('api2 打到了它自己的目标地址', lastUpstreamPath === '/c2/chat/completions', lastUpstreamPath);
+  expect('api2 用的是它自己的模型名', lastUpstreamBody && lastUpstreamBody.model === 'volcano-smoke-model', lastUpstreamBody && lastUpstreamBody.model);
+  expect('非 DeepSeek 模型不注入 thinking（乱发可能被上游 400）', !(lastUpstreamBody && lastUpstreamBody.thinking), lastUpstreamBody && lastUpstreamBody.thinking);
+
+  const api3Call = await req('/api/chat/test', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { messages: [{ role: 'user', content: 'hi' }], channel: 'api3' }
+  });
+  expect('未配置 Key 的通道返回 503 且提示缺哪个变量', api3Call.status === 503 && /TEST_API_3_KEY/.test(api3Call.text), api3Call.text.slice(0, 160));
+
+  // api4：真正发给上游的必须是**真实模型名**，而不是界面上显示的 displayModel
+  const api4Call = await req('/api/chat/test', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { messages: [{ role: 'user', content: 'hi' }], stream: true, channel: 'api4' }
+  });
+  expect('切到 api4 返回 200', api4Call.status === 200, api4Call.text.slice(0, 200));
+  expect('api4 打到了它自己的目标地址', lastUpstreamPath === '/c4/chat/completions', lastUpstreamPath);
+  expect('api4 发给上游的是真实模型名（内部代号）',
+    lastUpstreamBody && lastUpstreamBody.model === 'fake-stream-gemini-2.5-pro', lastUpstreamBody && lastUpstreamBody.model);
+  expect('api4 没有把展示名当模型名发出去',
+    lastUpstreamBody && lastUpstreamBody.model !== 'Gemini-2.5-pro');
+  expect('非 DeepSeek 模型不注入 thinking（Gemini 反代）', !(lastUpstreamBody && lastUpstreamBody.thinking), lastUpstreamBody && lastUpstreamBody.thinking);
+
+  const badChannel = await req('/api/chat/test', {
+    method: 'POST',
+    headers: bearer(userToken),
+    body: { messages: [{ role: 'user', content: 'hi' }], channel: 'api9' }
+  });
+  expect('未知通道返回 400（不回退到随便一条）', badChannel.status === 400, badChannel.text.slice(0, 160));
 
   // 首片延迟：假上游第 1 片立即发、第 2 片 300ms 后发，若被整段缓冲则首片会 ≥300ms
   const streamStart = Date.now();

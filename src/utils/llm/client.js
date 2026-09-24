@@ -23,16 +23,38 @@ const H5_DEFAULT_CONFIG = {
  * 内置测试通道（一切都由服务端决定）。
  *
  * 前端不再持有 Key，也不知道模型名与目标地址：只调用服务端接口 POST /api/chat/test，
- * 由服务端按数据库判定权限（is_admin || is_test）、注入 Key、决定模型名（TEST_API_MODEL）
+ * 由服务端按数据库判定权限（is_admin || is_test）、注入 Key、决定模型名
  * 与协议参数（如 DeepSeek 的 thinking:disabled）。采样参数由前端预设决定，服务端原样透传。
  *
- * 可用性与展示名来自 GET /api/test-api/config（无密钥）；官方改模型名时只需改服务端变量。
+ * 多通道：服务端可以提供多条测试通道（不同厂商/代理），前端只上报"用哪一条"（channel 字段）。
+ * 通道清单（id / 展示名 / 提供商 / 模型名 / 是否可用）来自 GET /api/test-api/config ——
+ * 换模型、换厂商只改服务端变量，前端无需改代码、无需重新发版。
+ *
  * 小程序端没有 /api 代理可用，不支持内置测试 API，必须自配 Key。
  */
 const TEST_API_CHAT_PATH = '/api/chat/test';
 const TEST_API_CONFIG_PATH = '/api/test-api/config';
+/** 服务端没告诉我们默认通道时用它（与 server.js 的 DEFAULT_TEST_API_CHANNEL_ID 对齐） */
+export const DEFAULT_TEST_API_CHANNEL_ID = 'api1';
 
 let _testApiConfigCache = null;
+
+/**
+ * 用户当前选中的测试通道 id
+ *
+ * 存在与"模型选择"同一份配置里（scopedKey('ai_model_settings') 的 testApiId 字段），
+ * 所以在设置页点一下就能立即生效，不需要页面底部的"保存"。
+ * 读不到/非法时回落到默认通道 —— 服务端对非法 id 会返回 400，不能让老配置卡死对话。
+ */
+export function getSelectedTestApiId() {
+  try {
+    const cfg = storage.get(scopedKey('ai_model_settings')) || {};
+    const id = String(cfg.testApiId || '').trim();
+    return id || DEFAULT_TEST_API_CHANNEL_ID;
+  } catch (e) {
+    return DEFAULT_TEST_API_CHANNEL_ID;
+  }
+}
 
 /**
  * 业务请求拿到 401 = 服务端判定登录态失效，构造统一形态的错误。
@@ -67,13 +89,13 @@ function _httpError(status, message) {
 /**
  * 读取内置测试通道的公开配置（用于设置页显示与可用性判断）
  * @param {boolean} [force] 忽略缓存强制刷新
- * @returns {Promise<{enabled:boolean, label:string, model:string}>}
+ * @returns {Promise<{enabled:boolean, label:string, model:string, defaultId:string, apis:Array<{id:string,label:string,provider:string,model:string,enabled:boolean}>}>}
  */
 export async function getTestApiConfig(force) {
   if (!force && _testApiConfigCache) return _testApiConfigCache;
   if (typeof fetch === 'undefined') {
     // 小程序等没有 fetch 的环境
-    _testApiConfigCache = { enabled: false, label: '', model: '' };
+    _testApiConfigCache = _emptyTestApiConfig();
     return _testApiConfigCache;
   }
   try {
@@ -82,13 +104,53 @@ export async function getTestApiConfig(force) {
     _testApiConfigCache = {
       enabled: !!(data && data.enabled),
       label: (data && data.label) || '',
-      model: (data && data.model) || ''
+      model: (data && data.model) || '',
+      defaultId: (data && data.defaultId) || DEFAULT_TEST_API_CHANNEL_ID,
+      // 逐项洗净：服务端字段缺失/类型不对时不要让设置页渲染出 undefined
+      apis: Array.isArray(data && data.apis)
+        ? data.apis.filter(function (a) { return a && a.id; }).map(function (a) {
+            return {
+              id: String(a.id),
+              label: String(a.label || a.model || a.id),
+              provider: String(a.provider || ''),
+              model: String(a.model || ''),
+              enabled: !!a.enabled
+            };
+          })
+        : []
     };
   } catch (e) {
     console.warn('[TestAPI] 读取内置测试通道配置失败:', e && e.message);
-    _testApiConfigCache = { enabled: false, label: '', model: '' };
+    _testApiConfigCache = _emptyTestApiConfig();
   }
   return _testApiConfigCache;
+}
+
+function _emptyTestApiConfig() {
+  return { enabled: false, label: '', model: '', defaultId: DEFAULT_TEST_API_CHANNEL_ID, apis: [] };
+}
+
+/**
+ * 解析"这次该用哪条测试通道"
+ *
+ * 优先用户选中的那条；如果服务端清单里没有它（换了部署、回滚了版本、或本地存了脏 id），
+ * 回落到第一条可用的通道 —— 目的是"通道 id 对不上"不该让整个对话直接崩掉。
+ * 服务端仍会对未知 id 返回 400，所以这里只是不让它发生。
+ */
+function _resolveTestApiChannel(cfg) {
+  const id = getSelectedTestApiId();
+  const list = (cfg && cfg.apis) || [];
+  if (!list.length) return id; // 旧版服务端没有 apis 字段：原样上报，交给服务端兜底
+  const hit = list.filter(function (a) { return a.id === id; })[0];
+  if (hit) return hit.id;
+  const fallback = list.filter(function (a) { return a.enabled; })[0] || list[0];
+  return fallback ? fallback.id : id;
+}
+
+/** 按 id 取通道信息（找不到返回 null） */
+export function findTestApiChannel(cfg, id) {
+  const list = (cfg && cfg.apis) || [];
+  return list.filter(function (a) { return a.id === id; })[0] || null;
 }
 
 /**
@@ -827,10 +889,18 @@ class LLMClient {
     // 只有服务端明确说可用时才发起请求，错误提示更明确（而不是等到 403）
     const cfg = await getTestApiConfig();
     if (!cfg.enabled) throw new Error('内置测试 API 当前不可用，请在「设置」页填写自己的 API Key');
+    // 选中的那条如果服务端没配 Key，提前给出可执行的提示（而不是把 503 原样抛给用户）
+    const selectedId = _resolveTestApiChannel(cfg);
+    const selected = findTestApiChannel(cfg, selectedId);
+    if (selected && !selected.enabled) {
+      throw new Error(`测试通道「${selected.label}」服务端未配置：请在「设置」页换一条通道`);
+    }
 
     const requestBody = Object.assign({
       messages: messages,
       stream: true,
+      // 用哪条测试通道：只上报 id，Key / 地址 / 模型名全部由服务端注入
+      channel: selectedId,
       // 同用户自配 Key 通道：让上游在最后一个数据块带回真实 usage（D13）。
       // 服务端需在 PASSTHROUGH_PARAMS 白名单里放行该字段，否则会被丢掉。
       stream_options: { include_usage: true }
@@ -886,10 +956,17 @@ class LLMClient {
 
     const cfg = await getTestApiConfig();
     if (!cfg.enabled) throw new Error('内置测试 API 当前不可用，请在「设置」页填写自己的 API Key');
+    const selectedId = _resolveTestApiChannel(cfg);
+    const selected = findTestApiChannel(cfg, selectedId);
+    if (selected && !selected.enabled) {
+      throw new Error(`测试通道「${selected.label}」服务端未配置：请在「设置」页换一条通道`);
+    }
 
     const requestBody = Object.assign({
       messages: messages,
-      stream: false
+      stream: false,
+      // 同流式路径：只上报通道 id，其余由服务端决定
+      channel: selectedId
     }, this._collectSamplingParams(genParams));
 
     const resp = await fetch(TEST_API_CHAT_PATH, {

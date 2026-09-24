@@ -53,11 +53,16 @@ git push origin master
 | `AUTH_SECRET` | 登录 token 的 HMAC 签名密钥（随机长串） | `openssl rand -hex 32` 的输出 | **是**（生产环境缺失会拒绝启动；**上线后不要再改**，改了所有人被登出） |
 | `ADMIN_INITIAL_PASSWORD` | admin 账号密码：**变量值就是密码值**，改变量=改密码 | 自己设定 | 是（未设置则 admin 无法登录） |
 | `NODE_ENV` | 运行环境 | `production` | 是 |
-| `TEST_API_KEY` | **内置测试 API 的 Key**（只保存在服务端） | `sk-xxxxxxxxxxxx` | 否（不配则测试通道返回 503） |
-| `TEST_API_TARGET` | 内置测试 API 的目标地址 | `https://api.deepseek.com` | 否（默认即此值） |
-| `TEST_API_MODEL` | 内置测试 API 的**模型名**（官方改名只改这里，前端无需改代码） | `deepseek-v4-flash` | 否（默认即此值） |
-| `TEST_API_LABEL` | 设置页展示名 | `DeepSeek V4 Flash` | 否（缺省显示模型名） |
-| `TEST_API_ENABLED` | 内置测试通道开关 | `true` | 否（默认开启） |
+| `TEST_API_KEY` | **测试通道 api1 的 Key**（只保存在服务端） | `sk-xxxxxxxxxxxx` | 否（不配则该通道不可选） |
+| `TEST_API_TARGET` | 测试通道 api1 的目标地址 | `https://api.deepseek.com` | 否（默认即此值） |
+| `TEST_API_MODEL` | 测试通道 api1 **发给上游的真实模型名**（官方改名只改这里，前端无需改代码） | `DeepSeek-V4.1-Flash` | 否（默认即此值） |
+| `TEST_API_DISPLAY_MODEL` | 测试通道 api1 **界面上显示的模型名**（不配则与 `TEST_API_MODEL` 相同） | `DeepSeek-V4.1-Flash` | 否（默认回退到真实模型名） |
+| `TEST_API_PROVIDER` | 测试通道 api1 的**提供商展示名**（设置页与切换提示里显示） | `DeepSeek` | 否（默认即此值） |
+| `TEST_API_LABEL` | 测试通道 api1 的展示名（设置页那一行的标题） | `DeepSeek原生` | 否（默认即此值） |
+| `TEST_API_ENABLED` | 测试通道 api1 的开关 | `true` | 否（默认开启） |
+| `TEST_API_2_KEY` / `_2_TARGET` / `_2_MODEL` / `_2_DISPLAY_MODEL` / `_2_PROVIDER` / `_2_LABEL` / `_2_ENABLED` | **测试通道 api2**（火山代理 DeepSeek），含义同上 | `TEST_API_2_TARGET=https://ark.cn-beijing.volces.com/api/v3`、`TEST_API_2_MODEL=DeepSeek-V4-Flash`、`TEST_API_2_PROVIDER=火山方舟` | 否（不配 `_2_KEY` 则该通道显示"未配置"、不可选） |
+| `TEST_API_3_KEY` / `_3_TARGET` / `_3_MODEL` / `_3_DISPLAY_MODEL` / `_3_PROVIDER` / `_3_LABEL` / `_3_ENABLED` | **测试通道 api3**（原生智谱），含义同上 | `TEST_API_3_TARGET=https://open.bigmodel.cn/api/paas/v4`、`TEST_API_3_MODEL=GLM-5.3-Flash`、`TEST_API_3_PROVIDER=智谱 AI` | 否（同上） |
+| `TEST_API_4_KEY` / `_4_TARGET` / `_4_MODEL` / `_4_DISPLAY_MODEL` / `_4_PROVIDER` / `_4_LABEL` / `_4_ENABLED` | **测试通道 api4**（GG 公益站 CLI 反代 / Gemini），含义同上 | `TEST_API_4_TARGET=https://gcli.ggchan.dev`、`TEST_API_4_MODEL=gemini-2.5-flash-lite`、`TEST_API_4_PROVIDER=GG公益站`、`TEST_API_4_LABEL=公益站CLI反代` | 否（同上） |
 | `TOKEN_TTL_DAYS` | 登录有效天数 | `7` | 否（默认 7 天） |
 | `API_TARGET` | 用户自配 Key 通道的默认目标地址 | `https://api.deepseek.com` | 否 |
 | `API_KEY` | 用户自配 Key 通道的兜底 Key | — | **建议永远不配**（不给未带 Key 的请求兜底） |
@@ -87,18 +92,58 @@ git push origin master
   - 认领老账号（`POST /api/auth/claim`）同样**不带来任何权限**（`isAdmin/isTest` 一律为 false）——该接口是公开的，采信客户端声明等于让人自封管理员
   - 存量账号的 `is_test` **不变**（迁移只改列默认值），要收回权限由 admin 在监控页逐个关闭
 
-### 4.2 内置测试 API（Key / 模型名都只放在服务端）
+### 4.2 内置测试 API（多通道：Key / 目标地址 / 模型名都只放在服务端）
 
-内置测试 Key 与模型名**都不在前端**。前端只调用服务端接口：
+内置测试通道的 Key、目标地址与模型名**都不在前端**。服务端可以提供**多条通道**（默认四条，
+设置页里依次显示为 `DeepSeek原生` / `火山代理 DeepSeek` / `智谱原生` / `公益站CLI反代`），
+测试账号在设置页「选择模型 → 测试 API 通道」里挑一条，**点选即生效**（不需要点保存）。
 
-- `GET /api/test-api/config` —— 返回 `{ enabled, label, model }`（**无密钥**，仅用于设置页显示）
-- `POST /api/chat/test` —— 带登录 token，服务端校验 `is_admin || is_test` 后注入 Key、**强制使用 `TEST_API_MODEL`**、注入 `thinking` 等协议参数；**采样参数（temperature/top_p/max_tokens…）由前端预设决定并原样透传**
+前端只调用服务端接口：
+
+- `GET /api/test-api/config` —— 返回
+  `{ enabled, label, model, defaultId, apis: [{ id, label, provider, model, enabled }] }`
+  （**无密钥、无目标地址、无上游真实模型名**，仅用于设置页显示；
+  这里的 `model` 是 `*_DISPLAY_MODEL`，即"给用户看的模型名"）
+- `POST /api/chat/test` —— 带登录 token，body 里用 `channel: "api1" | "api2" | "api3" | "api4"` 指定通道；
+  服务端校验 `is_admin || is_test` 后注入**该通道**的 Key、**强制使用该通道的真实模型名**、
+  注入 `thinking` 等协议参数；**采样参数（temperature/top_p/max_tokens…）由前端预设决定并原样透传**
 - 响应为 SSE 流式透传（`X-Accel-Buffering: no`，边收边写，不缓冲）
 
-本地开发：Key 可放 `data/secrets.json`（`data/` 已在 `.gitignore` 中，不会入库）：
+通道 → 环境变量对照（第 1 条沿用原变量名以兼容历史配置，新增的用 `_2` / `_3` / `_4` 后缀区分）：
+
+| 通道 id | 默认提供商 | 界面显示模型名 | **发给上游的真实模型名** | 环境变量前缀 |
+|---------|-----------|---------------|------------------------|--------------|
+| `api1` | DeepSeek | `DeepSeek-V4.1-Flash` | `DeepSeek-V4.1-Flash` | `TEST_API_` |
+| `api2` | 火山方舟（DeepSeek 代理） | `DeepSeek-V4-Flash` | `DeepSeek-V4-Flash` | `TEST_API_2_` |
+| `api3` | 智谱 AI | `GLM-5.3-Flash` | `GLM-5.3-Flash` | `TEST_API_3_` |
+| `api4` | GG公益站 | `gemini-2.5-flash-lite` | `gemini-2.5-flash-lite` | `TEST_API_4_` |
+
+设置页里每行显示的是「`*_LABEL` 作为标题 + 提供商：`*_PROVIDER` + 模型：`*_DISPLAY_MODEL`」，
+默认值依次为 `DeepSeek原生` / `火山代理 DeepSeek` / `智谱原生` / `公益站CLI反代`。
+
+`*_DISPLAY_MODEL` 目前四条通道都用不到（展示名与真实模型名一致，不配就自动等于 `*_MODEL`）。
+它存在的意义是应对"上游模型名是内部代号、不想让用户看到"的渠道 —— 将来真遇到，
+只要给那条通道设一个 `*_DISPLAY_MODEL`，界面上就会显示它、而请求里仍然发 `*_MODEL`。
+
+每条通道都可用 `*_TARGET` / `*_MODEL` / `*_DISPLAY_MODEL` / `*_PROVIDER` / `*_LABEL` / `*_ENABLED` 覆盖默认值。
+`*_DISPLAY_MODEL` 用于"上游模型名是内部代号、不想让用户看到"的渠道（api4 就是这种）：
+不配它时展示名就等于真实模型名。
+**只配了 `*_KEY` 的通道才可选**；没配 Key 的通道在设置页会显示「未配置」且点不动。
+
+> ⚠️ 通道默认地址只是合理猜测（DeepSeek 官方 / 火山方舟 / 智谱开放平台 / GG 公益站）。
+> 请求路径固定是 `目标地址 + /chat/completions`；如果你的服务需要 `/v1` 前缀或别的路径，
+> 把 `*_TARGET` 设成带前缀的地址即可（例如 `https://gcli.ggchan.dev/v1`）。
+
+本地开发：Key 可放 `data/secrets.json`（`data/` 已在 `.gitignore` 中，不会入库），键名与环境变量同名：
 
 ```json
-{ "TEST_API_KEY": "sk-你的Key", "AUTH_SECRET": "本地开发用的随机串" }
+{
+  "TEST_API_KEY": "sk-你的DeepSeek Key",
+  "TEST_API_2_KEY": "你的火山方舟 Key",
+  "TEST_API_3_KEY": "你的智谱 Key",
+  "TEST_API_4_KEY": "你的 GG 公益站 Key",
+  "AUTH_SECRET": "本地开发用的随机串"
+}
 ```
 
 > ⚠️ 小程序端没有 `/api` 代理，因此**不支持内置测试 API**，必须自配 Key。
